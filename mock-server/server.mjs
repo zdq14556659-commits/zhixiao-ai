@@ -8,6 +8,25 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import OpenAI from 'openai';
+
+// ─── AI 配置 ────────────────────────────────────────────
+
+const AI_API_KEY = process.env.AI_API_KEY || '';
+const AI_BASE_URL = process.env.AI_BASE_URL || 'https://api.deepseek.com/v1';
+const AI_MODEL = process.env.AI_MODEL || 'deepseek-chat';
+const USE_REAL_AI = AI_API_KEY.length > 0;
+
+let openai = null;
+if (USE_REAL_AI) {
+  openai = new OpenAI({
+    apiKey: AI_API_KEY,
+    baseURL: AI_BASE_URL,
+  });
+  console.log(`[AI] 已连接真实AI服务: ${AI_BASE_URL} (模型: ${AI_MODEL})`);
+} else {
+  console.log('[AI] 未配置AI_API_KEY，使用模拟分析服务');
+}
 
 // ─── 路径与配置 ──────────────────────────────────────────
 
@@ -23,7 +42,122 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 const upload = multer({ dest: UPLOAD_DIR });
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+
+// ─── 真实AI分析函数 ────────────────────────────────────
+
+async function analyzeWithAI(transcriptText) {
+  if (!USE_REAL_AI || !openai) return null;
+
+  const prompt = `你是一个专业的销售分析AI。请分析以下销售通话记录，输出严格的JSON格式（不要markdown，纯JSON对象）：
+
+通话记录：
+${transcriptText}
+
+请分析并返回JSON（只返回JSON，不要其他文字）：
+{
+  "summary": "沟通摘要（100字以内）",
+  "intention": "客户意图分类：询价/对比/投诉/售后/合作/其他",
+  "intentionConfidence": 0.85,
+  "customerEmotion": "客户情绪：positive/negative/angry/hesitant/neutral",
+  "customerEmotionScore": 0.75,
+  "agentPerformanceScore": 0.82,
+  "agentTips": "话术改进建议",
+  "keyPoints": "关键要点（->分隔）",
+  "actionItems": "待办事项",
+  "customerDemand": "客户需求识别",
+  "purchaseIntent": "购买意向：high/mid/low/unknown",
+  "riskWarning": "风险预警（无可为空）"
+}`;
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: AI_MODEL,
+      messages: [
+        { role: 'system', content: '你是一个专业的销售通话分析AI，擅长识别客户意图、情绪和话术质量。请严格按照JSON格式输出，不要markdown包裹。' },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.3,
+      max_tokens: 1000,
+    });
+    const text = completion.choices[0]?.message?.content || '';
+    // Remove markdown code block if present
+    const cleanJson = text.replace(/\\\`\`\`json?/gi, '').replace(/\\\`\`\`/g, '').trim();
+    return JSON.parse(cleanJson);
+  } catch (err) {
+    console.error('[AI] API调用失败:', err.message);
+    return null;
+  }
+}
+
+// ─── 生成模拟AI分析结果 ──────────────────────────────
+
+function generateMockAnalysis() {
+  const summaries = [
+    '客户表示对数字化升级有需求，目前使用Excel管理工厂。销售介绍了柜柜软件和智销AI的功能，并主动询问了价格。客户对¥7,980/年的价格表示可以接受，约定周五下午2点进行产品演示。通话氛围良好，客户意向明确。',
+    '客户对产品表现出浓厚兴趣，询问了价格并主动要求演示。客户在工厂管理方面有明确痛点（Excel管理效率低），属于高意向客户。',
+    '本次通话为初次接触，客户对AI销售系统概念了解有限。销售耐心解释了系统功能和价值，客户表示愿意进一步了解，建议安排产品演示会。',
+  ];
+  const intentions = ['询价', '对比', '合作', '售后', '投诉'];
+  const emotions = ['positive', 'neutral', 'hesitant', 'positive'];
+  const tips = [
+    '1. 客户说"价格可以接受"时应及时推进到下一步；2. 建议增加客户案例分享增强说服力。',
+    '1. 客户痛点识别清晰；2. 价格回应及时；3. 建议增加竞争对手对比话术。',
+    '1. 开场白简洁明了；2. 建议提前了解客户背景；3. 可以适当增加行业专业术语提升信任感。',
+  ];
+
+  return {
+    summary: summaries[Math.floor(Math.random() * summaries.length)],
+    intention: intentions[Math.floor(Math.random() * intentions.length)],
+    intentionConfidence: +(0.75 + Math.random() * 0.2).toFixed(2),
+    customerEmotion: emotions[Math.floor(Math.random() * emotions.length)],
+    customerEmotionScore: +(0.6 + Math.random() * 0.35).toFixed(2),
+    agentPerformanceScore: +(0.7 + Math.random() * 0.25).toFixed(2),
+    agentTips: tips[Math.floor(Math.random() * tips.length)],
+    keyPoints: '数字化需求→价格咨询→要求演示→约定时间',
+    actionItems: '1. 准备演示环境；2. 准备行业案例；3. 确认客户联系方式',
+    customerDemand: '工厂数字化管理升级',
+    purchaseIntent: ['high', 'mid', 'low'][Math.floor(Math.random() * 3)],
+    riskWarning: '',
+  };
+}
+
+async function runAIAnalysis(transcriptText, recId) {
+  let analysis = null;
+  if (USE_REAL_AI) {
+    analysis = await analyzeWithAI(transcriptText);
+  }
+  if (!analysis) {
+    analysis = generateMockAnalysis();
+    analysis.modelUsed = 'zhixiao-ai-mock-v1';
+  } else {
+    analysis.modelUsed = AI_MODEL;
+  }
+
+  const now = dayjs().format('YYYY-MM-DD HH:mm:ss');
+  db.prepare('UPDATE recordings SET analyze_status=\'completed\' WHERE id=?').run(recId);
+  db.prepare(
+    `INSERT INTO analyses (company_id,recording_id,summary,intention,intention_confidence,customer_emotion,customer_emotion_score,agent_performance_score,agent_tips,key_points,action_items,customer_demand,purchase_intent,risk_warning,model_used,created_at)
+     VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(
+    recId,
+    analysis.summary || '',
+    analysis.intention || '其他',
+    analysis.intentionConfidence || 0,
+    analysis.customerEmotion || 'neutral',
+    analysis.customerEmotionScore || 0,
+    analysis.agentPerformanceScore || 0,
+    analysis.agentTips || '',
+    analysis.keyPoints || '',
+    analysis.actionItems || '',
+    analysis.customerDemand || '',
+    analysis.purchaseIntent || 'unknown',
+    analysis.riskWarning || '',
+    analysis.modelUsed || 'zhixiao-ai-mock-v1',
+    now
+  );
+  console.log(`[AI] 录音 #${recId} 分析完成 (模型: ${analysis.modelUsed})`);
+}
 
 // ─── 数据库初始化 ────────────────────────────────────────
 
@@ -675,30 +809,14 @@ app.post('/api/recordings/upload', authMiddleware, upload.single('file'), (req, 
   const recId = Number(result.lastInsertRowid);
   const rec = db.prepare('SELECT r.*, u.real_name as ownerName FROM recordings r LEFT JOIN users u ON r.owner_id = u.id WHERE r.id = ?').get(recId);
 
-  // Simulate ASR after 3s
+  // Simulate ASR after 3s, then run AI analysis
   setTimeout(() => {
     const transcriptText = '【坐席】您好，我是智销AI的销售顾问，今天给您打电话是想了解一下贵公司最近有没有数字化升级的需求？\n【客户】我们确实在考虑，现在工厂管理还是靠Excel，效率不高。\n【坐席】那太巧了，我们的柜柜拆单软件和智销AI系统正好能解决这个痛点。\n【客户】价格方便说一下吗？\n【坐席】我们的起售价是¥7,980/年，而且首月可以免费试用。\n【客户】价格可以接受，什么时候方便做个演示？\n【坐席】好的，我安排一下，这周五下午2点您看方便吗？\n【客户】可以，那就周五下午2点。';
     const transAt = dayjs().format('YYYY-MM-DD HH:mm:ss');
     db.prepare('UPDATE recordings SET transcribe_status=\'completed\', transcribe_text=?, transcribe_at=? WHERE id=?').run(transcriptText, transAt, recId);
+    // Run AI analysis after transcription
+    runAIAnalysis(transcriptText, recId);
   }, 3000);
-
-  // Simulate AI analysis after 5s
-  setTimeout(() => {
-    db.prepare('UPDATE recordings SET analyze_status=\'completed\' WHERE id=?').run(recId);
-    db.prepare(
-      `INSERT INTO analyses (company_id,recording_id,summary,intention,intention_confidence,customer_emotion,customer_emotion_score,agent_performance_score,agent_tips,key_points,action_items,customer_demand,purchase_intent,risk_warning,model_used,created_at)
-       VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-    ).run(
-      recId,
-      '客户表示对数字化升级有需求，目前使用Excel管理工厂。销售介绍了柜柜软件和智销AI的功能，并主动询问了价格。客户对¥7,980/年的价格表示可以接受，约定周五下午2点进行产品演示。通话氛围良好，客户意向明确。',
-      '询价', 0.92, 'positive', 0.78, 0.85,
-      '1. 客户说"价格可以接受"时应及时推进到下一步，做得不错；2. 可以更早地了解客户的具体痛点；3. 建议增加客户案例分享增强说服力。',
-      '客户管理靠Excel→希望数字化升级→对¥7,980/年价格认可→约定周五演示',
-      '1. 准备演示环境；2. 准备客户行业案例；3. 周五上午再次确认演示时间',
-      '工厂数字化管理升级', 'high', '',
-      'zhixiao-ai-mock-v1', dayjs().format('YYYY-MM-DD HH:mm:ss')
-    );
-  }, 5000);
 
   res.json(created(rec));
 });
@@ -736,29 +854,27 @@ app.get('/api/asr/status/:recordingId', authMiddleware, (req, res) => {
 
 // ─── AI分析 API ──────────────────────────────────────────
 
-app.post('/api/ai/analyze/:recordingId', authMiddleware, (req, res) => {
+app.post('/api/ai/analyze/:recordingId', authMiddleware, async (req, res) => {
   const recordingId = parseInt(req.params.recordingId);
-  const now = dayjs().format('YYYY-MM-DD HH:mm:ss');
-  db.prepare('UPDATE recordings SET analyze_status=\'completed\' WHERE id=?').run(recordingId);
-  const result = db.prepare(
-    `INSERT INTO analyses (company_id,recording_id,summary,intention,intention_confidence,customer_emotion,customer_emotion_score,agent_performance_score,agent_tips,key_points,action_items,customer_demand,purchase_intent,risk_warning,model_used,created_at)
-     VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-  ).run(
-    recordingId,
-    '本次通话客户对产品表现出浓厚兴趣，询问了价格并主动要求演示。客户在工厂管理方面有明确痛点（Excel管理效率低），属于高意向客户。',
-    '询价', 0.92, 'positive', 0.78, 0.85,
-    '1. 客户痛点识别清晰；2. 价格回应及时；3. 建议增加竞争对手对比话术',
-    'Excel管理→数字化需求→价格咨询→要求演示',
-    '准备演示环境，准备客户案例',
-    '工厂管理数字化', 'high', '',
-    'zhixiao-ai-mock-v1', now
-  );
-  const analysis = db.prepare('SELECT * FROM analyses WHERE id = ?').get(result.lastInsertRowid);
-  res.json(created(analysis));
+  const rec = db.prepare('SELECT * FROM recordings WHERE id = ?').get(recordingId);
+  if (!rec) return res.status(404).json({ code: 404, message: '录音不存在', data: null });
+  
+  const transcriptText = rec.transcribe_text || '【坐席】您好，我是智销AI的销售顾问，今天给您打电话是想了解一下...';
+  
+  // Run async - don't await so we respond immediately
+  runAIAnalysis(transcriptText, recordingId);
+  
+  res.json(success({ recordingId, status: 'processing', message: 'AI分析已启动，请稍后刷新查看结果' }));
 });
 
 app.get('/api/ai/analysis/:id', authMiddleware, (req, res) => {
   const analysis = db.prepare('SELECT * FROM analyses WHERE id = ?').get(parseInt(req.params.id));
+  if (!analysis) return res.status(404).json({ code: 404, message: '分析不存在', data: null });
+  res.json(success(analysis));
+});
+
+app.get('/api/ai/analysis/by-recording/:recordingId', authMiddleware, (req, res) => {
+  const analysis = db.prepare('SELECT * FROM analyses WHERE recording_id = ? ORDER BY id DESC LIMIT 1').get(parseInt(req.params.recordingId));
   if (!analysis) return res.status(404).json({ code: 404, message: '分析不存在', data: null });
   res.json(success(analysis));
 });
