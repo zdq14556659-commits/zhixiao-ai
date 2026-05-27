@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: zhixiao-ai
+    env: node
+    plan: free
+    region: singapore
+    buildCommand: cd frontend && npm install && npm run build && cd ../mock-server && npm install
+    startCommand: cd mock-server && node server.mjs
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: 18.18.0
+      - key: NODE_ENV
+        value: production

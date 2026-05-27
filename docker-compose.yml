@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: zhixiao-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: zhixiao123
+      MYSQL_DATABASE: zhixiao_ai
+      MYSQL_USER: zhixiao
+      MYSQL_PASSWORD: zhixiao123
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - mysql-data:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: zhixiao-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+
+  minio:
+    image: minio/minio:latest
+    container_name: zhixiao-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: zhixiao
+      MINIO_ROOT_PASSWORD: zhixiao123
+    volumes:
+      - minio-data:/data
+    command: server /data --console-address ":9001"
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: zhixiao-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: zhixiao
+      RABBITMQ_DEFAULT_PASS: zhixiao123
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: zhixiao-backend
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/zhixiao_ai?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
+      SPRING_DATASOURCE_USERNAME: zhixiao
+      SPRING_DATASOURCE_PASSWORD: zhixiao123
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: zhixiao
+      MINIO_SECRET_KEY: zhixiao123
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: zhixiao
+      RABBITMQ_PASSWORD: zhixiao123
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: zhixiao-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  mysql-data:
+  redis-data:
+  minio-data:
+  rabbitmq-data:

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+uploads/
+data.db
+*.log
+.env
+.DS_Store
+.vite/
+ngrok.exe
+ngrok.zip
+tunnel.mjs

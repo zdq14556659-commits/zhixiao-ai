@@ -1,0 +1,102 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: zhixiao-ai
+
+  # MySQL Database Configuration
+  datasource:
+    url: jdbc:mysql://localhost:3307/zhixiao_ai?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: zhixiao
+    password: zhixiao123
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      idle-timeout: 30000
+      connection-timeout: 30000
+
+  # JPA Configuration
+  jpa:
+    hibernate:
+      ddl-auto: none
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+        format_sql: true
+    open-in-view: false
+
+  # Redis Configuration
+  data:
+    redis:
+      host: localhost
+      port: 6380
+      password:
+      database: 0
+      timeout: 3000
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+
+  # RabbitMQ Configuration
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: zhixiao
+    password: zhixiao123
+    virtual-host: /
+    listener:
+      simple:
+        concurrency: 3
+        max-concurrency: 10
+
+  # File Upload Configuration
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 200MB
+      max-request-size: 500MB
+      file-size-threshold: 2KB
+
+# JWT Configuration
+jwt:
+  secret: zhixiao-ai-jwt-secret-key-2026-very-long-and-secure
+  expiration: 86400000
+
+# MinIO Configuration (S3-compatible object storage)
+minio:
+  endpoint: http://localhost:9000
+  access-key: zhixiao
+  secret-key: zhixiao123
+  bucket: zhixiao-ai
+
+# ASR Configuration
+asr:
+  mock: true
+  mock-delay-ms: 2000
+
+# AI Configuration
+ai:
+  mock: true
+  mock-delay-ms: 3000
+  model-name: zhixiao-ai-mock-v1
+
+# SpringDoc OpenAPI Configuration
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: true
+
+# Logging
+logging:
+  level:
+    root: INFO
+    com.zhixiao: DEBUG
+    org.springframework.security: INFO
+    org.hibernate.SQL: DEBUG
