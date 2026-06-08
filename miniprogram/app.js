@@ -1,7 +1,7 @@
 const STORAGE_KEY = "zhixiao_ai_mini_state_v3";
 const AUTH_KEY = "zhixiao_ai_auth_v1";
 const LOCAL_API_BASE = "http://127.0.0.1:8787/api";
-const PROD_API_BASE = "https://zhixiao-ai.onrender.com/api";
+const PROD_API_BASE = "https://zhixiaoai1.onrender.com/api";
 const API_BASE = getApiBase();
 const LOCAL_DEMO_PASSWORDS = {
   admin: "123456",
