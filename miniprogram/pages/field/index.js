@@ -2,10 +2,12 @@ const app = getApp();
 
 Page({
   data: {
-    latitude: 30.2741,
-    longitude: 120.1551,
-    currentCity: "杭州市",
-    currentAddress: "浙江省杭州市",
+    latitude: 35.86166,
+    longitude: 104.195397,
+    currentCity: "",
+    currentAddress: "",
+    locationReady: false,
+    locating: false,
     statuses: ["待攻克", "跟进中", "已成交"],
     statusIndex: 1,
     visits: [],
@@ -20,11 +22,17 @@ Page({
     app.loadRemoteState(() => {
       this.setData({ currentUser: app.getCurrentUser() });
       this.loadVisits();
+      if (!this.data.locationReady) this.locate({ silent: true });
     });
   },
 
   loadVisits() {
-    const visits = app.getState().visits || [];
+    const state = app.getState();
+    const currentUser = app.getCurrentUser();
+    const allVisits = state.visits || [];
+    const visits = currentUser.role === "销售"
+      ? allVisits.filter((item) => item.ownerId === currentUser.id || item.owner === currentUser.name)
+      : allVisits;
     const cityMap = visits.reduce((map, item) => {
       const city = item.city || "未知城市";
       map[city] = (map[city] || 0) + 1;
@@ -80,33 +88,50 @@ Page({
     wx.previewImage({ current, urls });
   },
 
-  locate() {
-    wx.getLocation({
-      type: "gcj02",
-      success: (res) => {
-        const latitude = Number(res.latitude.toFixed(6));
-        const longitude = Number(res.longitude.toFixed(6));
-        this.setData({ latitude, longitude });
-        this.reverseGeocode(longitude, latitude);
-        wx.showToast({ title: "定位成功" });
-      },
-      fail: () => wx.showToast({ title: "定位失败，请检查权限", icon: "none" })
+  locate(options = {}) {
+    const silent = Boolean(options.silent);
+    this.setData({ locating: true });
+    return new Promise((resolve, reject) => {
+      wx.getLocation({
+        type: "gcj02",
+        isHighAccuracy: true,
+        highAccuracyExpireTime: 5000,
+        success: async (res) => {
+          const latitude = Number(res.latitude.toFixed(6));
+          const longitude = Number(res.longitude.toFixed(6));
+          this.setData({ latitude, longitude, locationReady: true });
+          await this.reverseGeocode(longitude, latitude);
+          if (!silent) wx.showToast({ title: "定位成功" });
+          resolve({ latitude, longitude });
+        },
+        fail: (error) => {
+          if (!silent) wx.showToast({ title: "定位失败，请检查权限", icon: "none" });
+          reject(error);
+        },
+        complete: () => {
+          this.setData({ locating: false });
+        }
+      });
     });
   },
 
   reverseGeocode(longitude, latitude) {
-    wx.request({
-      url: `${app.globalData.apiBase}/amap/regeo`,
-      data: { longitude, latitude },
-      success: (res) => {
-        this.setData({
-          currentCity: res.data.city || "",
-          currentAddress: res.data.address || ""
-        });
-      },
-      fail: () => {
-        wx.showToast({ title: "地址解析失败", icon: "none" });
-      }
+    return new Promise((resolve) => {
+      wx.request({
+        url: `${app.globalData.apiBase}/amap/regeo`,
+        data: { longitude, latitude },
+        success: (res) => {
+          this.setData({
+            currentCity: res.data.city || "",
+            currentAddress: res.data.address || ""
+          });
+          resolve(res.data || {});
+        },
+        fail: () => {
+          wx.showToast({ title: "地址解析失败", icon: "none" });
+          resolve({});
+        }
+      });
     });
   },
 
@@ -121,8 +146,12 @@ Page({
       return;
     }
 
-    wx.showLoading({ title: "上传中" });
+    wx.showLoading({ title: "定位中" });
     try {
+      if (!this.data.locationReady) {
+        await this.locate({ silent: true });
+      }
+      wx.showLoading({ title: "上传中" });
       const photoUrls = await this.uploadPhotos(this.data.photos);
       const visit = {
         factory: form.factory,
@@ -149,8 +178,10 @@ Page({
       wx.showToast({ title: "已上传" });
     } catch (error) {
       wx.showModal({
-        title: "图片上传失败",
-        content: error.message || "请确认后端已启动，体验版需配置 HTTPS 合法域名。",
+        title: this.data.locationReady ? "图片上传失败" : "定位失败",
+        content: this.data.locationReady
+          ? error.message || "请确认后端已启动，体验版需配置 HTTPS 合法域名。"
+          : "请打开手机定位权限后重新打卡，不能使用默认城市位置。",
         showCancel: false
       });
     } finally {

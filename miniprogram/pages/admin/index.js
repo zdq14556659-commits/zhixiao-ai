@@ -26,14 +26,15 @@ Page({
 
   submitUser(event) {
     const form = event.detail.value;
+    const account = String(form.account || "").trim();
     const payload = {
       name: String(form.name || "").trim(),
-      phone: String(form.phone || "").trim(),
-      account: String(form.account || "").trim(),
+      phone: account,
+      account,
       password: String(form.password || ""),
       role: this.data.roles[this.data.roleIndex],
-      region: String(form.region || "待分区").trim(),
-      unit: String(form.unit || form.region || "待分配").trim()
+      region: String(form.unit || "待分配").trim(),
+      unit: String(form.unit || "待分配").trim()
     };
     if (!payload.name || !payload.account || !payload.password) {
       wx.showToast({ title: "姓名、账号、密码必填", icon: "none" });

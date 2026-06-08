@@ -2,7 +2,7 @@
   <view class="header">
     <text class="crumb">首页 / 地推地图</text>
     <view class="title">地推拜访</view>
-    <view class="subtitle">当前员工：{{currentUser.name}}。上传工厂照片并定位打卡，绿色为已拜访，红色为已成交。</view>
+    <view class="subtitle">当前员工：{{currentUser.name}}。销售只显示自己的拜访点，主管以上显示团队拜访点。</view>
   </view>
 
   <view class="map-shell">
@@ -63,13 +63,13 @@
       </view>
 
       <view class="location-box">
-        <view>经纬度：{{latitude}}, {{longitude}}</view>
+        <view>经纬度：{{locationReady ? latitude + ', ' + longitude : '正在定位 / 待定位'}}</view>
         <view>城市：{{currentCity || '待解析'}}</view>
         <view>地址：{{currentAddress || '点击定位后自动解析'}}</view>
       </view>
 
       <view class="actions">
-        <button class="plain-btn" type="button" bindtap="locate">定位</button>
+        <button class="plain-btn" type="button" bindtap="locate" loading="{{locating}}">重新定位</button>
         <button class="primary-btn" form-type="submit">上传打卡</button>
       </view>
     </view>

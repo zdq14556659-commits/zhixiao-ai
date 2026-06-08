@@ -9,7 +9,13 @@ const adminRoles = ["主管", "区域经理", "运营", "管理员"];
 let state = { users: [], customers: [], visits: [], knowledge: [], stages };
 let currentStage = "名单";
 let currentView = "dashboard";
-let currentLocation = { latitude: 30.2741, longitude: 120.1551, city: "杭州市", address: "浙江省杭州市" };
+let currentLocation = {
+  latitude: 35.86166,
+  longitude: 104.195397,
+  city: "",
+  address: "",
+  ready: false
+};
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -97,6 +103,13 @@ function logout() {
 function scopeCustomers() {
   const user = currentUser();
   return user.role === "销售" ? state.customers.filter((item) => item.owner === user.name) : state.customers;
+}
+
+function scopeVisits() {
+  const user = currentUser();
+  return user.role === "销售"
+    ? (state.visits || []).filter((item) => item.ownerId === user.id || item.owner === user.name)
+    : state.visits || [];
 }
 
 function canAdmin() {
@@ -291,7 +304,7 @@ function markerPosition(visit) {
 }
 
 function renderField() {
-  const visits = state.visits || [];
+  const visits = scopeVisits();
   $("#mapCanvas").innerHTML = visits
     .filter((visit) => visit.latitude && visit.longitude)
     .map((visit) => {
@@ -307,17 +320,28 @@ function renderField() {
 
 async function locate() {
   if (!navigator.geolocation) return toast("当前浏览器不支持定位");
-  navigator.geolocation.getCurrentPosition(async (position) => {
-    currentLocation.latitude = Number(position.coords.latitude.toFixed(6));
-    currentLocation.longitude = Number(position.coords.longitude.toFixed(6));
-    try {
-      const result = await api(`/amap/regeo?longitude=${currentLocation.longitude}&latitude=${currentLocation.latitude}`);
-      currentLocation.city = result.city || "";
-      currentLocation.address = result.address || "";
-    } catch {}
-    $("#locationText").textContent = `${currentLocation.latitude}, ${currentLocation.longitude} · ${currentLocation.city || "地址待解析"}`;
-    toast("定位成功");
-  }, () => toast("定位失败，请检查浏览器权限"));
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(async (position) => {
+      currentLocation.latitude = Number(position.coords.latitude.toFixed(6));
+      currentLocation.longitude = Number(position.coords.longitude.toFixed(6));
+      currentLocation.ready = true;
+      try {
+        const result = await api(`/amap/regeo?longitude=${currentLocation.longitude}&latitude=${currentLocation.latitude}`);
+        currentLocation.city = result.city || "";
+        currentLocation.address = result.address || "";
+      } catch {}
+      $("#locationText").textContent = `${currentLocation.latitude}, ${currentLocation.longitude} · ${currentLocation.city || "地址待解析"}`;
+      toast("定位成功");
+      resolve(true);
+    }, () => {
+      toast("定位失败，请检查浏览器权限");
+      resolve(false);
+    }, {
+      enableHighAccuracy: true,
+      timeout: 8000,
+      maximumAge: 0
+    });
+  });
 }
 
 async function uploadFiles(files) {
@@ -334,6 +358,11 @@ async function uploadFiles(files) {
 async function submitVisit(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
+  if (!currentLocation.ready) {
+    toast("请先定位，不能使用默认位置打卡");
+    await locate();
+    if (!currentLocation.ready) return;
+  }
   const photos = await uploadFiles(form.getAll("photos").filter((file) => file.size));
   await api("/visits", {
     method: "POST",
@@ -395,10 +424,10 @@ async function addUser(event) {
       name: form.get("name"),
       account: form.get("account"),
       password: form.get("password"),
-      phone: form.get("phone"),
+      phone: form.get("account"),
       role: form.get("role"),
-      region: form.get("region") || "待分区",
-      unit: form.get("region") || "待分配"
+      region: form.get("unit") || "待分配",
+      unit: form.get("unit") || "待分配"
     }
   });
   event.currentTarget.reset();
