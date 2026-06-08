@@ -12,13 +12,12 @@
       longitude="{{longitude}}"
       markers="{{markers}}"
       scale="5"
-      show-location
       enable-zoom
       enable-scroll
     ></map>
     <view class="map-legend">
-      <view><text class="dot green"></text>已拜访/跟进中</view>
-      <view><text class="dot red"></text>已成交</view>
+      <view><text class="dot green"></text>名单/线索/商机</view>
+      <view><text class="dot red"></text>成交</view>
     </view>
   </view>
 
@@ -33,16 +32,32 @@
     <view class="card fresh-card">
       <view class="section-title">上传打卡</view>
       <view class="form-item">
-        <text class="label">工厂名头</text>
+        <text class="label">工厂名称</text>
         <input name="factory" placeholder="杭州雅居全屋定制工厂" />
       </view>
       <view class="form-item">
-        <text class="label">生产线/设备</text>
-        <input name="line" placeholder="电子锯2台 / 封边机3台 / 六面钻1台" />
+        <text class="label">开料设备（几台）</text>
+        <input name="cuttingCount" type="number" placeholder="2" />
+      </view>
+      <view class="form-item">
+        <text class="label">开料设备品牌</text>
+        <input name="cuttingBrand" placeholder="豪迈 / 南兴 / 极东" />
+      </view>
+      <view class="form-item">
+        <text class="label">打孔设备（几台）</text>
+        <input name="drillingCount" type="number" placeholder="1" />
+      </view>
+      <view class="form-item">
+        <text class="label">打孔设备品牌</text>
+        <input name="drillingBrand" placeholder="豪迈六面钻 / 南兴六面钻" />
       </view>
       <view class="form-item">
         <text class="label">现使用软件</text>
         <input name="software" placeholder="酷家乐 + Excel排产" />
+      </view>
+      <view class="form-item">
+        <text class="label">软件版本价格</text>
+        <input name="softwarePrice" placeholder="基础版 / 每年3万 / 一次性买断" />
       </view>
       <view class="form-item">
         <text class="label">市场状态</text>
@@ -63,13 +78,12 @@
       </view>
 
       <view class="location-box">
-        <view>经纬度：{{locationReady ? latitude + ', ' + longitude : '正在定位 / 待定位'}}</view>
-        <view>城市：{{currentCity || '待解析'}}</view>
-        <view>地址：{{currentAddress || '自动解析失败时请点选择位置'}}</view>
+        <view>经纬度：{{locationReady ? latitude + ', ' + longitude : '待选择位置'}}</view>
+        <view>城市：{{currentCity || '待选择'}}</view>
+        <view>地址：{{currentAddress || '点击选择位置后自动带入'}}</view>
       </view>
 
       <view class="location-actions">
-        <button class="plain-btn" type="button" bindtap="locate" loading="{{locating}}">重新定位</button>
         <button class="plain-btn" type="button" bindtap="chooseLocation">选择位置</button>
       </view>
       <button class="primary-btn submit-visit-btn" form-type="submit">上传打卡</button>
@@ -81,11 +95,13 @@
     <view class="visit" wx:for="{{visits}}" wx:key="id">
       <view class="row">
         <text class="visit-title">{{item.factory}}</text>
-        <text class="tag {{item.status === '已成交' ? 'sold' : ''}}">{{item.status}}</text>
+        <text class="tag {{item.status === '成交' || item.status === '已成交' ? 'sold' : ''}}">{{item.status}}</text>
       </view>
       <view class="muted">{{item.city || '未知城市'}} · {{item.address || '暂无地址'}}</view>
-      <view class="muted">拜访人：{{item.owner || '未记录'}} · {{item.line}}</view>
-      <view class="muted">{{item.software}} · {{item.date}}</view>
+      <view class="muted">拜访人：{{item.owner || '未记录'}} · {{item.date}}</view>
+      <view class="muted">开料：{{item.cuttingCount || '-'}}台 · {{item.cuttingBrand || '待补充'}}</view>
+      <view class="muted">打孔：{{item.drillingCount || '-'}}台 · {{item.drillingBrand || '待补充'}}</view>
+      <view class="muted">{{item.software || '待补充'}} · {{item.softwarePrice || '价格待补充'}}</view>
       <scroll-view wx:if="{{item.photos && item.photos.length}}" class="visit-photos" scroll-x>
         <image wx:for="{{item.photos}}" wx:key="*this" src="{{item}}" mode="aspectFill" bindtap="previewPhoto" data-src="{{item}}"></image>
       </scroll-view>

@@ -6,6 +6,7 @@
     <meta name="theme-color" content="#1f2d3d" />
     <title>智销AI - 全屋定制行业 AI CRM</title>
     <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -104,21 +105,13 @@
           <div class="field-layout">
             <section class="map-panel">
               <div class="map-canvas" id="mapCanvas"></div>
-              <div class="map-legend"><span><i class="green"></i>已拜访/跟进中</span><span><i class="red"></i>已成交</span></div>
-            </section>
-            <section class="panel">
-              <div class="panel-title"><h2>上传打卡</h2><span>照片、定位、工厂信息会同步到小程序</span></div>
-              <form class="form-stack" id="visitForm">
-                <label>工厂名头<input name="factory" placeholder="杭州雅居全屋定制工厂" required /></label>
-                <label>生产线/设备<input name="line" placeholder="电子锯2台 / 封边机3台 / 六面钻1台" /></label>
-                <label>现使用软件<input name="software" placeholder="酷家乐 + Excel排产" /></label>
-                <label>市场状态<select name="status"><option>待攻克</option><option selected>跟进中</option><option>已成交</option></select></label>
-                <label>现场图片<input name="photos" type="file" accept="image/*" multiple /></label>
-                <div class="button-row"><button type="button" id="locateBtn">定位</button><button class="primary" type="submit">上传打卡</button></div>
-                <p class="muted" id="locationText">请先定位后打卡，系统不会使用默认城市位置。</p>
-              </form>
+              <div class="map-legend"><span><i class="green"></i>名单/线索/商机</span><span><i class="red"></i>成交</span></div>
             </section>
           </div>
+          <section class="panel">
+            <div class="panel-title"><h2>市场占有率总览</h2><span>小程序打卡后自动同步点位和客户阶段</span></div>
+            <div class="market-summary" id="fieldSummaryCards"></div>
+          </section>
           <section class="panel">
             <div class="panel-title"><h2>最近拜访</h2><span>绿色点为已拜访，红色点为成交客户</span></div>
             <div class="visit-list" id="visitList"></div>
@@ -195,6 +188,7 @@
     </dialog>
 
     <div class="toast" id="toast"></div>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

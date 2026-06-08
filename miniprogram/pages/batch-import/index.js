@@ -5,6 +5,7 @@ Page({
     stages: ["名单", "线索", "商机", "成交"],
     stageIndex: 0,
     owners: [],
+    ownerUsers: [],
     ownerIndex: 0,
     filePath: "",
     fileName: ""
@@ -14,11 +15,12 @@ Page({
     if (!app.ensureLogin()) return;
     const state = app.getState();
     const currentUser = app.getCurrentUser();
-    const owners = currentUser.role === "销售"
-      ? [currentUser.name]
-      : state.users.filter((user) => user.role === "销售").map((user) => user.name);
+    const ownerUsers = currentUser.role === "销售"
+      ? [currentUser]
+      : state.users.filter((user) => user.role === "销售");
+    const owners = ownerUsers.map((user) => user.name);
     const stageIndex = Math.max(0, this.data.stages.indexOf(options.stage || "名单"));
-    this.setData({ owners, stageIndex });
+    this.setData({ owners, ownerUsers, stageIndex });
   },
 
   onStage(event) {
@@ -41,6 +43,7 @@ Page({
     const state = app.getState();
     const stage = this.data.stages[this.data.stageIndex];
     const owner = this.data.owners[this.data.ownerIndex];
+    const ownerUser = this.data.ownerUsers[this.data.ownerIndex] || {};
     rows.forEach((line, index) => {
       const [name, phone = "待补充", region = "待分区", amount = "15", software = "待补充"] = line.split(/,|，|\t/).map((item) => item.trim());
       state.customers.unshift({
@@ -49,6 +52,7 @@ Page({
         phone,
         stage,
         owner,
+        ownerId: ownerUser.id || "",
         region,
         amount: Number(amount) || 15,
         software,
@@ -84,7 +88,8 @@ Page({
       name: "file",
       formData: {
         stage: this.data.stages[this.data.stageIndex],
-        owner: this.data.owners[this.data.ownerIndex]
+        owner: this.data.owners[this.data.ownerIndex],
+        ownerId: (this.data.ownerUsers[this.data.ownerIndex] || {}).id || ""
       },
       success: (res) => {
         wx.hideLoading();

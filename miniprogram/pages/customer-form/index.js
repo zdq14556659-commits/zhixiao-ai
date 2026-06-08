@@ -5,6 +5,7 @@ Page({
     stages: ["名单", "线索", "商机", "成交"],
     stageIndex: 0,
     owners: [],
+    ownerUsers: [],
     ownerIndex: 0,
     nextFollow: "2026-06-05"
   },
@@ -13,11 +14,12 @@ Page({
     if (!app.ensureLogin()) return;
     const state = app.getState();
     const currentUser = app.getCurrentUser();
-    const owners = currentUser.role === "销售"
-      ? [currentUser.name]
-      : state.users.filter((user) => user.role === "销售").map((user) => user.name);
+    const ownerUsers = currentUser.role === "销售"
+      ? [currentUser]
+      : state.users.filter((user) => user.role === "销售");
+    const owners = ownerUsers.map((user) => user.name);
     const stageIndex = Math.max(0, this.data.stages.indexOf(options.stage || "名单"));
-    this.setData({ owners, stageIndex, nextFollow: app.globalData.today });
+    this.setData({ owners, ownerUsers, stageIndex, nextFollow: app.globalData.today });
   },
 
   onStage(event) {
@@ -38,12 +40,14 @@ Page({
       wx.showToast({ title: "请填写客户和手机号", icon: "none" });
       return;
     }
+    const ownerUser = this.data.ownerUsers[this.data.ownerIndex] || {};
     const customer = {
       id: Date.now(),
       name: form.name,
       phone: form.phone,
       stage: this.data.stages[this.data.stageIndex],
       owner: this.data.owners[this.data.ownerIndex],
+      ownerId: ownerUser.id || "",
       region: form.region || "待分区",
       amount: Number(form.amount) || 15,
       software: form.software || "待补充",

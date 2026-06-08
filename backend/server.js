@@ -143,6 +143,7 @@ async function routeApi(req, res, url) {
     const state = readState();
     const visit = normalizeVisit({ id: Date.now(), date: today(), photos: [], ...body });
     state.visits.unshift(visit);
+    syncVisitToCustomer(state, visit);
     writeState(state);
     return sendJson(res, 201, visit);
   }
@@ -318,6 +319,7 @@ function normalizeCustomer(customer) {
     phone: customer.phone || "待补充",
     stage: customer.stage || "名单",
     owner: customer.owner || "林晨",
+    ownerId: customer.ownerId || "",
     region: customer.region || "待分区",
     amount: Number(customer.amount || 15),
     software: customer.software || "待补充",
@@ -330,9 +332,14 @@ function normalizeVisit(visit = {}) {
   return {
     id: Number(visit.id || Date.now()),
     factory: visit.factory || "",
-    line: visit.line || "待补充",
+    cuttingCount: visit.cuttingCount || "",
+    cuttingBrand: visit.cuttingBrand || "",
+    drillingCount: visit.drillingCount || "",
+    drillingBrand: visit.drillingBrand || "",
+    line: visit.line || buildVisitLine(visit) || "待补充",
     software: visit.software || "待补充",
-    status: visit.status || "跟进中",
+    softwarePrice: visit.softwarePrice || "",
+    status: normalizeVisitStage(visit.status),
     latitude: Number(visit.latitude || 0),
     longitude: Number(visit.longitude || 0),
     city: visit.city || "",
@@ -342,6 +349,87 @@ function normalizeVisit(visit = {}) {
     photos: Array.isArray(visit.photos) ? visit.photos : [],
     date: visit.date || today()
   };
+}
+
+function normalizeVisitStage(status) {
+  if (STAGES.includes(status)) return status;
+  const legacy = {
+    待攻克: "名单",
+    跟进中: "线索",
+    已成交: "成交"
+  };
+  return legacy[status] || "线索";
+}
+
+function buildVisitLine(visit = {}) {
+  const parts = [];
+  if (visit.cuttingCount || visit.cuttingBrand) {
+    parts.push(`开料设备${visit.cuttingCount || 0}台${visit.cuttingBrand ? ` · ${visit.cuttingBrand}` : ""}`);
+  }
+  if (visit.drillingCount || visit.drillingBrand) {
+    parts.push(`打孔设备${visit.drillingCount || 0}台${visit.drillingBrand ? ` · ${visit.drillingBrand}` : ""}`);
+  }
+  return parts.join(" / ");
+}
+
+function syncVisitToCustomer(state, visit) {
+  const factory = String(visit.factory || "").trim();
+  if (!factory) return;
+  const stage = normalizeVisitStage(visit.status);
+  const owner = visit.owner || "未分配";
+  const ownerId = visit.ownerId || "";
+  const note = [
+    `地推打卡：${visit.address || visit.city || "未记录地址"}`,
+    `开料设备：${visit.cuttingCount || "-"}台 ${visit.cuttingBrand || "待补充"}`,
+    `打孔设备：${visit.drillingCount || "-"}台 ${visit.drillingBrand || "待补充"}`,
+    `现用软件：${visit.software || "待补充"}${visit.softwarePrice ? `，版本价格：${visit.softwarePrice}` : ""}`
+  ].join("；");
+  const sameOwner = (customer) => customer.owner === owner || (ownerId && customer.ownerId === ownerId);
+  const index = (state.customers || []).findIndex((customer) => cleanText(customer.name) === cleanText(factory) && sameOwner(customer));
+
+  if (index < 0) {
+    const customer = normalizeCustomer({
+      id: Date.now() + 1,
+      name: factory,
+      phone: "待补充",
+      stage,
+      owner,
+      ownerId,
+      region: visit.city || visit.address || "待分区",
+      amount: 15,
+      software: visit.software || "待补充",
+      createdAt: visit.date || today(),
+      lastFollow: visit.date || today(),
+      nextFollow: "",
+      lastNote: note
+    });
+    state.customers.unshift(customer);
+    state.activities.push({ date: visit.date || today(), owner, type: stage, customerId: customer.id });
+    return;
+  }
+
+  const previousStage = state.customers[index].stage;
+  const customer = normalizeCustomer({
+    ...state.customers[index],
+    stage,
+    owner,
+    region: visit.city || state.customers[index].region,
+    software: visit.software || state.customers[index].software
+  });
+  const latestFollow = customer.followUps[customer.followUps.length - 1] || {};
+  customer.followUps.push({
+    date: visit.date || today(),
+    note,
+    nextFollow: latestFollow.nextFollow || ""
+  });
+  state.customers[index] = customer;
+  if (previousStage !== stage) {
+    state.activities.push({ date: visit.date || today(), owner, type: stage, customerId: customer.id });
+  }
+}
+
+function cleanText(value) {
+  return String(value || "").trim().toLowerCase();
 }
 
 function publicState(state) {
@@ -490,6 +578,7 @@ async function importCustomers(req) {
   const multipart = await parseMultipart(req);
   const stage = multipart.fields.stage || "名单";
   const owner = multipart.fields.owner || "林晨";
+  const ownerId = multipart.fields.ownerId || "";
   const text = multipart.files[0] ? multipart.files[0].buffer.toString("utf8") : multipart.fields.rows || "";
   const rows = parseCustomerRows(text);
   const state = readState();
@@ -500,6 +589,7 @@ async function importCustomers(req) {
       phone: row.phone,
       stage,
       owner,
+      ownerId,
       region: row.region,
       amount: row.amount,
       software: row.software,

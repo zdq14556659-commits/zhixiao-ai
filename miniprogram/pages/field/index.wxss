@@ -118,8 +118,7 @@
 
 .location-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16rpx;
+  grid-template-columns: 1fr;
 }
 
 .submit-visit-btn {

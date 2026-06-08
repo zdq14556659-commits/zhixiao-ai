@@ -22,14 +22,16 @@ Page({
     const state = app.getState();
     const currentUser = app.getCurrentUser();
     const isSales = currentUser.role === "销售";
-    const customers = isSales ? state.customers.filter((item) => item.owner === currentUser.name) : state.customers;
+    const customers = isSales
+      ? state.customers.filter((item) => item.ownerId === currentUser.id || item.owner === currentUser.name)
+      : state.customers;
     const signed = customers.filter((item) => item.stage === "成交");
     const payment = signed.reduce((sum, item) => sum + Number(item.amount || 0), 0) * 2.8;
     const sales = state.users.filter((user) => user.role === "销售");
     const best = sales
       .map((user) => ({
         name: user.name,
-        score: state.customers.filter((customer) => customer.owner === user.name && ["商机", "成交"].includes(customer.stage)).length
+        score: state.customers.filter((customer) => (customer.ownerId === user.id || customer.owner === user.name) && ["商机", "成交"].includes(customer.stage)).length
       }))
       .sort((a, b) => b.score - a.score)[0];
     const alerts = customers

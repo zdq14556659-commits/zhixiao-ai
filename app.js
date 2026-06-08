@@ -9,16 +9,20 @@ const adminRoles = ["主管", "区域经理", "运营", "管理员"];
 let state = { users: [], customers: [], visits: [], knowledge: [], stages };
 let currentStage = "名单";
 let currentView = "dashboard";
-let currentLocation = {
-  latitude: 35.86166,
-  longitude: 104.195397,
-  city: "",
-  address: "",
-  ready: false
-};
+let fieldMap = null;
+let fieldLayer = null;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
 
 function session() {
   try {
@@ -36,6 +40,14 @@ function currentUser() {
   const active = session()?.user;
   if (!active) return {};
   return state.users.find((user) => user.id === active.id) || active;
+}
+
+function userByName(name) {
+  return state.users.find((user) => user.name === name) || {};
+}
+
+function ownsRecord(record, user) {
+  return record.ownerId === user.id || record.owner === user.name;
 }
 
 async function api(path, options = {}) {
@@ -102,13 +114,13 @@ function logout() {
 
 function scopeCustomers() {
   const user = currentUser();
-  return user.role === "销售" ? state.customers.filter((item) => item.owner === user.name) : state.customers;
+  return user.role === "销售" ? state.customers.filter((item) => ownsRecord(item, user)) : state.customers;
 }
 
 function scopeVisits() {
   const user = currentUser();
   return user.role === "销售"
-    ? (state.visits || []).filter((item) => item.ownerId === user.id || item.owner === user.name)
+    ? (state.visits || []).filter((item) => ownsRecord(item, user))
     : state.visits || [];
 }
 
@@ -244,6 +256,7 @@ async function saveCustomer(event) {
     phone: String(form.get("phone")).trim(),
     stage: String(form.get("stage")),
     owner: String(form.get("owner")),
+    ownerId: userByName(String(form.get("owner"))).id || "",
     region: String(form.get("region") || "待分区"),
     amount: Number(form.get("amount") || 15),
     software: String(form.get("software") || "待补充"),
@@ -280,13 +293,14 @@ async function batchImport(event) {
   if (event.submitter?.value === "cancel") return $("#batchDialog").close();
   const form = new FormData(event.currentTarget);
   const owner = String(form.get("owner"));
+  const ownerId = userByName(owner).id || "";
   const rows = String(form.get("rows"))
     .split(/\n+/)
     .map((line) => line.trim())
     .filter(Boolean);
   rows.forEach((line, index) => {
     const [name, phone = "待补充", region = "待分区", amount = "15", software = "待补充"] = line.split(/,|，|\t/).map((part) => part.trim());
-    state.customers.unshift({ id: Date.now() + index, name, phone, region, amount: Number(amount) || 15, software, owner, stage: currentStage, createdAt: today, lastFollow: today, nextFollow: today, lastNote: "批量导入客户。" });
+    state.customers.unshift({ id: Date.now() + index, name, phone, region, amount: Number(amount) || 15, software, owner, ownerId, stage: currentStage, createdAt: today, lastFollow: today, nextFollow: today, lastNote: "批量导入客户。" });
   });
   await saveState();
   $("#batchDialog").close();
@@ -294,96 +308,127 @@ async function batchImport(event) {
   toast(`已导入 ${rows.length} 个`);
 }
 
-function markerPosition(visit) {
-  const longitude = Number(visit.longitude || 105);
-  const latitude = Number(visit.latitude || 35);
-  return {
-    left: Math.min(Math.max(((longitude - 73) / 62) * 100, 5), 95),
-    top: Math.min(Math.max(((54 - latitude) / 36) * 100, 8), 92)
-  };
+function isSoldStatus(status) {
+  return status === "成交" || status === "已成交";
+}
+
+function displayVisitStatus(status) {
+  const legacy = { 待攻克: "名单", 跟进中: "线索", 已成交: "成交" };
+  return legacy[status] || status || "线索";
+}
+
+function visitDeviceLine(visit) {
+  const cutting = visit.cuttingCount || visit.cuttingBrand
+    ? `开料${visit.cuttingCount || "-"}台 · ${visit.cuttingBrand || "待补充"}`
+    : "";
+  const drilling = visit.drillingCount || visit.drillingBrand
+    ? `打孔${visit.drillingCount || "-"}台 · ${visit.drillingBrand || "待补充"}`
+    : "";
+  return [cutting, drilling].filter(Boolean).join(" / ") || visit.line || "设备待补充";
+}
+
+function validVisitLocation(visit) {
+  return Number(visit.latitude) && Number(visit.longitude);
+}
+
+function initFieldMap() {
+  const node = $("#mapCanvas");
+  if (!node || !window.L) {
+    if (node) node.innerHTML = '<div class="map-empty">地图资源加载中，请稍后刷新</div>';
+    return false;
+  }
+  if (fieldMap) {
+    setTimeout(() => fieldMap.invalidateSize(), 0);
+    return true;
+  }
+  fieldMap = L.map(node, {
+    zoomControl: true,
+    attributionControl: true
+  }).setView([35.86166, 104.195397], 5);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 18,
+    attribution: "&copy; OpenStreetMap"
+  }).addTo(fieldMap);
+  fieldLayer = L.layerGroup().addTo(fieldMap);
+  return true;
+}
+
+function renderFieldSummary(visits) {
+  const summaryNode = $("#fieldSummaryCards");
+  if (!summaryNode) return;
+  const located = visits.filter(validVisitLocation);
+  const sold = visits.filter((visit) => isSoldStatus(visit.status));
+  const cities = Object.entries(
+    visits.reduce((map, visit) => {
+      const city = visit.city || "未知城市";
+      map[city] = (map[city] || 0) + 1;
+      return map;
+    }, {})
+  )
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6);
+  const stageCards = stages.map((stage) => ({
+    name: stage,
+    count: visits.filter((visit) => displayVisitStatus(visit.status) === stage).length
+  }));
+  summaryNode.innerHTML = [
+    `<article><span>已打卡工厂</span><strong>${visits.length}</strong><small>其中 ${located.length} 家有地图点位</small></article>`,
+    `<article><span>成交工厂</span><strong>${sold.length}</strong><small>地图上显示为红点</small></article>`,
+    ...stageCards.map((item) => `<article><span>${item.name}</span><strong>${item.count}</strong><small>客户阶段同步统计</small></article>`),
+    ...cities.map(([city, count]) => `<article><span>${city}</span><strong>${count}</strong><small>城市拜访分布</small></article>`)
+  ].join("");
+}
+
+function renderFieldMap(visits) {
+  if (currentView !== "field" || !initFieldMap()) return;
+  fieldLayer.clearLayers();
+  const bounds = [];
+  visits.filter(validVisitLocation).forEach((visit) => {
+    const latitude = Number(visit.latitude);
+    const longitude = Number(visit.longitude);
+    const sold = isSoldStatus(visit.status);
+    const marker = L.circleMarker([latitude, longitude], {
+      radius: 7,
+      color: "#ffffff",
+      weight: 2,
+      fillColor: sold ? "#f56c6c" : "#67c23a",
+      fillOpacity: 0.95
+    });
+    marker.bindPopup(`
+      <strong>${escapeHtml(visit.factory || "未命名工厂")}</strong>
+      <p>${escapeHtml(displayVisitStatus(visit.status))} · ${escapeHtml(visit.city || "未知城市")}</p>
+      <p>${escapeHtml(visit.address || "")}</p>
+      <p>${escapeHtml(visitDeviceLine(visit))}</p>
+      <p>${escapeHtml(visit.software || "待补充")} ${visit.softwarePrice ? `· ${escapeHtml(visit.softwarePrice)}` : ""}</p>
+    `);
+    marker.addTo(fieldLayer);
+    bounds.push([latitude, longitude]);
+  });
+  if (bounds.length) fieldMap.fitBounds(bounds, { padding: [36, 36], maxZoom: 12 });
+  else fieldMap.setView([35.86166, 104.195397], 5);
+  setTimeout(() => fieldMap.invalidateSize(), 0);
 }
 
 function renderField() {
   const visits = scopeVisits();
-  $("#mapCanvas").innerHTML = visits
-    .filter((visit) => visit.latitude && visit.longitude)
-    .map((visit) => {
-      const pos = markerPosition(visit);
-      return `<button class="map-dot ${visit.status === "已成交" ? "sold" : ""}" style="left:${pos.left}%;top:${pos.top}%" title="${visit.factory}"><span>${visit.factory}</span></button>`;
-    })
-    .join("");
-  $("#visitList").innerHTML = visits
-    .slice(0, 10)
-    .map((visit) => `<article><b>${visit.factory}</b><span class="${visit.status === "已成交" ? "sold-text" : ""}">${visit.status}</span><p>${visit.city || "未知城市"} · ${visit.address || ""}</p><p>${visit.line} · ${visit.software}</p>${(visit.photos || []).map((url) => `<img src="${url}" alt="${visit.factory}" />`).join("")}</article>`)
-    .join("");
-}
-
-async function locate() {
-  if (!navigator.geolocation) return toast("当前浏览器不支持定位");
-  return new Promise((resolve) => {
-    navigator.geolocation.getCurrentPosition(async (position) => {
-      currentLocation.latitude = Number(position.coords.latitude.toFixed(6));
-      currentLocation.longitude = Number(position.coords.longitude.toFixed(6));
-      currentLocation.ready = true;
-      try {
-        const result = await api(`/amap/regeo?longitude=${currentLocation.longitude}&latitude=${currentLocation.latitude}`);
-        currentLocation.city = result.city || "";
-        currentLocation.address = result.address || "";
-      } catch {}
-      $("#locationText").textContent = `${currentLocation.latitude}, ${currentLocation.longitude} · ${currentLocation.city || "地址待解析"}`;
-      toast("定位成功");
-      resolve(true);
-    }, () => {
-      toast("定位失败，请检查浏览器权限");
-      resolve(false);
-    }, {
-      enableHighAccuracy: true,
-      timeout: 8000,
-      maximumAge: 0
-    });
-  });
-}
-
-async function uploadFiles(files) {
-  const urls = [];
-  for (const file of files) {
-    const form = new FormData();
-    form.append("file", file);
-    const uploaded = await api("/uploads", { method: "POST", body: form });
-    urls.push(uploaded.url.startsWith("http") ? uploaded.url : `${location.origin}${uploaded.url}`);
-  }
-  return urls;
-}
-
-async function submitVisit(event) {
-  event.preventDefault();
-  const form = new FormData(event.currentTarget);
-  if (!currentLocation.ready) {
-    toast("请先定位，不能使用默认位置打卡");
-    await locate();
-    if (!currentLocation.ready) return;
-  }
-  const photos = await uploadFiles(form.getAll("photos").filter((file) => file.size));
-  await api("/visits", {
-    method: "POST",
-    body: {
-      factory: form.get("factory"),
-      line: form.get("line") || "待补充",
-      software: form.get("software") || "待补充",
-      status: form.get("status"),
-      latitude: currentLocation.latitude,
-      longitude: currentLocation.longitude,
-      city: currentLocation.city,
-      address: currentLocation.address,
-      owner: currentUser().name,
-      ownerId: currentUser().id,
-      photos,
-      date: today
-    }
-  });
-  event.currentTarget.reset();
-  await loadState();
-  toast("地推打卡已上传");
+  renderFieldSummary(visits);
+  renderFieldMap(visits);
+  $("#visitList").innerHTML = visits.length
+    ? visits
+        .slice(0, 12)
+        .map((visit) => {
+          const status = displayVisitStatus(visit.status);
+          return `<article>
+            <b>${escapeHtml(visit.factory || "未命名工厂")}</b>
+            <span class="${isSoldStatus(status) ? "sold-text" : ""}">${escapeHtml(status)}</span>
+            <p>${escapeHtml(visit.city || "未知城市")} · ${escapeHtml(visit.address || "")}</p>
+            <p>${escapeHtml(visitDeviceLine(visit))}</p>
+            <p>${escapeHtml(visit.software || "待补充")}${visit.softwarePrice ? ` · ${escapeHtml(visit.softwarePrice)}` : ""} · ${escapeHtml(visit.date || "")}</p>
+            ${(visit.photos || []).map((url) => `<img src="${escapeHtml(url)}" alt="${escapeHtml(visit.factory || "现场图片")}" />`).join("")}
+          </article>`;
+        })
+        .join("")
+    : `<div class="empty">暂无地推拜访数据，请先在小程序选择位置并上传打卡。</div>`;
 }
 
 function renderAssistant() {
@@ -457,8 +502,6 @@ function wireEvents() {
   });
   $("#customerForm").addEventListener("submit", saveCustomer);
   $("#batchForm").addEventListener("submit", batchImport);
-  $("#locateBtn").addEventListener("click", locate);
-  $("#visitForm").addEventListener("submit", submitVisit);
   $("#recommendBtn").addEventListener("click", recommend);
   $("#knowledgeForm").addEventListener("submit", addKnowledge);
   $("#userForm").addEventListener("submit", addUser);

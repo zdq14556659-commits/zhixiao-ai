@@ -7,8 +7,7 @@ Page({
     currentCity: "",
     currentAddress: "",
     locationReady: false,
-    locating: false,
-    statuses: ["待攻克", "跟进中", "已成交"],
+    statuses: ["名单", "线索", "商机", "成交"],
     statusIndex: 1,
     visits: [],
     markers: [],
@@ -22,7 +21,6 @@ Page({
     app.loadRemoteState(() => {
       this.setData({ currentUser: app.getCurrentUser() });
       this.loadVisits();
-      if (!this.data.locationReady) this.locate({ silent: true });
     });
   },
 
@@ -48,7 +46,7 @@ Page({
           latitude: item.latitude,
           longitude: item.longitude,
           title: item.factory,
-          iconPath: item.status === "已成交" ? "/assets/marker-red.png" : "/assets/marker-green.png",
+          iconPath: this.isSold(item.status) ? "/assets/marker-red.png" : "/assets/marker-green.png",
           width: 18,
           height: 18,
           callout: {
@@ -88,57 +86,6 @@ Page({
     wx.previewImage({ current, urls });
   },
 
-  locate(options = {}) {
-    const silent = Boolean(options.silent);
-    this.setData({ locating: true });
-    return new Promise((resolve, reject) => {
-      wx.getLocation({
-        type: "gcj02",
-        isHighAccuracy: true,
-        highAccuracyExpireTime: 5000,
-        success: async (res) => {
-          const latitude = Number(res.latitude.toFixed(6));
-          const longitude = Number(res.longitude.toFixed(6));
-          this.setData({ latitude, longitude, locationReady: true });
-          await this.reverseGeocode(longitude, latitude);
-          if (!silent) wx.showToast({ title: "定位成功" });
-          resolve({ latitude, longitude });
-        },
-        fail: (error) => {
-          if (!silent) wx.showToast({ title: "定位失败，请检查权限", icon: "none" });
-          reject(error);
-        },
-        complete: () => {
-          this.setData({ locating: false });
-        }
-      });
-    });
-  },
-
-  reverseGeocode(longitude, latitude) {
-    return new Promise((resolve) => {
-      wx.request({
-        url: `${app.globalData.apiBase}/amap/regeo`,
-        data: { longitude, latitude },
-        success: (res) => {
-          if (res.data.error) {
-            wx.showToast({ title: "地址解析未配置，请选择位置", icon: "none" });
-          }
-          const address = res.data.address || "";
-          this.setData({
-            currentCity: res.data.city || this.extractCity(address),
-            currentAddress: address
-          });
-          resolve(res.data || {});
-        },
-        fail: () => {
-          wx.showToast({ title: "地址解析失败", icon: "none" });
-          resolve({});
-        }
-      });
-    });
-  },
-
   chooseLocation() {
     wx.chooseLocation({
       latitude: this.data.latitude,
@@ -170,39 +117,47 @@ Page({
     return city ? city[1] : "";
   },
 
+  isSold(status) {
+    return status === "成交" || status === "已成交";
+  },
+
+  buildDeviceLine(form) {
+    const cutting = `开料设备${form.cuttingCount || "0"}台${form.cuttingBrand ? ` · ${form.cuttingBrand}` : ""}`;
+    const drilling = `打孔设备${form.drillingCount || "0"}台${form.drillingBrand ? ` · ${form.drillingBrand}` : ""}`;
+    return `${cutting} / ${drilling}`;
+  },
+
   async submitVisit(event) {
     const form = event.detail.value;
     if (!form.factory) {
-      wx.showToast({ title: "请填写工厂名头", icon: "none" });
+      wx.showToast({ title: "请填写工厂名称", icon: "none" });
       return;
     }
     if (!this.data.photos.length) {
       wx.showToast({ title: "请至少上传1张现场图片", icon: "none" });
       return;
     }
-    if (this.data.locationReady && !this.data.currentCity && !this.data.currentAddress) {
+    if (!this.data.locationReady || !this.data.currentAddress) {
       wx.showModal({
-        title: "地址未解析",
-        content: "当前只有经纬度，没有城市地址。请点“选择位置”确认工厂位置后再上传。",
+        title: "未选择位置",
+        content: "请先点“选择位置”，在地图上确认工厂位置后再上传打卡。",
         showCancel: false
       });
       return;
     }
 
-    wx.showLoading({ title: "定位中" });
     try {
-      if (!this.data.locationReady) {
-        await this.locate({ silent: true });
-      }
-      if (!this.data.currentCity && !this.data.currentAddress) {
-        throw new Error("当前只有经纬度，没有城市地址。请点“选择位置”确认工厂位置后再上传。");
-      }
       wx.showLoading({ title: "上传中" });
       const photoUrls = await this.uploadPhotos(this.data.photos);
       const visit = {
         factory: form.factory,
-        line: form.line || "待补充",
+        cuttingCount: form.cuttingCount || "",
+        cuttingBrand: form.cuttingBrand || "待补充",
+        drillingCount: form.drillingCount || "",
+        drillingBrand: form.drillingBrand || "待补充",
         software: form.software || "待补充",
+        softwarePrice: form.softwarePrice || "待补充",
+        line: this.buildDeviceLine(form),
         status: this.data.statuses[this.data.statusIndex],
         latitude: this.data.latitude,
         longitude: this.data.longitude,
@@ -224,10 +179,8 @@ Page({
       wx.showToast({ title: "已上传" });
     } catch (error) {
       wx.showModal({
-        title: this.data.locationReady ? "上传失败" : "定位失败",
-        content: this.data.locationReady
-          ? error.message || "请确认地址已解析，或使用“选择位置”确认工厂地址。"
-          : "请打开手机定位权限后重新打卡，不能使用默认城市位置。",
+        title: "上传失败",
+        content: error.message || "请确认图片和位置都已选择后再上传。",
         showCancel: false
       });
     } finally {
