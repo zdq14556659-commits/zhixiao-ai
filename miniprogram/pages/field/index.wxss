@@ -116,8 +116,15 @@
   font-size: 25rpx;
 }
 
-.field-page .actions {
-  grid-template-columns: repeat(3, 1fr);
+.location-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16rpx;
+}
+
+.submit-visit-btn {
+  width: 100%;
+  margin-top: 16rpx;
 }
 
 .visit {
