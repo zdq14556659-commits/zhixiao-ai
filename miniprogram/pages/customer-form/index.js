@@ -14,9 +14,7 @@ Page({
     if (!app.ensureLogin()) return;
     const state = app.getState();
     const currentUser = app.getCurrentUser();
-    const ownerUsers = currentUser.role === "销售"
-      ? [currentUser]
-      : state.users.filter((user) => user.role === "销售");
+    const ownerUsers = app.visibleSales();
     const owners = ownerUsers.map((user) => user.name);
     const stageIndex = Math.max(0, this.data.stages.indexOf(options.stage || "名单"));
     this.setData({ owners, ownerUsers, stageIndex, nextFollow: app.globalData.today });
@@ -48,6 +46,9 @@ Page({
       stage: this.data.stages[this.data.stageIndex],
       owner: this.data.owners[this.data.ownerIndex],
       ownerId: ownerUser.id || "",
+      unitId: ownerUser.unitId || "",
+      unit: ownerUser.unit || "",
+      zone: ownerUser.zone || "",
       region: form.region || "待分区",
       amount: Number(form.amount) || 15,
       software: form.software || "待补充",

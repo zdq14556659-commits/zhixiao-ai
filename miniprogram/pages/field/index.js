@@ -25,12 +25,7 @@ Page({
   },
 
   loadVisits() {
-    const state = app.getState();
-    const currentUser = app.getCurrentUser();
-    const allVisits = state.visits || [];
-    const visits = currentUser.role === "销售"
-      ? allVisits.filter((item) => item.ownerId === currentUser.id || item.owner === currentUser.name)
-      : allVisits;
+    const visits = app.scopeVisits();
     const cityMap = visits.reduce((map, item) => {
       const city = item.city || "未知城市";
       map[city] = (map[city] || 0) + 1;
@@ -149,6 +144,7 @@ Page({
     try {
       wx.showLoading({ title: "上传中" });
       const photoUrls = await this.uploadPhotos(this.data.photos);
+      const currentUser = this.data.currentUser;
       const visit = {
         factory: form.factory,
         cuttingCount: form.cuttingCount || "",
@@ -163,8 +159,11 @@ Page({
         longitude: this.data.longitude,
         city: this.data.currentCity,
         address: this.data.currentAddress,
-        owner: this.data.currentUser.name,
-        ownerId: this.data.currentUser.id,
+        owner: currentUser.name,
+        ownerId: currentUser.id,
+        unitId: currentUser.unitId || "",
+        unit: currentUser.unit || "",
+        zone: currentUser.zone || "",
         photos: photoUrls,
         date: app.globalData.today
       };

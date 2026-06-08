@@ -16,7 +16,27 @@ const UPLOAD_DIR = process.env.UPLOAD_DIR ? path.resolve(process.env.UPLOAD_DIR)
 const FALLBACK_SEED_FILE = path.join(__dirname, "data", "seed.json");
 const PUBLIC_ROOT = path.resolve(__dirname, "..");
 const STAGES = ["名单", "线索", "商机", "成交"];
-const ADMIN_ROLES = ["主管", "区域经理", "运营", "管理员"];
+const ZONES = ["东部战区", "南部战区", "西部战区", "北部战区", "中部战区"];
+const ADMIN_ROLES = ["总负责人", "运营", "管理员"];
+const DEFAULT_PERMISSIONS = ["dashboard", "customers", "field", "assistant"];
+const ADMIN_PERMISSIONS = [...DEFAULT_PERMISSIONS, "admin"];
+const DEFAULT_ROLES = [
+  { id: "role-owner", name: "总负责人", customerScope: "all", permissions: ADMIN_PERMISSIONS },
+  { id: "role-region", name: "区域经理", customerScope: "zone", permissions: DEFAULT_PERMISSIONS },
+  { id: "role-supervisor", name: "主管", customerScope: "unit", permissions: DEFAULT_PERMISSIONS },
+  { id: "role-sales", name: "销售", customerScope: "self", permissions: DEFAULT_PERMISSIONS },
+  { id: "role-ops", name: "运营", customerScope: "all", permissions: ADMIN_PERMISSIONS },
+  { id: "role-admin", name: "管理员", customerScope: "all", permissions: ADMIN_PERMISSIONS }
+];
+const DEFAULT_UNITS = [
+  { id: "unit-east-custom", name: "华东定制产业带", zone: "东部战区" },
+  { id: "unit-south-custom", name: "华南定制产业带", zone: "南部战区" },
+  { id: "unit-west-custom", name: "西部定制产业带", zone: "西部战区" },
+  { id: "unit-north-custom", name: "北部定制产业带", zone: "北部战区" },
+  { id: "unit-central-channel", name: "中部渠道一部", zone: "中部战区" },
+  { id: "unit-national-channel", name: "全国渠道一部", zone: "中部战区" },
+  { id: "unit-hq-growth", name: "总部增长运营", zone: "中部战区" }
+];
 const DEMO_ACCOUNTS = {
   林晨: "linchen",
   周扬: "zhouyang",
@@ -71,7 +91,7 @@ async function routeApi(req, res, url) {
     return sendJson(res, 200, {
       token: makeToken(user),
       user: publicUser(user),
-      state: toMiniState(state)
+      state: toMiniState(state, user)
     });
   }
 
@@ -82,20 +102,28 @@ async function routeApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/state") {
     const client = url.searchParams.get("client") || "web";
     const state = readState();
-    return sendJson(res, 200, client === "mini" ? toMiniState(state) : publicState(state));
+    const viewer = getAuthUser(req, state);
+    if (!viewer) {
+      const anonymousState = { ...state, users: [], customers: [], visits: [], activities: [] };
+      return sendJson(res, 200, client === "mini" ? toMiniState(anonymousState) : publicState(anonymousState));
+    }
+    return sendJson(res, 200, client === "mini" ? toMiniState(state, viewer) : publicState(state, viewer));
   }
 
   if (req.method === "PUT" && url.pathname === "/api/state") {
     const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!viewer) return sendJson(res, 401, { error: "请先登录" });
     const nextState = normalizeIncomingState(body);
     writeState(nextState);
-    return sendJson(res, 200, { ok: true, state: publicState(nextState) });
+    return sendJson(res, 200, { ok: true, state: publicState(nextState, viewer) });
   }
 
   if (req.method === "POST" && url.pathname === "/api/customers") {
     const body = await readBody(req);
     const state = readState();
-    const customer = normalizeCustomer({ id: Date.now(), ...body });
+    const customer = normalizeCustomer({ id: Date.now(), ...body }, state);
     state.customers.unshift(customer);
     state.activities.push({ date: today(), owner: customer.owner, type: customer.stage, customerId: customer.id });
     writeState(state);
@@ -125,7 +153,7 @@ async function routeApi(req, res, url) {
     const index = state.customers.findIndex((item) => item.id === Number(customerPatch[1]));
     if (index < 0) return sendJson(res, 404, { error: "customer not found" });
     const previousStage = state.customers[index].stage;
-    state.customers[index] = normalizeCustomer({ ...state.customers[index], ...body, id: state.customers[index].id });
+    state.customers[index] = normalizeCustomer({ ...state.customers[index], ...body, id: state.customers[index].id }, state);
     if (body.stage && body.stage !== previousStage) {
       state.activities.push({
         date: body.date || today(),
@@ -141,7 +169,7 @@ async function routeApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/visits") {
     const body = await readBody(req);
     const state = readState();
-    const visit = normalizeVisit({ id: Date.now(), date: today(), photos: [], ...body });
+    const visit = normalizeVisit({ id: Date.now(), date: today(), photos: [], ...body }, state);
     state.visits.unshift(visit);
     syncVisitToCustomer(state, visit);
     writeState(state);
@@ -161,6 +189,8 @@ async function routeApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/users") {
     const body = await readBody(req);
     const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无账号后台权限" });
     const account = cleanAccount(body.account || body.username || body.phone || "");
     if (!body.name || !account || !body.password) {
       return sendJson(res, 400, { error: "员工姓名、登录账号、初始密码必填" });
@@ -175,13 +205,54 @@ async function routeApi(req, res, url) {
       account,
       password: String(body.password),
       role: body.role || "销售",
+      roleId: body.roleId || "",
+      unitId: body.unitId || "",
       unit: body.unit || body.region || "待分配",
       region: body.region || "待分区",
       status: "启用"
-    });
+    }, 0, state);
     state.users.push(user);
     writeState(state);
     return sendJson(res, 201, publicUser(user));
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/roles") {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无角色管理权限" });
+    const role = normalizeRole({
+      id: body.id || stableId("role", body.name || Date.now()),
+      name: body.name,
+      customerScope: body.customerScope || "self",
+      permissions: Array.isArray(body.permissions) ? body.permissions : DEFAULT_PERMISSIONS
+    });
+    if (!role.name) return sendJson(res, 400, { error: "角色名称必填" });
+    if (state.roles.some((item) => cleanText(item.name) === cleanText(role.name))) {
+      return sendJson(res, 409, { error: "角色已存在" });
+    }
+    state.roles.push(role);
+    writeState(state);
+    return sendJson(res, 201, role);
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/units") {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无单位管理权限" });
+    const unit = normalizeUnit({
+      id: body.id || stableId("unit", body.name || Date.now()),
+      name: body.name,
+      zone: body.zone || body.region
+    });
+    if (!unit.name) return sendJson(res, 400, { error: "单位名称必填" });
+    if (state.units.some((item) => cleanText(item.name) === cleanText(unit.name))) {
+      return sendJson(res, 409, { error: "单位已存在" });
+    }
+    state.units.push(unit);
+    writeState(state);
+    return sendJson(res, 201, unit);
   }
 
   if (req.method === "POST" && url.pathname === "/api/knowledge") {
@@ -218,21 +289,35 @@ async function routeApi(req, res, url) {
 
 function normalizeIncomingState(input) {
   const current = readState();
-  return migrateState({
+  const merged = {
     ...current,
     ...input,
+    roles: mergeById(current.roles, input.roles),
+    units: mergeById(current.units, input.units),
     users: mergeUsers(input.users, current.users),
-    customers: (input.customers || current.customers).map(normalizeCustomer),
-    activities: input.activities || current.activities || [],
-    visits: (input.visits || current.visits || []).map(normalizeVisit),
+    customers: mergeById(current.customers, input.customers),
+    activities: mergeById(current.activities, input.activities),
+    visits: mergeById(current.visits, input.visits),
     knowledge: input.knowledge || current.knowledge || [],
     resources: input.resources || current.resources || []
+  };
+  return migrateState(merged);
+}
+
+function mergeById(existing = [], incoming) {
+  if (!Array.isArray(incoming)) return existing || [];
+  const map = new Map((existing || []).map((item) => [String(item.id || stableId("item", JSON.stringify(item))), item]));
+  incoming.forEach((item) => {
+    const key = String(item.id || stableId("item", JSON.stringify(item)));
+    map.set(key, { ...(map.get(key) || {}), ...item });
   });
+  return Array.from(map.values());
 }
 
 function mergeUsers(incomingUsers, existingUsers) {
   if (!Array.isArray(incomingUsers)) return existingUsers || [];
-  return incomingUsers.map((user) => {
+  const merged = [...(existingUsers || [])];
+  incomingUsers.forEach((user) => {
     const existing = (existingUsers || []).find((item) => {
       return (
         Number(item.id) === Number(user.id) ||
@@ -240,34 +325,93 @@ function mergeUsers(incomingUsers, existingUsers) {
         (user.phone && cleanAccount(item.phone) === cleanAccount(user.phone))
       );
     });
-    return {
+    const next = {
       ...existing,
       ...user,
       account: user.account || user.username || existing?.account || existing?.username,
       password: user.password || existing?.password || "123456"
     };
+    const index = merged.findIndex((item) => Number(item.id) === Number(next.id) || cleanAccount(item.account) === cleanAccount(next.account));
+    if (index >= 0) merged[index] = next;
+    else merged.push(next);
   });
+  return merged;
 }
 
 function migrateState(state) {
-  const users = normalizeUsers(state.users || []);
+  const roles = normalizeRoles(state.roles || []);
+  const units = normalizeUnits(state.units || [], state);
+  const users = normalizeUsers(state.users || [], { roles, units });
+  const context = { roles, units, users };
   return {
     version: state.version || "backend-v2",
     currentUserId: Number(state.currentUserId || users[0]?.id || 0),
     stages: Array.isArray(state.stages) && state.stages.length ? state.stages : STAGES,
+    zones: Array.isArray(state.zones) && state.zones.length ? state.zones : ZONES,
+    roles,
+    units,
     users,
-    customers: (state.customers || []).map(normalizeCustomer),
+    customers: (state.customers || []).map((customer) => normalizeCustomer(customer, context)),
     activities: state.activities || [],
-    visits: (state.visits || []).map(normalizeVisit),
+    visits: (state.visits || []).map((visit) => normalizeVisit(visit, context)),
     knowledge: state.knowledge || [],
     resources: state.resources || []
   };
 }
 
-function normalizeUsers(users) {
+function normalizeRoles(roles) {
+  const incoming = Array.isArray(roles) ? roles : [];
+  const merged = [...DEFAULT_ROLES];
+  incoming.forEach((role) => {
+    const normalized = normalizeRole(role);
+    const index = merged.findIndex((item) => item.id === normalized.id || cleanText(item.name) === cleanText(normalized.name));
+    if (index >= 0) merged[index] = { ...merged[index], ...normalized };
+    else merged.push(normalized);
+  });
+  return merged;
+}
+
+function normalizeRole(role = {}) {
+  const name = role.name || "自定义角色";
+  const customerScope = ["self", "unit", "zone", "all"].includes(role.customerScope) ? role.customerScope : "self";
+  const permissions = Array.isArray(role.permissions) && role.permissions.length ? role.permissions : DEFAULT_PERMISSIONS;
+  return {
+    id: role.id || stableId("role", name),
+    name,
+    customerScope,
+    permissions: [...new Set(permissions)]
+  };
+}
+
+function normalizeUnits(units, state = {}) {
+  const merged = [...DEFAULT_UNITS];
+  const sources = [
+    ...units,
+    ...(state.users || []).map((user) => ({ name: user.unit || user.region, zone: user.zone || user.region })),
+    ...(state.customers || []).map((customer) => ({ name: customer.unit || customer.region, zone: customer.zone || customer.region }))
+  ].filter((unit) => unit && unit.name);
+  sources.forEach((unit) => {
+    const normalized = normalizeUnit(unit);
+    const index = merged.findIndex((item) => item.id === normalized.id || cleanText(item.name) === cleanText(normalized.name));
+    if (index >= 0) merged[index] = { ...merged[index], ...normalized };
+    else merged.push(normalized);
+  });
+  return merged;
+}
+
+function normalizeUnit(unit = {}) {
+  const name = unit.name || unit.unit || unit.region || "";
+  return {
+    id: unit.id || stableId("unit", name),
+    name,
+    zone: normalizeZone(unit.zone || unit.region || name)
+  };
+}
+
+function normalizeUsers(users, context = {}) {
   const used = new Set();
   return users.map((user, index) => {
-    const next = normalizeUser(user, index);
+    const next = normalizeUser(user, index, context);
     const base = next.account || `user${next.id}`;
     let account = base;
     let suffix = 2;
@@ -282,11 +426,15 @@ function normalizeUsers(users) {
   });
 }
 
-function normalizeUser(user = {}, index = 0) {
+function normalizeUser(user = {}, index = 0, context = {}) {
   const id = Number(user.id || Date.now() + index);
   const name = user.name || `员工${index + 1}`;
   const role = user.role || "销售";
-  const fallbackAccount = DEMO_ACCOUNTS[name] || (ADMIN_ROLES.includes(role) ? "admin" : `user${id}`);
+  const roles = context.roles || DEFAULT_ROLES;
+  const units = context.units || DEFAULT_UNITS;
+  const roleDef = findRole(roles, user.roleId, role);
+  const unit = findUnit(units, user.unitId, user.unit || user.region);
+  const fallbackAccount = DEMO_ACCOUNTS[name] || (ADMIN_ROLES.includes(roleDef.name) ? "admin" : `user${id}`);
   const account = cleanAccount(user.account || user.username || user.login || user.phone || fallbackAccount);
   return {
     id,
@@ -295,15 +443,52 @@ function normalizeUser(user = {}, index = 0) {
     account,
     username: account,
     password: String(user.password || user.initialPassword || "123456"),
-    role,
-    unit: user.unit || user.region || "待分配",
-    region: user.region || user.unit || "待分区",
+    role: roleDef.name,
+    roleId: roleDef.id,
+    unitId: unit.id,
+    unit: unit.name || user.unit || user.region || "待分配",
+    zone: unit.zone || normalizeZone(user.zone || user.region || user.unit),
+    region: user.region || unit.zone || unit.name || "待分区",
     status: user.status || "启用",
     createdAt: user.createdAt || today()
   };
 }
 
-function normalizeCustomer(customer) {
+function findRole(roles = DEFAULT_ROLES, roleId, roleName) {
+  return (
+    roles.find((role) => roleId && role.id === roleId) ||
+    roles.find((role) => cleanText(role.name) === cleanText(roleName)) ||
+    DEFAULT_ROLES.find((role) => cleanText(role.name) === cleanText(roleName)) ||
+    DEFAULT_ROLES.find((role) => role.name === "销售")
+  );
+}
+
+function findUnit(units = DEFAULT_UNITS, unitId, unitName) {
+  const name = unitName || "";
+  return (
+    units.find((unit) => unitId && unit.id === unitId) ||
+    units.find((unit) => cleanText(unit.name) === cleanText(name)) ||
+    { id: stableId("unit", name || "待分配"), name: name || "待分配", zone: normalizeZone(name) }
+  );
+}
+
+function findUser(users = [], userId, userName) {
+  return users.find((user) => Number(user.id) === Number(userId)) || users.find((user) => cleanText(user.name) === cleanText(userName)) || {};
+}
+
+function normalizeZone(value) {
+  const text = String(value || "");
+  if (ZONES.includes(text)) return text;
+  if (/东|华东|杭州|江苏|浙江|上海|安徽/.test(text)) return "东部战区";
+  if (/南|华南|广东|佛山|深圳|广州|福建|海南/.test(text)) return "南部战区";
+  if (/西|西南|成都|重庆|四川|云南|贵州|西安/.test(text)) return "西部战区";
+  if (/北|华北|北京|天津|河北|山东|东北/.test(text)) return "北部战区";
+  return "中部战区";
+}
+
+function normalizeCustomer(customer, context = {}) {
+  const ownerUser = findUser(context.users || [], customer.ownerId, customer.owner);
+  const unit = findUnit(context.units || [], customer.unitId || ownerUser.unitId, customer.unit || ownerUser.unit || customer.region);
   const followUps = Array.isArray(customer.followUps) && customer.followUps.length
     ? customer.followUps
     : [
@@ -318,9 +503,12 @@ function normalizeCustomer(customer) {
     name: customer.name || "",
     phone: customer.phone || "待补充",
     stage: customer.stage || "名单",
-    owner: customer.owner || "林晨",
-    ownerId: customer.ownerId || "",
-    region: customer.region || "待分区",
+    owner: customer.owner || ownerUser.name || "林晨",
+    ownerId: customer.ownerId || ownerUser.id || "",
+    unitId: customer.unitId || ownerUser.unitId || unit.id || "",
+    unit: customer.unit || ownerUser.unit || unit.name || "",
+    zone: customer.zone || ownerUser.zone || unit.zone || normalizeZone(customer.region),
+    region: customer.region || ownerUser.zone || unit.zone || "待分区",
     amount: Number(customer.amount || 15),
     software: customer.software || "待补充",
     createdAt: customer.createdAt || today(),
@@ -328,7 +516,9 @@ function normalizeCustomer(customer) {
   };
 }
 
-function normalizeVisit(visit = {}) {
+function normalizeVisit(visit = {}, context = {}) {
+  const ownerUser = findUser(context.users || [], visit.ownerId, visit.owner);
+  const unit = findUnit(context.units || [], visit.unitId || ownerUser.unitId, visit.unit || ownerUser.unit || visit.city);
   return {
     id: Number(visit.id || Date.now()),
     factory: visit.factory || "",
@@ -345,7 +535,10 @@ function normalizeVisit(visit = {}) {
     city: visit.city || "",
     address: visit.address || "",
     owner: visit.owner || "",
-    ownerId: visit.ownerId || "",
+    ownerId: visit.ownerId || ownerUser.id || "",
+    unitId: visit.unitId || ownerUser.unitId || unit.id || "",
+    unit: visit.unit || ownerUser.unit || unit.name || "",
+    zone: visit.zone || ownerUser.zone || unit.zone || "",
     photos: Array.isArray(visit.photos) ? visit.photos : [],
     date: visit.date || today()
   };
@@ -402,7 +595,7 @@ function syncVisitToCustomer(state, visit) {
       lastFollow: visit.date || today(),
       nextFollow: "",
       lastNote: note
-    });
+    }, state);
     state.customers.unshift(customer);
     state.activities.push({ date: visit.date || today(), owner, type: stage, customerId: customer.id });
     return;
@@ -415,7 +608,7 @@ function syncVisitToCustomer(state, visit) {
     owner,
     region: visit.city || state.customers[index].region,
     software: visit.software || state.customers[index].software
-  });
+  }, state);
   const latestFollow = customer.followUps[customer.followUps.length - 1] || {};
   customer.followUps.push({
     date: visit.date || today(),
@@ -432,24 +625,98 @@ function cleanText(value) {
   return String(value || "").trim().toLowerCase();
 }
 
-function publicState(state) {
+function stableId(prefix, value) {
+  const hash = crypto.createHash("md5").update(String(value || prefix)).digest("hex").slice(0, 10);
+  return `${prefix}-${hash}`;
+}
+
+function publicState(state, viewer = null) {
+  const scoped = scopeStateForUser(state, viewer);
   return {
-    ...state,
-    users: (state.users || []).map(publicUser)
+    ...scoped,
+    users: (scoped.users || []).map(publicUser)
   };
 }
 
-function publicUser(user) {
+function publicUser(user = {}) {
   const { password, passwordHash, ...safe } = user;
   return safe;
 }
 
-function toMiniState(state) {
-  const next = publicState(state);
+function toMiniState(state, viewer = null) {
+  const next = publicState(state, viewer);
   return {
     ...next,
     customers: next.customers.map(toMiniCustomer)
   };
+}
+
+function scopeStateForUser(state, viewer = null) {
+  if (!viewer) return state;
+  const user = state.users.find((item) => Number(item.id) === Number(viewer.id)) || viewer;
+  return {
+    ...state,
+    users: visibleUsers(state, user),
+    customers: (state.customers || []).filter((customer) => canViewRecord(state, user, customer)),
+    visits: (state.visits || []).filter((visit) => canViewRecord(state, user, visit)),
+    activities: (state.activities || []).filter((activity) => {
+      if (!activity.customerId) return true;
+      const customer = (state.customers || []).find((item) => Number(item.id) === Number(activity.customerId));
+      return !customer || canViewRecord(state, user, customer);
+    })
+  };
+}
+
+function visibleUsers(state, viewer) {
+  const role = findRole(state.roles, viewer.roleId, viewer.role);
+  if (role.customerScope === "all") return state.users || [];
+  return (state.users || []).filter((user) => {
+    if (Number(user.id) === Number(viewer.id)) return true;
+    if (Array.isArray(viewer.managedUnitIds) && viewer.managedUnitIds.includes(user.unitId)) return true;
+    if (role.customerScope === "zone") return user.zone === viewer.zone;
+    if (role.customerScope === "unit") return user.unitId === viewer.unitId;
+    return false;
+  });
+}
+
+function canViewRecord(state, viewer, record = {}) {
+  const role = findRole(state.roles, viewer.roleId, viewer.role);
+  if (role.customerScope === "all") return true;
+  if (ownsRecord(record, viewer)) return true;
+  const owner = findUser(state.users, record.ownerId, record.owner);
+  const unitId = record.unitId || owner.unitId;
+  const zone = record.zone || owner.zone || normalizeZone(record.region || record.city || record.unit);
+  if (Array.isArray(viewer.managedUnitIds) && viewer.managedUnitIds.includes(unitId)) return true;
+  if (role.customerScope === "zone") return zone && zone === viewer.zone;
+  if (role.customerScope === "unit") return unitId && unitId === viewer.unitId;
+  return false;
+}
+
+function ownsRecord(record = {}, user = {}) {
+  return Number(record.ownerId) === Number(user.id) || cleanText(record.owner) === cleanText(user.name);
+}
+
+function getAuthUser(req, state) {
+  const header = req.headers.authorization || "";
+  const token = header.replace(/^Bearer\s+/i, "").trim();
+  if (!token) return null;
+  try {
+    if (token.startsWith("local-")) {
+      const id = Number(token.split("-")[1]);
+      return state.users.find((user) => Number(user.id) === id) || null;
+    }
+    const decoded = Buffer.from(token, "base64url").toString("utf8");
+    const id = Number(decoded.split(":")[0]);
+    return state.users.find((user) => Number(user.id) === id) || null;
+  } catch {
+    return null;
+  }
+}
+
+function canUseAdmin(state, user) {
+  if (!user) return false;
+  const role = findRole(state.roles, user.roleId, user.role);
+  return (role.permissions || []).includes("admin");
 }
 
 function toMiniCustomer(customer) {
@@ -579,6 +846,9 @@ async function importCustomers(req) {
   const stage = multipart.fields.stage || "名单";
   const owner = multipart.fields.owner || "林晨";
   const ownerId = multipart.fields.ownerId || "";
+  const unitId = multipart.fields.unitId || "";
+  const unit = multipart.fields.unit || "";
+  const zone = multipart.fields.zone || "";
   const text = multipart.files[0] ? multipart.files[0].buffer.toString("utf8") : multipart.fields.rows || "";
   const rows = parseCustomerRows(text);
   const state = readState();
@@ -590,6 +860,9 @@ async function importCustomers(req) {
       stage,
       owner,
       ownerId,
+      unitId,
+      unit,
+      zone,
       region: row.region,
       amount: row.amount,
       software: row.software,
@@ -597,7 +870,7 @@ async function importCustomers(req) {
       lastFollow: today(),
       nextFollow: today(),
       lastNote: "名单文件导入。"
-    });
+    }, state);
     state.activities.push({ date: today(), owner, type: stage, customerId: customer.id });
     return customer;
   });

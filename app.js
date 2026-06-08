@@ -4,9 +4,19 @@ const API_BASE =
 const AUTH_KEY = "zhixiao-web-auth";
 const today = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 const stages = ["名单", "线索", "商机", "成交"];
-const adminRoles = ["主管", "区域经理", "运营", "管理员"];
+const zones = ["东部战区", "南部战区", "西部战区", "北部战区", "中部战区"];
+const scopeLabels = { self: "仅本人客户", unit: "本单位客户", zone: "本战区客户", all: "全部客户" };
+const permissionLabels = { dashboard: "看板", customers: "客户管理", field: "地推地图", assistant: "AI话术", admin: "账号后台" };
+const defaultRoles = [
+  { id: "role-owner", name: "总负责人", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] },
+  { id: "role-region", name: "区域经理", customerScope: "zone", permissions: ["dashboard", "customers", "field", "assistant"] },
+  { id: "role-supervisor", name: "主管", customerScope: "unit", permissions: ["dashboard", "customers", "field", "assistant"] },
+  { id: "role-sales", name: "销售", customerScope: "self", permissions: ["dashboard", "customers", "field", "assistant"] },
+  { id: "role-ops", name: "运营", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] },
+  { id: "role-admin", name: "管理员", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] }
+];
 
-let state = { users: [], customers: [], visits: [], knowledge: [], stages };
+let state = { users: [], customers: [], visits: [], knowledge: [], stages, roles: defaultRoles, units: [] };
 let currentStage = "名单";
 let currentView = "dashboard";
 let fieldMap = null;
@@ -48,6 +58,58 @@ function userByName(name) {
 
 function ownsRecord(record, user) {
   return record.ownerId === user.id || record.owner === user.name;
+}
+
+function roles() {
+  return state.roles && state.roles.length ? state.roles : defaultRoles;
+}
+
+function roleForUser(user = {}) {
+  return roles().find((role) => role.id === user.roleId) || roles().find((role) => role.name === user.role) || defaultRoles.find((role) => role.name === "销售");
+}
+
+function hasPermission(user, permission) {
+  return (roleForUser(user).permissions || []).includes(permission);
+}
+
+function unitForId(unitId) {
+  return (state.units || []).find((unit) => unit.id === unitId) || {};
+}
+
+function unitForUser(user = {}) {
+  return unitForId(user.unitId) || {};
+}
+
+function recordOwner(record = {}) {
+  return state.users.find((user) => user.id === record.ownerId) || state.users.find((user) => user.name === record.owner) || {};
+}
+
+function canSeeRecord(record = {}, user = currentUser()) {
+  const role = roleForUser(user);
+  if (role.customerScope === "all") return true;
+  if (ownsRecord(record, user)) return true;
+  const owner = recordOwner(record);
+  const unitId = record.unitId || owner.unitId;
+  const zone = record.zone || owner.zone;
+  if (role.customerScope === "zone") return zone && zone === user.zone;
+  if (role.customerScope === "unit") return unitId && unitId === user.unitId;
+  return false;
+}
+
+function visibleUsers() {
+  const user = currentUser();
+  const role = roleForUser(user);
+  if (role.customerScope === "all") return state.users;
+  return state.users.filter((item) => {
+    if (item.id === user.id) return true;
+    if (role.customerScope === "zone") return item.zone === user.zone;
+    if (role.customerScope === "unit") return item.unitId === user.unitId;
+    return false;
+  });
+}
+
+function visibleSales() {
+  return visibleUsers().filter((user) => roleForUser(user).name === "销售" || user.role === "销售");
 }
 
 async function api(path, options = {}) {
@@ -114,18 +176,16 @@ function logout() {
 
 function scopeCustomers() {
   const user = currentUser();
-  return user.role === "销售" ? state.customers.filter((item) => ownsRecord(item, user)) : state.customers;
+  return (state.customers || []).filter((item) => canSeeRecord(item, user));
 }
 
 function scopeVisits() {
   const user = currentUser();
-  return user.role === "销售"
-    ? (state.visits || []).filter((item) => ownsRecord(item, user))
-    : state.visits || [];
+  return (state.visits || []).filter((item) => canSeeRecord(item, user));
 }
 
 function canAdmin() {
-  return adminRoles.includes(currentUser().role);
+  return hasPermission(currentUser(), "admin");
 }
 
 function switchView(view) {
@@ -162,7 +222,7 @@ function renderDashboard() {
   $("#metricSigned").textContent = `${signed.length}家`;
   $("#metricFollow").textContent = `${todayFollow}条`;
   $("#metricOverdue").textContent = `${overdue}个`;
-  $("#metricScope").textContent = currentUser().role === "销售" ? "我的数据" : "团队数据";
+  $("#metricScope").textContent = roleForUser(currentUser()).customerScope === "self" ? "我的数据" : "团队数据";
 
   const lists = customers.filter((item) => item.stage === "名单").length;
   const leads = customers.filter((item) => item.stage === "线索").length;
@@ -189,9 +249,8 @@ function renderCustomers() {
     .map((stage) => `<button class="${currentStage === stage ? "active" : ""}" data-stage="${stage}">${stage}<span>${customers.filter((item) => item.stage === stage).length}</span></button>`)
     .join("");
 
-  const sales = state.users.filter((user) => user.role === "销售");
-  const ownerOptions = currentUser().role === "销售" ? [currentUser()] : sales;
-  $("#ownerFilter").innerHTML = `${currentUser().role === "销售" ? "" : '<option value="">全部销售</option>'}${ownerOptions.map((user) => `<option>${user.name}</option>`).join("")}`;
+  const ownerOptions = visibleSales();
+  $("#ownerFilter").innerHTML = `${roleForUser(currentUser()).customerScope === "self" ? "" : '<option value="">全部销售</option>'}${ownerOptions.map((user) => `<option>${user.name}</option>`).join("")}`;
   $("#customerOwnerSelect").innerHTML = ownerOptions.map((user) => `<option>${user.name}</option>`).join("");
   $("#batchOwnerSelect").innerHTML = ownerOptions.map((user) => `<option>${user.name}</option>`).join("");
   $("#customerStageSelect").innerHTML = stages.map((stage) => `<option>${stage}</option>`).join("");
@@ -250,13 +309,18 @@ async function saveCustomer(event) {
   if (event.submitter?.value === "cancel") return $("#customerDialog").close();
   const form = new FormData(event.currentTarget);
   const id = Number(form.get("id"));
+  const ownerUser = userByName(String(form.get("owner")));
+  const ownerUnit = unitForId(ownerUser.unitId);
   const customer = {
     id: id || Date.now(),
     name: String(form.get("name")).trim(),
     phone: String(form.get("phone")).trim(),
     stage: String(form.get("stage")),
     owner: String(form.get("owner")),
-    ownerId: userByName(String(form.get("owner"))).id || "",
+    ownerId: ownerUser.id || "",
+    unitId: ownerUser.unitId || "",
+    unit: ownerUser.unit || ownerUnit.name || "",
+    zone: ownerUser.zone || ownerUnit.zone || "",
     region: String(form.get("region") || "待分区"),
     amount: Number(form.get("amount") || 15),
     software: String(form.get("software") || "待补充"),
@@ -293,14 +357,15 @@ async function batchImport(event) {
   if (event.submitter?.value === "cancel") return $("#batchDialog").close();
   const form = new FormData(event.currentTarget);
   const owner = String(form.get("owner"));
-  const ownerId = userByName(owner).id || "";
+  const ownerUser = userByName(owner);
+  const ownerId = ownerUser.id || "";
   const rows = String(form.get("rows"))
     .split(/\n+/)
     .map((line) => line.trim())
     .filter(Boolean);
   rows.forEach((line, index) => {
     const [name, phone = "待补充", region = "待分区", amount = "15", software = "待补充"] = line.split(/,|，|\t/).map((part) => part.trim());
-    state.customers.unshift({ id: Date.now() + index, name, phone, region, amount: Number(amount) || 15, software, owner, ownerId, stage: currentStage, createdAt: today, lastFollow: today, nextFollow: today, lastNote: "批量导入客户。" });
+    state.customers.unshift({ id: Date.now() + index, name, phone, region, amount: Number(amount) || 15, software, owner, ownerId, unitId: ownerUser.unitId || "", unit: ownerUser.unit || "", zone: ownerUser.zone || "", stage: currentStage, createdAt: today, lastFollow: today, nextFollow: today, lastNote: "批量导入客户。" });
   });
   await saveState();
   $("#batchDialog").close();
@@ -455,14 +520,34 @@ async function addKnowledge(event) {
 }
 
 function renderAdmin() {
-  $("#userList").innerHTML = (state.users || [])
-    .map((user) => `<article><b>${user.name}</b><span>${user.status || "启用"}</span><p>${user.role} · ${user.region || user.unit || "待分区"} · 账号：${user.account || user.username || user.phone || "-"}</p></article>`)
+  const roleSelect = $("#userRoleSelect");
+  const unitSelect = $("#userUnitSelect");
+  const zoneSelect = $("#unitZoneSelect");
+  if (roleSelect) {
+    roleSelect.innerHTML = roles().map((role) => `<option value="${role.id}">${role.name}</option>`).join("");
+  }
+  if (unitSelect) {
+    unitSelect.innerHTML = (state.units || []).map((unit) => `<option value="${unit.id}">${unit.name} · ${unit.zone}</option>`).join("");
+  }
+  if (zoneSelect) {
+    zoneSelect.innerHTML = zones.map((zone) => `<option>${zone}</option>`).join("");
+  }
+  $("#userList").innerHTML = visibleUsers()
+    .map((user) => `<article><b>${user.name}</b><span>${user.status || "启用"}</span><p>${user.role} · ${user.unit || "待分配"} · ${user.zone || "未分战区"} · 账号：${user.account || user.username || user.phone || "-"}</p></article>`)
+    .join("");
+  $("#roleList").innerHTML = roles()
+    .map((role) => `<article><b>${role.name}</b><span>${scopeLabels[role.customerScope] || role.customerScope}</span><p>${(role.permissions || []).map((permission) => permissionLabels[permission] || permission).join(" · ")}</p></article>`)
+    .join("");
+  $("#unitList").innerHTML = (state.units || [])
+    .map((unit) => `<article><b>${unit.name}</b><span>${unit.zone}</span><p>销售选择该单位后，客户自动归属到该单位和战区。</p></article>`)
     .join("");
 }
 
 async function addUser(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
+  const role = roles().find((item) => item.id === form.get("roleId")) || roles()[0];
+  const unit = (state.units || []).find((item) => item.id === form.get("unitId")) || {};
   await api("/users", {
     method: "POST",
     body: {
@@ -470,14 +555,48 @@ async function addUser(event) {
       account: form.get("account"),
       password: form.get("password"),
       phone: form.get("account"),
-      role: form.get("role"),
-      region: form.get("unit") || "待分配",
-      unit: form.get("unit") || "待分配"
+      roleId: role.id,
+      role: role.name,
+      unitId: unit.id,
+      unit: unit.name || "待分配",
+      region: unit.zone || "待分区"
     }
   });
   event.currentTarget.reset();
   await loadState();
   toast("账号已开通");
+}
+
+async function addRole(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const permissions = form.getAll("permissions");
+  await api("/roles", {
+    method: "POST",
+    body: {
+      name: String(form.get("name") || "").trim(),
+      customerScope: form.get("customerScope"),
+      permissions
+    }
+  });
+  event.currentTarget.reset();
+  await loadState();
+  toast("角色已添加");
+}
+
+async function addUnit(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  await api("/units", {
+    method: "POST",
+    body: {
+      name: String(form.get("name") || "").trim(),
+      zone: form.get("zone")
+    }
+  });
+  event.currentTarget.reset();
+  await loadState();
+  toast("单位已添加");
 }
 
 function wireEvents() {
@@ -505,6 +624,8 @@ function wireEvents() {
   $("#recommendBtn").addEventListener("click", recommend);
   $("#knowledgeForm").addEventListener("submit", addKnowledge);
   $("#userForm").addEventListener("submit", addUser);
+  $("#roleForm").addEventListener("submit", addRole);
+  $("#unitForm").addEventListener("submit", addUnit);
 }
 
 wireEvents();

@@ -21,13 +21,11 @@ Page({
   loadDashboard() {
     const state = app.getState();
     const currentUser = app.getCurrentUser();
-    const isSales = currentUser.role === "销售";
-    const customers = isSales
-      ? state.customers.filter((item) => item.ownerId === currentUser.id || item.owner === currentUser.name)
-      : state.customers;
+    const isSales = app.getRole(currentUser).customerScope === "self";
+    const customers = app.scopeCustomers();
     const signed = customers.filter((item) => item.stage === "成交");
     const payment = signed.reduce((sum, item) => sum + Number(item.amount || 0), 0) * 2.8;
-    const sales = state.users.filter((user) => user.role === "销售");
+    const sales = app.visibleSales();
     const best = sales
       .map((user) => ({
         name: user.name,

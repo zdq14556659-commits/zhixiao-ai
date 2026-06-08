@@ -203,6 +203,12 @@ h1, h2 { margin: 0; }
   gap: 20px;
 }
 
+.admin-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.8fr) minmax(360px, 1fr);
+  gap: 20px;
+}
+
 .panel { padding: 22px; margin-bottom: 20px; }
 .panel-title { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
 .panel-title h2 { font-size: 20px; }
@@ -368,6 +374,29 @@ td button + button { margin-left: 8px; }
 .form-stack { display: grid; gap: 12px; }
 .form-stack label { margin: 0; }
 
+.check-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(120px, 1fr));
+  gap: 10px 14px;
+}
+
+.check-grid label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--text);
+}
+
+.check-grid input {
+  width: auto;
+  min-height: auto;
+}
+
+.compact-list {
+  margin-top: 16px;
+}
+
 .visit-list article img {
   width: 72px;
   height: 72px;
@@ -433,7 +462,7 @@ dialog::backdrop { background: rgba(31, 45, 61, 0.38); }
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { min-height: auto; }
   .nav { grid-template-columns: repeat(3, 1fr); }
-  .metric-grid, .grid-2, .field-layout { grid-template-columns: 1fr; }
+  .metric-grid, .grid-2, .admin-grid, .field-layout { grid-template-columns: 1fr; }
   .topbar { align-items: flex-start; flex-direction: column; gap: 12px; padding: 18px; }
   .view { padding: 18px; }
 }

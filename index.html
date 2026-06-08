@@ -139,17 +139,49 @@
         </section>
 
         <section class="view" id="adminView">
-          <div class="grid-2">
+          <div class="admin-grid">
             <section class="panel">
               <div class="panel-title"><h2>新建员工账号</h2><span>员工可用账号密码登录小程序和 Web</span></div>
               <form class="form-stack" id="userForm">
                 <label>员工姓名<input name="name" required placeholder="李销售" /></label>
                 <label>登录账号（手机号）<input name="account" required placeholder="员工手机号" /></label>
                 <label>初始密码<input name="password" type="password" required placeholder="建议至少6位" /></label>
-                <label>角色<select name="role"><option>销售</option><option>主管</option><option>区域经理</option><option>运营</option><option>管理员</option></select></label>
-                <label>单位<input name="unit" placeholder="某某分公司 / 某某团队" /></label>
+                <label>角色<select name="roleId" id="userRoleSelect"></select></label>
+                <label>单位<select name="unitId" id="userUnitSelect"></select></label>
                 <button class="primary" type="submit">开通账号</button>
               </form>
+            </section>
+            <section class="panel">
+              <div class="panel-title"><h2>角色权限</h2><span>设置角色能看到的客户范围和功能模块</span></div>
+              <form class="form-stack" id="roleForm">
+                <label>角色名称<input name="name" required placeholder="例如：大区招商主管" /></label>
+                <label>客户范围
+                  <select name="customerScope">
+                    <option value="self">仅本人客户</option>
+                    <option value="unit">本单位客户</option>
+                    <option value="zone">本战区客户</option>
+                    <option value="all">全部客户</option>
+                  </select>
+                </label>
+                <div class="check-grid">
+                  <label><input type="checkbox" name="permissions" value="dashboard" checked /> 看板</label>
+                  <label><input type="checkbox" name="permissions" value="customers" checked /> 客户管理</label>
+                  <label><input type="checkbox" name="permissions" value="field" checked /> 地推地图</label>
+                  <label><input type="checkbox" name="permissions" value="assistant" checked /> AI话术</label>
+                  <label><input type="checkbox" name="permissions" value="admin" /> 账号后台</label>
+                </div>
+                <button class="primary" type="submit">添加角色</button>
+              </form>
+              <div class="user-list compact-list" id="roleList"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-title"><h2>单位管理</h2><span>单位归属战区，决定主管和区域经理可见范围</span></div>
+              <form class="form-stack" id="unitForm">
+                <label>单位名称<input name="name" required placeholder="例如：东部战区杭州一部" /></label>
+                <label>所属战区<select name="zone" id="unitZoneSelect"></select></label>
+                <button class="primary" type="submit">添加单位</button>
+              </form>
+              <div class="user-list compact-list" id="unitList"></div>
             </section>
             <section class="panel">
               <div class="panel-title"><h2>员工列表</h2><span>密码不会返回到前端</span></div>

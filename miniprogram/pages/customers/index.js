@@ -29,11 +29,9 @@ Page({
   loadData() {
     const state = app.getState();
     const currentUser = app.getCurrentUser();
-    const isSales = currentUser.role === "销售";
-    const customers = isSales
-      ? state.customers.filter((item) => item.ownerId === currentUser.id || item.owner === currentUser.name)
-      : state.customers;
-    const owners = isSales ? [currentUser.name] : ["全部", ...state.users.filter((user) => user.role === "销售").map((user) => user.name)];
+    const role = app.getRole(currentUser);
+    const customers = app.scopeCustomers();
+    const owners = role.customerScope === "self" ? [currentUser.name] : ["全部", ...app.visibleSales().map((user) => user.name)];
     const regions = ["全部", ...Array.from(new Set(customers.map((item) => item.region).filter(Boolean)))];
     const ownerIndex = Math.min(this.data.ownerIndex, owners.length - 1);
     const regionIndex = Math.min(this.data.regionIndex, regions.length - 1);

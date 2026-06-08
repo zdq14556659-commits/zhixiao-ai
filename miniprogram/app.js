@@ -10,6 +10,24 @@ const LOCAL_DEMO_PASSWORDS = {
   chen: "123456",
   wang: "123456"
 };
+const ZONES = ["东部战区", "南部战区", "西部战区", "北部战区", "中部战区"];
+const DEFAULT_ROLES = [
+  { id: "role-owner", name: "总负责人", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] },
+  { id: "role-region", name: "区域经理", customerScope: "zone", permissions: ["dashboard", "customers", "field", "assistant"] },
+  { id: "role-supervisor", name: "主管", customerScope: "unit", permissions: ["dashboard", "customers", "field", "assistant"] },
+  { id: "role-sales", name: "销售", customerScope: "self", permissions: ["dashboard", "customers", "field", "assistant"] },
+  { id: "role-ops", name: "运营", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] },
+  { id: "role-admin", name: "管理员", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] }
+];
+const DEFAULT_UNITS = [
+  { id: "unit-east-custom", name: "华东定制产业带", zone: "东部战区" },
+  { id: "unit-south-custom", name: "华南定制产业带", zone: "南部战区" },
+  { id: "unit-west-custom", name: "西部定制产业带", zone: "西部战区" },
+  { id: "unit-north-custom", name: "北部定制产业带", zone: "北部战区" },
+  { id: "unit-central-channel", name: "中部渠道一部", zone: "中部战区" },
+  { id: "unit-national-channel", name: "全国渠道一部", zone: "中部战区" },
+  { id: "unit-hq-growth", name: "总部增长运营", zone: "中部战区" }
+];
 
 function getChinaToday() {
   return new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -38,12 +56,15 @@ const seedState = {
   version: "mini-v3",
   currentUserId: 0,
   stages: ["名单", "线索", "商机", "成交"],
+  zones: ZONES,
+  roles: DEFAULT_ROLES,
+  units: DEFAULT_UNITS,
   users: [
-    { id: 1, name: "林晨", account: "linchen", role: "销售", unit: "华东定制产业带", region: "华东" },
-    { id: 2, name: "周扬", account: "zhouyang", role: "销售", unit: "华南定制产业带", region: "华南" },
-    { id: 3, name: "陈主管", account: "chen", role: "主管", unit: "华东定制产业带", region: "华东" },
-    { id: 4, name: "王区域", account: "wang", role: "区域经理", unit: "全国渠道一部", region: "全国" },
-    { id: 5, name: "运营小组", account: "admin", role: "运营", unit: "总部增长运营", region: "全国" }
+    { id: 1, name: "林晨", account: "linchen", role: "销售", roleId: "role-sales", unitId: "unit-east-custom", unit: "华东定制产业带", zone: "东部战区", region: "东部战区" },
+    { id: 2, name: "周扬", account: "zhouyang", role: "销售", roleId: "role-sales", unitId: "unit-south-custom", unit: "华南定制产业带", zone: "南部战区", region: "南部战区" },
+    { id: 3, name: "陈主管", account: "chen", role: "主管", roleId: "role-supervisor", unitId: "unit-east-custom", unit: "华东定制产业带", zone: "东部战区", region: "东部战区" },
+    { id: 4, name: "王区域", account: "wang", role: "区域经理", roleId: "role-region", unitId: "unit-central-channel", unit: "中部渠道一部", zone: "中部战区", region: "中部战区" },
+    { id: 5, name: "运营小组", account: "admin", role: "运营", roleId: "role-ops", unitId: "unit-hq-growth", unit: "总部增长运营", zone: "中部战区", region: "中部战区" }
   ],
   customers: [
     {
@@ -53,7 +74,10 @@ const seedState = {
       stage: "名单",
       owner: "林晨",
       ownerId: 1,
-      region: "华东",
+      unitId: "unit-east-custom",
+      unit: "华东定制产业带",
+      zone: "东部战区",
+      region: "东部战区",
       amount: 18,
       software: "酷家乐 + Excel排产",
       createdAt: "2026-06-04",
@@ -68,7 +92,10 @@ const seedState = {
       stage: "线索",
       owner: "周扬",
       ownerId: 2,
-      region: "华南",
+      unitId: "unit-south-custom",
+      unit: "华南定制产业带",
+      zone: "南部战区",
+      region: "南部战区",
       amount: 26,
       software: "酷家乐 + 手工报价",
       createdAt: "2026-06-03",
@@ -83,7 +110,10 @@ const seedState = {
       stage: "商机",
       owner: "林晨",
       ownerId: 1,
-      region: "西南",
+      unitId: "unit-east-custom",
+      unit: "华东定制产业带",
+      zone: "东部战区",
+      region: "东部战区",
       amount: 32,
       software: "自研ERP + Excel",
       createdAt: "2026-06-02",
@@ -98,7 +128,10 @@ const seedState = {
       stage: "成交",
       owner: "周扬",
       ownerId: 2,
-      region: "华东",
+      unitId: "unit-south-custom",
+      unit: "华南定制产业带",
+      zone: "南部战区",
+      region: "南部战区",
       amount: 45,
       software: "三维家 + 云熙拆单",
       createdAt: "2026-06-01",
@@ -126,6 +159,9 @@ const seedState = {
       address: "浙江省杭州市",
       owner: "林晨",
       ownerId: 1,
+      unitId: "unit-east-custom",
+      unit: "华东定制产业带",
+      zone: "东部战区",
       photos: [],
       date: "2026-06-05"
     }
@@ -283,9 +319,15 @@ App({
   },
 
   loadRemoteState(callback) {
+    const session = this.getSession();
+    if (!session || session.mode === "local") {
+      if (callback) callback(this.getState());
+      return;
+    }
     wx.request({
       url: `${API_BASE}/state?client=mini`,
       method: "GET",
+      header: session.token ? { Authorization: `Bearer ${session.token}` } : {},
       timeout: 5000,
       success: (res) => {
         if (res.statusCode >= 200 && res.statusCode < 300 && res.data) {
@@ -337,7 +379,75 @@ App({
     return state.users.find((user) => user.id === state.currentUserId) || {};
   },
 
+  getRoles() {
+    const state = this.getState();
+    return state.roles && state.roles.length ? state.roles : DEFAULT_ROLES;
+  },
+
+  getUnits() {
+    const state = this.getState();
+    return state.units && state.units.length ? state.units : DEFAULT_UNITS;
+  },
+
+  getRole(user = this.getCurrentUser()) {
+    return this.getRoles().find((role) => role.id === user.roleId) || this.getRoles().find((role) => role.name === user.role) || DEFAULT_ROLES.find((role) => role.name === "销售");
+  },
+
+  hasPermission(permission) {
+    return (this.getRole().permissions || []).includes(permission);
+  },
+
+  ownsRecord(record, user = this.getCurrentUser()) {
+    return Number(record.ownerId) === Number(user.id) || record.owner === user.name;
+  },
+
+  getRecordOwner(record) {
+    const state = this.getState();
+    return state.users.find((user) => Number(user.id) === Number(record.ownerId)) || state.users.find((user) => user.name === record.owner) || {};
+  },
+
+  canSeeRecord(record, user = this.getCurrentUser()) {
+    const role = this.getRole(user);
+    if (role.customerScope === "all") return true;
+    if (this.ownsRecord(record, user)) return true;
+    const owner = this.getRecordOwner(record);
+    const unitId = record.unitId || owner.unitId;
+    const zone = record.zone || owner.zone;
+    if (role.customerScope === "zone") return zone && zone === user.zone;
+    if (role.customerScope === "unit") return unitId && unitId === user.unitId;
+    return false;
+  },
+
+  visibleUsers() {
+    const state = this.getState();
+    const currentUser = this.getCurrentUser();
+    const role = this.getRole(currentUser);
+    if (role.customerScope === "all") return state.users || [];
+    return (state.users || []).filter((user) => {
+      if (Number(user.id) === Number(currentUser.id)) return true;
+      if (role.customerScope === "zone") return user.zone === currentUser.zone;
+      if (role.customerScope === "unit") return user.unitId === currentUser.unitId;
+      return false;
+    });
+  },
+
+  visibleSales() {
+    return this.visibleUsers().filter((user) => this.getRole(user).name === "销售" || user.role === "销售");
+  },
+
+  scopeCustomers() {
+    const state = this.getState();
+    const currentUser = this.getCurrentUser();
+    return (state.customers || []).filter((customer) => this.canSeeRecord(customer, currentUser));
+  },
+
+  scopeVisits() {
+    const state = this.getState();
+    const currentUser = this.getCurrentUser();
+    return (state.visits || []).filter((visit) => this.canSeeRecord(visit, currentUser));
+  },
+
   canAdmin() {
-    return ["主管", "区域经理", "运营", "管理员"].includes(this.getCurrentUser().role);
+    return this.hasPermission("admin");
   }
 });

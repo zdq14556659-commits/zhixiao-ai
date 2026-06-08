@@ -25,16 +25,52 @@
       <view class="grid-2">
         <view class="form-item">
           <text class="label">角色</text>
-          <picker range="{{roles}}" value="{{roleIndex}}" bindchange="onRole">
-            <view class="picker-box">{{roles[roleIndex]}}</view>
+          <picker range="{{roles}}" range-key="name" value="{{roleIndex}}" bindchange="onRole">
+            <view class="picker-box">{{roles[roleIndex].name}}</view>
           </picker>
         </view>
         <view class="form-item">
           <text class="label">单位</text>
-          <input name="unit" placeholder="某某分公司 / 某某团队" />
+          <picker range="{{units}}" range-key="name" value="{{unitIndex}}" bindchange="onUnit">
+            <view class="picker-box">{{units[unitIndex].name}} · {{units[unitIndex].zone}}</view>
+          </picker>
         </view>
       </view>
       <button class="primary-btn" form-type="submit" loading="{{saving}}" disabled="{{saving}}">开通账号</button>
+    </view>
+  </form>
+
+  <form bindsubmit="submitRole">
+    <view class="card">
+      <view class="section-title">角色权限</view>
+      <view class="form-item">
+        <text class="label">角色名称</text>
+        <input name="name" placeholder="例如：大区招商主管" />
+      </view>
+      <view class="form-item">
+        <text class="label">客户范围</text>
+        <picker range="{{scopes}}" value="{{scopeIndex}}" bindchange="onScope">
+          <view class="picker-box">{{scopes[scopeIndex]}}</view>
+        </picker>
+      </view>
+      <button class="plain-btn" form-type="submit">添加角色</button>
+    </view>
+  </form>
+
+  <form bindsubmit="submitUnit">
+    <view class="card">
+      <view class="section-title">单位管理</view>
+      <view class="form-item">
+        <text class="label">单位名称</text>
+        <input name="name" placeholder="例如：东部战区杭州一部" />
+      </view>
+      <view class="form-item">
+        <text class="label">所属战区</text>
+        <picker range="{{zones}}" value="{{zoneIndex}}" bindchange="onZone">
+          <view class="picker-box">{{zones[zoneIndex]}}</view>
+        </picker>
+      </view>
+      <button class="plain-btn" form-type="submit">添加单位</button>
     </view>
   </form>
 
@@ -43,7 +79,7 @@
     <view class="user-row" wx:for="{{users}}" wx:key="id">
       <view>
         <view class="name">{{item.name}}</view>
-        <view class="muted">{{item.role}} · {{item.unit || item.region || '未填单位'}}</view>
+        <view class="muted">{{item.role}} · {{item.unit || '未填单位'}} · {{item.zone || item.region || '未分战区'}}</view>
         <view class="muted">账号：{{item.account || item.username}}</view>
       </view>
       <text class="status">{{item.status || '启用'}}</text>
