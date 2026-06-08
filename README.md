@@ -1,5 +1,9 @@
 # 智销AI
 
+一键部署到 Render：
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/zdq14556659-commits/zhixiao-ai)
+
 智销AI 是一个面向全屋定制软件销售团队的 AI CRM 原型，包含网页版和可安装 PWA App 体验。直接打开 `index.html` 即可运行。
 
 ## 本版调整

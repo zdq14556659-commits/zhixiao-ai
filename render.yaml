@@ -1,10 +1,14 @@
 services:
   - type: web
     name: zhixiao-ai
-    env: node
+    runtime: node
     plan: starter
+    repo: https://github.com/zdq14556659-commits/zhixiao-ai
+    branch: main
     buildCommand: "npm install --omit=dev"
     startCommand: "npm start"
+    healthCheckPath: "/api/health"
+    autoDeployTrigger: commit
     disk:
       name: zhixiao-ai-data
       mountPath: /var/data/zhixiao-ai
