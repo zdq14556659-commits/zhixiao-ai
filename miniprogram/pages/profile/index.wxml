@@ -1,0 +1,31 @@
+<view class="page">
+  <view class="header">
+    <text class="crumb">首页 / 我的</text>
+    <view class="title">我的账号</view>
+    <view class="subtitle">当前登录员工：{{currentUser.name}}</view>
+  </view>
+
+  <view class="card">
+    <view class="section-title">账号信息</view>
+    <view class="current-user">
+      <view class="avatar">{{currentUser.name ? currentUser.name.slice(0, 1) : '智'}}</view>
+      <view>
+        <view class="name">{{currentUser.name}}</view>
+        <view class="muted">{{currentUser.role}} · {{currentUser.region || currentUser.unit}}</view>
+        <view class="muted account">账号：{{currentUser.account || currentUser.username || currentUser.phone}}</view>
+      </view>
+    </view>
+  </view>
+
+  <view class="card" wx:if="{{canAdmin}}">
+    <view class="section-title">管理员后台</view>
+    <view class="muted line">给员工开账号、设置角色、区域和初始密码。</view>
+    <button class="primary-btn admin-btn" bindtap="goAdmin">进入管理员后台</button>
+  </view>
+
+  <view class="card">
+    <view class="section-title">账号安全</view>
+    <view class="muted line">离开共用设备前请退出登录，避免员工误用其他账号。</view>
+    <button class="danger-btn logout-btn" bindtap="logout">退出登录</button>
+  </view>
+</view>

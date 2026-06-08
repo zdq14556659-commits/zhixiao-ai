@@ -1,0 +1,23 @@
+<view class="page" wx:if="{{customer}}">
+  <view class="header">
+    <text class="crumb">客户管理 / 跟进</text>
+    <view class="title">{{customer.name}}</view>
+    <view class="subtitle">{{customer.stage}} · {{customer.owner}} · {{customer.region}}</view>
+  </view>
+
+  <form bindsubmit="submitFollow">
+    <view class="card">
+      <view class="form-item">
+        <text class="label">本次跟进记录</text>
+        <textarea name="note" placeholder="记录客户问题、意向、下一步动作"></textarea>
+      </view>
+      <view class="form-item">
+        <text class="label">下次跟进日期</text>
+        <picker mode="date" value="{{nextFollow}}" bindchange="onNextFollow">
+          <view class="picker-box">{{nextFollow}}</view>
+        </picker>
+      </view>
+      <button class="primary-btn" form-type="submit">保存跟进</button>
+    </view>
+  </form>
+</view>

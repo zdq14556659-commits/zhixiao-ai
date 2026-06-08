@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0f172a" />
+    <title>智销AI - 全屋定制行业 AI CRM</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">智</div>
+          <div>
+            <strong>智销AI</strong>
+            <span>全屋定制 AI CRM</span>
+          </div>
+        </div>
+        <nav class="nav" aria-label="主导航">
+          <button class="nav-item" data-view="workbench">工作台</button>
+          <button class="nav-item active" data-view="dashboard">CEO看板</button>
+          <button class="nav-item" data-view="workspace">客户管理</button>
+          <button class="nav-item" data-view="funnel">销售管理</button>
+          <button class="nav-item" data-view="call">录音管理</button>
+          <button class="nav-item" data-view="assistant">AI分析看板</button>
+          <button class="nav-item" data-view="field">地推地图</button>
+          <button class="nav-item" data-view="admin">系统管理</button>
+        </nav>
+        <div class="role-box">
+          <label for="roleSelect">当前角色</label>
+          <select id="roleSelect">
+            <option value="销售">销售</option>
+            <option value="主管" selected>主管</option>
+            <option value="区域经理">区域经理</option>
+            <option value="运营">运营</option>
+          </select>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p class="breadcrumb">首页 / <span id="viewCrumb">CEO管理看板</span></p>
+            <h1 id="viewTitle">CEO管理看板</h1>
+          </div>
+          <div class="top-actions">
+            <button class="icon-button" id="installBtn" title="安装为桌面/手机应用">↓</button>
+            <button class="primary" id="newCustomerBtn">新增客户</button>
+          </div>
+        </header>
+
+        <section class="view" id="workbenchView">
+          <div class="workbench-grid">
+            <div class="panel">
+              <div class="panel-title">
+                <h2>今日待办</h2>
+                <span>按客户跟进时间自动聚合</span>
+              </div>
+              <div class="alert-list" id="todoList"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">
+                <h2>数据采集状态</h2>
+                <span>电话、微信、会议、柜柜行为</span>
+              </div>
+              <div class="pipeline-list" id="pipelineList"></div>
+            </div>
+            <div class="panel wide-panel">
+              <div class="panel-title">
+                <h2>柜柜软件联动</h2>
+                <span>从沟通到方案的闭环</span>
+              </div>
+              <div class="integration-grid">
+                <div><strong>设计图</strong><span>同步客户方案与户型资料</span></div>
+                <div><strong>拆单记录</strong><span>识别客户是否尝试拆单</span></div>
+                <div><strong>报价单</strong><span>自动归档报价和成交版本</span></div>
+                <div><strong>三体人AI</strong><span>聊天中调用方案生成能力</span></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view active" id="dashboardView">
+          <p class="page-subtitle">高管视角综合数据分析</p>
+
+          <div class="metric-strip dashboard-metrics ceo-metrics">
+            <div class="metric">
+              <span>本月回款</span>
+              <strong id="monthlyPayment">¥0万</strong>
+              <small>目标 ¥150.0万</small>
+              <div class="progress-line"><i id="paymentProgress"></i></div>
+            </div>
+            <div class="metric">
+              <span>本月签单</span>
+              <strong id="monthlyOrders">0单</strong>
+              <small id="bestSeller">最佳销售：-</small>
+            </div>
+            <div class="metric">
+              <span>平均成交周期</span>
+              <strong id="avgCycle">0天</strong>
+              <small>平均客单价 ¥5.0万</small>
+            </div>
+            <div class="metric">
+              <span>团队规模</span>
+              <strong id="teamSize">0人</strong>
+              <small id="activeCustomers">活跃客户 0个</small>
+            </div>
+          </div>
+
+          <div class="panel ceo-problems">
+            <div class="panel-title">
+              <h2>🔍 五大核心问题分析</h2>
+              <span>来自销售漏斗、沟通记录、录音分析和柜柜行为数据</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>问题</th>
+                    <th>当前值</th>
+                    <th>基准值</th>
+                    <th>差距</th>
+                    <th>严重程度</th>
+                    <th>改进建议</th>
+                  </tr>
+                </thead>
+                <tbody id="coreProblemRows"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="dashboard-grid">
+            <div class="panel">
+              <div class="panel-title">
+                <h2>AI 经营提醒</h2>
+                <span>自动识别高意向和风险客户</span>
+              </div>
+              <div class="alert-list" id="aiAlerts"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">
+                <h2>区域资源热力</h2>
+                <span>全屋定制产业带覆盖</span>
+              </div>
+              <div class="rank-list" id="regionRanks"></div>
+            </div>
+            <div class="panel wide-panel">
+              <div class="panel-title">
+                <h2>销售推进排行</h2>
+                <span>按今日有效动作统计</span>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>销售</th>
+                      <th>区域</th>
+                      <th>名单</th>
+                      <th>线索</th>
+                      <th>商机</th>
+                      <th>跟进</th>
+                    </tr>
+                  </thead>
+                  <tbody id="salesRankRows"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="workspaceView">
+          <div class="panel customer-manager">
+            <div class="stage-tabs" id="customerStageTabs"></div>
+
+            <div class="filter-bar">
+              <label>关键词
+                <input id="customerKeyword" placeholder="客户名称 / 手机号 / 现用软件" />
+              </label>
+              <label>负责人
+                <select id="customerOwnerFilter">
+                  <option value="">全部</option>
+                </select>
+              </label>
+              <label>区域
+                <select id="customerRegionFilter">
+                  <option value="">全部</option>
+                </select>
+              </label>
+              <label>时间类型
+                <select id="customerDateType">
+                  <option value="createdAt">创建时间</option>
+                  <option value="lastFollow">最近跟进</option>
+                  <option value="nextFollow">下次跟进</option>
+                </select>
+              </label>
+              <label>开始日期
+                <input id="customerStartDate" type="date" />
+              </label>
+              <label>结束日期
+                <input id="customerEndDate" type="date" />
+              </label>
+              <label>跟进状态
+                <select id="customerFollowStatus">
+                  <option value="">全部</option>
+                  <option value="today">今日待跟进</option>
+                  <option value="overdue">已逾期</option>
+                  <option value="none">未设置</option>
+                </select>
+              </label>
+              <div class="filter-actions">
+                <button id="resetCustomerFilters">重置</button>
+                <button class="primary" id="applyCustomerFilters">查询</button>
+              </div>
+            </div>
+
+            <div class="list-toolbar">
+              <div>
+                <h2 id="customerStageTitle">名单管理</h2>
+                <span id="customerStageSummary">共 0 个客户</span>
+              </div>
+              <div class="top-actions">
+                <button id="batchImportBtn">批量导入</button>
+                <button class="primary" id="singleAddBtn">单个添加</button>
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              <table class="customer-table">
+                <thead>
+                  <tr>
+                    <th>客户名称</th>
+                    <th>手机号</th>
+                    <th>负责人</th>
+                    <th>区域</th>
+                    <th>预计金额</th>
+                    <th>创建时间</th>
+                    <th>最近跟进</th>
+                    <th>下次跟进</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="customerRows"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="daily-panel supervisor-only">
+            <div class="panel-title">
+              <h2>销售录入日报</h2>
+              <span>主管可按时间段查看销售录入和跟进情况</span>
+            </div>
+            <div class="daily-range">
+              <label>开始日期<input id="dailyStartDate" type="date" value="2026-06-01" /></label>
+              <label>结束日期<input id="dailyEndDate" type="date" value="2026-06-05" /></label>
+              <button id="exportDailyBtn">导出日报</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>销售</th>
+                    <th>录入名单</th>
+                    <th>新增线索</th>
+                    <th>新增商机</th>
+                    <th>跟进记录</th>
+                  </tr>
+                </thead>
+                <tbody id="dailyRows"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="callView">
+          <div class="split-layout">
+            <div class="panel">
+              <div class="panel-title">
+                <h2>App 拨号与录音</h2>
+                <span>移动端点击手机号直接拨打</span>
+              </div>
+              <div class="phone-card">
+                <div class="phone-screen">
+                  <div class="status-line">智销AI App</div>
+                  <h3 id="callCustomerName">佛山柜体门板厂</h3>
+                  <a id="callPhone" href="tel:13800138000">138 0013 8000</a>
+                  <button class="call-button" id="startCallBtn">拨打</button>
+                  <p>原生 App 接入通话录音后，AI 自动提取客户意向、异议和下一步策略。</p>
+                </div>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">
+                <h2>AI 客户意向分析</h2>
+                <span>围绕拆单、排产、设备对接识别成交机会</span>
+              </div>
+              <label for="recordingSelect">选择录音文本</label>
+              <select id="recordingSelect"></select>
+              <button class="primary full" id="analyzeCallBtn">生成分析</button>
+              <div class="analysis-card" id="callAnalysis"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="funnelView">
+          <div class="panel">
+            <div class="panel-title">
+              <h2>转化漏斗分析</h2>
+              <span>定位销售在全屋定制软件销售中的薄弱环节</span>
+            </div>
+            <div class="funnel" id="funnelChart"></div>
+            <div class="insight-grid" id="funnelInsights"></div>
+          </div>
+        </section>
+
+        <section class="view" id="fieldView">
+          <div class="field-layout">
+            <div class="map-panel">
+              <div class="map-toolbar">
+                <strong>全国全屋定制工厂攻坚地图</strong>
+                <button id="locateBtn">定位打卡</button>
+              </div>
+              <div class="map-canvas" id="mapCanvas" aria-label="地推地图模拟视图"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">
+                <h2>拜访打卡</h2>
+                <span>记录工厂名头、产线设备、现用软件和市场状态</span>
+              </div>
+              <form id="visitForm" class="form-stack">
+                <label>工厂名头<input name="factory" required value="杭州雅居全屋定制工厂" /></label>
+                <label>生产线<input name="line" required value="电子锯 2台 / 封边机 3台 / 六面钻 1台" /></label>
+                <label>现使用软件<input name="software" required value="酷家乐 + Excel 排产" /></label>
+                <label>市场状态
+                  <select name="status">
+                    <option value="待攻克">待攻克</option>
+                    <option value="跟进中">跟进中</option>
+                    <option value="已成交">已成交</option>
+                  </select>
+                </label>
+                <button class="primary" type="submit">上传拜访信息</button>
+              </form>
+              <div class="visit-list" id="visitList"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="assistantView">
+          <div class="split-layout">
+            <div class="panel">
+              <div class="panel-title">
+                <h2>AI 话术推荐助手</h2>
+                <span>结合通话问题，从知识库检索最佳应答</span>
+              </div>
+              <label for="customerQuestion">客户问题</label>
+              <textarea id="customerQuestion" rows="5">你们软件能不能从设计图直接拆单到开料？我们现在酷家乐出图，后面还要人工算板件，特别容易错。</textarea>
+              <button class="primary full" id="recommendScriptBtn">检索话术</button>
+              <div class="script-result" id="scriptResult"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">
+                <h2>知识库</h2>
+                <span>运营录入标准话术，AI 根据成功案例扩充</span>
+              </div>
+              <form id="knowledgeForm" class="form-stack">
+                <label>常见问题<input name="question" required placeholder="客户常问的问题" /></label>
+                <label>标准话术<textarea name="answer" rows="4" required placeholder="推荐应答话术"></textarea></label>
+                <button type="submit">新增话术</button>
+              </form>
+              <button class="ghost full" id="expandKbBtn">从成功案例自动扩充</button>
+              <div class="kb-list" id="kbList"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="adminView">
+          <div class="admin-grid">
+            <div class="panel">
+              <div class="panel-title">
+                <h2>员工账号与权限</h2>
+                <span>后台开账号并设置角色</span>
+              </div>
+              <form id="userForm" class="inline-form">
+                <input name="name" required placeholder="员工姓名" />
+                <input name="unit" required placeholder="单位/区域" />
+                <select name="role">
+                  <option>销售</option>
+                  <option>主管</option>
+                  <option>区域经理</option>
+                  <option>运营</option>
+                </select>
+                <button type="submit">开通</button>
+              </form>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>姓名</th>
+                      <th>角色</th>
+                      <th>单位</th>
+                      <th>权限</th>
+                    </tr>
+                  </thead>
+                  <tbody id="userRows"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">
+                <h2>官方资源导入分配</h2>
+                <span>运营导给单位主管，主管再分配销售</span>
+              </div>
+              <form id="resourceForm" class="form-stack">
+                <label>资源名单<textarea name="names" rows="5">佛山柜体门板厂, 13600000001&#10;成都整装定制工厂, 13600000002</textarea></label>
+                <label>导入给主管
+                  <select name="supervisor" id="supervisorSelect"></select>
+                </label>
+                <button class="primary" type="submit">导入资源</button>
+              </form>
+              <div class="resource-list" id="resourceList"></div>
+            </div>
+            <div class="panel wide-panel">
+              <div class="panel-title">
+                <h2>开发里程碑</h2>
+                <span>来自《智销AI 系统开发计划书》</span>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>时间节点</th>
+                      <th>里程碑</th>
+                      <th>交付物</th>
+                    </tr>
+                  </thead>
+                  <tbody id="roadmapRows"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel wide-panel">
+              <div class="panel-title">
+                <h2>推荐技术架构</h2>
+                <span>支持 SaaS 与私有化部署</span>
+              </div>
+              <div class="architecture-grid" id="architectureGrid"></div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="customerDialog">
+      <form method="dialog" id="customerForm" class="dialog-form">
+        <div class="panel-title">
+          <h2 id="dialogTitle">新增客户</h2>
+          <button class="close-button" value="cancel" type="submit">×</button>
+        </div>
+        <input type="hidden" name="id" />
+        <label>客户名称<input name="name" required /></label>
+        <label>手机号<input name="phone" required /></label>
+        <label>阶段
+          <select name="stage">
+            <option>名单</option>
+            <option>线索</option>
+            <option>商机</option>
+            <option>成交</option>
+          </select>
+        </label>
+        <label>负责人
+          <select name="owner" id="ownerSelect"></select>
+        </label>
+        <label>跟进记录<textarea name="note" rows="4" placeholder="填写本次沟通内容"></textarea></label>
+        <label>下次跟进时间<input name="nextFollow" type="date" /></label>
+        <menu>
+          <button value="cancel">取消</button>
+          <button class="primary" value="save" id="saveCustomerBtn">保存</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="batchImportDialog">
+      <form method="dialog" id="batchImportForm" class="dialog-form">
+        <div class="panel-title">
+          <h2>批量导入客户</h2>
+          <button class="close-button" value="cancel" type="submit">×</button>
+        </div>
+        <label>导入阶段
+          <select name="stage" id="batchStageSelect">
+            <option>名单</option>
+            <option>线索</option>
+            <option>商机</option>
+            <option>成交</option>
+          </select>
+        </label>
+        <label>默认负责人
+          <select name="owner" id="batchOwnerSelect"></select>
+        </label>
+        <label>客户数据
+          <textarea name="rows" rows="8" required placeholder="每行一个客户：客户名称,手机号,区域,预计金额&#10;例：佛山柜体门板厂,13900139000,华南,26"></textarea>
+        </label>
+        <p class="form-hint">支持从表格复制粘贴，字段顺序为：客户名称、手机号、区域、预计金额。手机号和后续字段可留空。</p>
+        <menu>
+          <button value="cancel">取消</button>
+          <button class="primary" value="import">导入</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast"></div>
+    <script src="./app.js"></script>
+  </body>
+</html>

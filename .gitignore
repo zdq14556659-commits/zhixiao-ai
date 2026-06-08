@@ -1,0 +1,16 @@
+node_modules/
+npm-debug.log*
+
+# Runtime data and uploaded visit photos
+backend/data/db.json
+backend/uploads/
+.tmp-render-data/
+
+# Local WeChat DevTools settings
+miniprogram/project.private.config.json
+
+# Local environment and OS files
+.env
+.env.*
+Thumbs.db
+.DS_Store

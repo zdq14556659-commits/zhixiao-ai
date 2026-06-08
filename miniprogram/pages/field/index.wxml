@@ -1,0 +1,93 @@
+<view class="page field-page">
+  <view class="header">
+    <text class="crumb">首页 / 地推地图</text>
+    <view class="title">地推拜访</view>
+    <view class="subtitle">当前员工：{{currentUser.name}}。上传工厂照片并定位打卡，绿色为已拜访，红色为已成交。</view>
+  </view>
+
+  <view class="map-shell">
+    <map
+      class="map"
+      latitude="{{latitude}}"
+      longitude="{{longitude}}"
+      markers="{{markers}}"
+      scale="5"
+      show-location
+      enable-zoom
+      enable-scroll
+    ></map>
+    <view class="map-legend">
+      <view><text class="dot green"></text>已拜访/跟进中</view>
+      <view><text class="dot red"></text>已成交</view>
+    </view>
+  </view>
+
+  <view class="city-strip">
+    <view wx:for="{{cityStats}}" wx:key="city">
+      <strong>{{item.city}}</strong>
+      <text>{{item.count}}家</text>
+    </view>
+  </view>
+
+  <form bindsubmit="submitVisit">
+    <view class="card fresh-card">
+      <view class="section-title">上传打卡</view>
+      <view class="form-item">
+        <text class="label">工厂名头</text>
+        <input name="factory" placeholder="杭州雅居全屋定制工厂" />
+      </view>
+      <view class="form-item">
+        <text class="label">生产线/设备</text>
+        <input name="line" placeholder="电子锯2台 / 封边机3台 / 六面钻1台" />
+      </view>
+      <view class="form-item">
+        <text class="label">现使用软件</text>
+        <input name="software" placeholder="酷家乐 + Excel排产" />
+      </view>
+      <view class="form-item">
+        <text class="label">市场状态</text>
+        <picker range="{{statuses}}" value="{{statusIndex}}" bindchange="onStatus">
+          <view class="picker-box">{{statuses[statusIndex]}}</view>
+        </picker>
+      </view>
+
+      <view class="form-item">
+        <view class="row">
+          <text class="label no-margin">现场图片</text>
+          <text class="muted">{{photos.length}}/6</text>
+        </view>
+        <view class="photo-grid">
+          <image wx:for="{{photos}}" wx:key="*this" src="{{item}}" mode="aspectFill" bindtap="previewPhoto" data-src="{{item}}"></image>
+          <button wx:if="{{photos.length < 6}}" class="photo-add" type="button" bindtap="choosePhotos">+</button>
+        </view>
+      </view>
+
+      <view class="location-box">
+        <view>经纬度：{{latitude}}, {{longitude}}</view>
+        <view>城市：{{currentCity || '待解析'}}</view>
+        <view>地址：{{currentAddress || '点击定位后自动解析'}}</view>
+      </view>
+
+      <view class="actions">
+        <button class="plain-btn" type="button" bindtap="locate">定位</button>
+        <button class="primary-btn" form-type="submit">上传打卡</button>
+      </view>
+    </view>
+  </form>
+
+  <view class="card fresh-card">
+    <view class="section-title">最近拜访</view>
+    <view class="visit" wx:for="{{visits}}" wx:key="id">
+      <view class="row">
+        <text class="visit-title">{{item.factory}}</text>
+        <text class="tag {{item.status === '已成交' ? 'sold' : ''}}">{{item.status}}</text>
+      </view>
+      <view class="muted">{{item.city || '未知城市'}} · {{item.address || '暂无地址'}}</view>
+      <view class="muted">拜访人：{{item.owner || '未记录'}} · {{item.line}}</view>
+      <view class="muted">{{item.software}} · {{item.date}}</view>
+      <scroll-view wx:if="{{item.photos && item.photos.length}}" class="visit-photos" scroll-x>
+        <image wx:for="{{item.photos}}" wx:key="*this" src="{{item}}" mode="aspectFill" bindtap="previewPhoto" data-src="{{item}}"></image>
+      </scroll-view>
+    </view>
+  </view>
+</view>

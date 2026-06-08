@@ -1,0 +1,71 @@
+.xiaozhi-hero {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+  margin-bottom: 22rpx;
+  padding: 26rpx;
+  border-radius: 20rpx;
+  color: #fff;
+  background: linear-gradient(135deg, #1f2d3d, #409eff);
+}
+
+.xiaozhi-hero .title,
+.xiaozhi-hero .subtitle {
+  color: #fff;
+}
+
+.xiaozhi-icon {
+  width: 96rpx;
+  height: 96rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 4rpx solid rgba(255, 255, 255, 0.7);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.16);
+  font-size: 42rpx;
+  font-weight: 900;
+}
+
+.answer {
+  margin: 18rpx 0;
+  white-space: pre-wrap;
+  line-height: 1.7;
+  font-size: 30rpx;
+}
+
+.source {
+  color: #409eff;
+  font-size: 25rpx;
+}
+
+.kb-form {
+  margin: 18rpx 0;
+  padding: 18rpx;
+  border-radius: 12rpx;
+  background: #f7f9fb;
+}
+
+.kb {
+  padding: 18rpx 0;
+  border-top: 1rpx solid #e4e9f0;
+}
+
+.kb:first-of-type {
+  border-top: 0;
+}
+
+.kb-q {
+  margin-bottom: 8rpx;
+  font-weight: 800;
+}
+
+.mini-btn {
+  min-width: 120rpx;
+  min-height: 58rpx;
+  font-size: 25rpx;
+}
+
+.no-bottom {
+  margin-bottom: 0;
+}

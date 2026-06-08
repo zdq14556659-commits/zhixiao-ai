@@ -1,0 +1,24 @@
+<view class="login-page">
+  <view class="brand">
+    <view class="logo">智</view>
+    <view>
+      <view class="brand-name">智销AI</view>
+      <view class="brand-subtitle">全屋定制工厂销售系统</view>
+    </view>
+  </view>
+
+  <form bindsubmit="submitLogin">
+    <view class="login-card">
+      <view class="section-title">账号登录</view>
+      <view class="form-item">
+        <text class="label">登录账号</text>
+        <input name="account" value="{{account}}" placeholder="请输入后台分配的账号" bindinput="onAccount" />
+      </view>
+      <view class="form-item">
+        <text class="label">登录密码</text>
+        <input name="password" value="{{password}}" password placeholder="请输入密码" bindinput="onPassword" />
+      </view>
+      <button class="primary-btn" form-type="submit" loading="{{loading}}" disabled="{{loading}}">登录</button>
+    </view>
+  </form>
+</view>

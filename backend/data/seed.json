@@ -1,0 +1,108 @@
+{
+  "version": "backend-v1",
+  "currentUserId": 1,
+  "stages": ["名单", "线索", "商机", "成交"],
+  "users": [
+    { "id": 1, "name": "林晨", "role": "销售", "unit": "华东定制产业带", "region": "华东" },
+    { "id": 2, "name": "周扬", "role": "销售", "unit": "华南定制产业带", "region": "华南" },
+    { "id": 3, "name": "陈主管", "role": "主管", "unit": "华东定制产业带", "region": "华东" },
+    { "id": 4, "name": "王区域", "role": "区域经理", "unit": "全国渠道一部", "region": "全国" },
+    { "id": 5, "name": "运营小组", "role": "运营", "unit": "总部增长运营", "region": "全国" }
+  ],
+  "customers": [
+    {
+      "id": 101,
+      "name": "杭州雅居全屋定制工厂",
+      "phone": "13800138000",
+      "stage": "名单",
+      "owner": "林晨",
+      "region": "华东",
+      "amount": 18,
+      "software": "酷家乐 + Excel排产",
+      "createdAt": "2026-06-04",
+      "followUps": [
+        { "date": "2026-06-04", "note": "老板关心设计拆单一体化，现用酷家乐出图后人工算板件。", "nextFollow": "2026-06-05" }
+      ]
+    },
+    {
+      "id": 102,
+      "name": "佛山柜体门板厂",
+      "phone": "13900139000",
+      "stage": "线索",
+      "owner": "周扬",
+      "region": "华南",
+      "amount": 26,
+      "software": "酷家乐 + 手工报价",
+      "createdAt": "2026-06-03",
+      "followUps": [
+        { "date": "2026-06-05", "note": "生产主管确认开料、封边、排产脱节，愿意看演示。", "nextFollow": "2026-06-05" }
+      ]
+    },
+    {
+      "id": 103,
+      "name": "成都整装定制工厂",
+      "phone": "13600000001",
+      "stage": "商机",
+      "owner": "林晨",
+      "region": "西南",
+      "amount": 32,
+      "software": "自研ERP + Excel",
+      "createdAt": "2026-06-02",
+      "followUps": [
+        { "date": "2026-06-03", "note": "需要门墙柜一体化报价、拆单和车间看板试点方案。", "nextFollow": "2026-06-04" }
+      ]
+    },
+    {
+      "id": 104,
+      "name": "合肥橱柜衣柜智造厂",
+      "phone": "13700000004",
+      "stage": "成交",
+      "owner": "周扬",
+      "region": "华东",
+      "amount": 45,
+      "software": "三维家 + 云熙拆单",
+      "createdAt": "2026-06-01",
+      "followUps": [
+        { "date": "2026-06-05", "note": "合同已回传，先上报价、拆单、生产进度看板三模块。", "nextFollow": "" }
+      ]
+    }
+  ],
+  "activities": [
+    { "date": "2026-06-04", "owner": "林晨", "type": "名单", "customerId": 101 },
+    { "date": "2026-06-05", "owner": "周扬", "type": "线索", "customerId": 102 },
+    { "date": "2026-06-03", "owner": "林晨", "type": "商机", "customerId": 103 },
+    { "date": "2026-06-05", "owner": "周扬", "type": "成交", "customerId": 104 }
+  ],
+  "visits": [
+    {
+      "id": 1,
+      "factory": "杭州雅居全屋定制工厂",
+      "line": "电子锯2台 / 封边机3台 / 六面钻1台",
+      "software": "酷家乐 + Excel排产",
+      "status": "跟进中",
+      "latitude": 30.2741,
+      "longitude": 120.1551,
+      "city": "杭州市",
+      "address": "浙江省杭州市",
+      "owner": "林晨",
+      "ownerId": 1,
+      "photos": [],
+      "date": "2026-06-05"
+    }
+  ],
+  "knowledge": [
+    {
+      "question": "设计图能不能直接拆单到开料",
+      "answer": "建议用客户一套真实订单演示，从设计、报价、拆单、板件清单到开料标签完整跑一遍。先证明错单减少和效率提升，再谈全厂上线。"
+    },
+    {
+      "question": "上线会不会影响正在交付的订单",
+      "answer": "建议样板门店加样板产线试点，旧订单不强切，新订单先双轨验证，两周跑通报价拆单和车间看板。"
+    },
+    {
+      "question": "价格太高",
+      "answer": "把报价拆成错单返工、板材浪费、延期赔付和管理统计人力四项损耗，用月订单量估算回本周期。"
+    }
+  ],
+  "resources": []
+}

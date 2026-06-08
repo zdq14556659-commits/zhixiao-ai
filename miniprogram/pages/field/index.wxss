@@ -1,0 +1,148 @@
+.field-page {
+  background: linear-gradient(180deg, #eef8f7 0%, #eef1f5 42%);
+}
+
+.map-shell {
+  position: relative;
+  margin-bottom: 20rpx;
+  border: 1rpx solid #d7ebe8;
+  border-radius: 20rpx;
+  overflow: hidden;
+  background: #f7fffd;
+  box-shadow: 0 10rpx 30rpx rgba(31, 45, 61, 0.06);
+}
+
+.map {
+  width: 100%;
+  height: 520rpx;
+}
+
+.map-legend {
+  position: absolute;
+  left: 18rpx;
+  bottom: 18rpx;
+  display: flex;
+  gap: 18rpx;
+  padding: 12rpx 16rpx;
+  border-radius: 999rpx;
+  color: #3f4a59;
+  background: rgba(255, 255, 255, 0.92);
+  font-size: 24rpx;
+}
+
+.dot {
+  display: inline-block;
+  width: 18rpx;
+  height: 18rpx;
+  margin-right: 8rpx;
+  border-radius: 50%;
+  vertical-align: -1rpx;
+}
+
+.dot.green {
+  background: #67c23a;
+}
+
+.dot.red {
+  background: #f56c6c;
+}
+
+.city-strip {
+  display: flex;
+  gap: 14rpx;
+  margin-bottom: 20rpx;
+  overflow-x: auto;
+}
+
+.city-strip view {
+  min-width: 160rpx;
+  padding: 18rpx;
+  border: 1rpx solid #d7ebe8;
+  border-radius: 16rpx;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.city-strip strong,
+.city-strip text {
+  display: block;
+}
+
+.city-strip text {
+  margin-top: 6rpx;
+  color: #7a8798;
+  font-size: 24rpx;
+}
+
+.fresh-card {
+  border-color: #d7ebe8;
+  box-shadow: 0 10rpx 30rpx rgba(31, 45, 61, 0.05);
+}
+
+.no-margin {
+  margin-bottom: 0;
+}
+
+.photo-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12rpx;
+}
+
+.photo-grid image,
+.photo-add {
+  width: 100%;
+  height: 150rpx;
+  border-radius: 12rpx;
+  overflow: hidden;
+}
+
+.photo-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2rpx dashed #b7d8d3;
+  color: #409eff;
+  background: #f7fffd;
+  font-size: 52rpx;
+}
+
+.location-box {
+  margin: 18rpx 0;
+  padding: 18rpx;
+  border-radius: 12rpx;
+  color: #5f6f80;
+  background: #f5fbfa;
+  line-height: 1.6;
+  font-size: 25rpx;
+}
+
+.visit {
+  padding: 20rpx 0;
+  border-top: 1rpx solid #e4e9f0;
+}
+
+.visit:first-of-type {
+  border-top: 0;
+}
+
+.visit-title {
+  font-weight: 800;
+}
+
+.tag.sold {
+  color: #f56c6c;
+  background: #fef0f0;
+}
+
+.visit-photos {
+  margin-top: 14rpx;
+  white-space: nowrap;
+}
+
+.visit-photos image {
+  display: inline-block;
+  width: 128rpx;
+  height: 128rpx;
+  margin-right: 12rpx;
+  border-radius: 10rpx;
+}

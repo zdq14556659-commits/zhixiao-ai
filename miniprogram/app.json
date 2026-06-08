@@ -1,0 +1,55 @@
+{
+  "pages": [
+    "pages/login/index",
+    "pages/dashboard/index",
+    "pages/customers/index",
+    "pages/customer-form/index",
+    "pages/batch-import/index",
+    "pages/follow/index",
+    "pages/field/index",
+    "pages/assistant/index",
+    "pages/profile/index",
+    "pages/admin/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "智销AI",
+    "navigationBarBackgroundColor": "#1f2d3d",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#eef1f5"
+  },
+  "tabBar": {
+    "color": "#7a8798",
+    "selectedColor": "#409eff",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "black",
+    "list": [
+      {
+        "pagePath": "pages/dashboard/index",
+        "text": "看板"
+      },
+      {
+        "pagePath": "pages/customers/index",
+        "text": "客户"
+      },
+      {
+        "pagePath": "pages/field/index",
+        "text": "地推"
+      },
+      {
+        "pagePath": "pages/assistant/index",
+        "text": "AI话术"
+      },
+      {
+        "pagePath": "pages/profile/index",
+        "text": "我的"
+      }
+    ]
+  },
+  "permission": {
+    "scope.userLocation": {
+      "desc": "用于销售地推拜访时定位打卡"
+    }
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

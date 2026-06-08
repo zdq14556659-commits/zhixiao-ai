@@ -1,0 +1,55 @@
+<view class="page">
+  <view class="header">
+    <text class="crumb">首页 / CEO管理看板</text>
+    <view class="title">CEO管理看板</view>
+    <view class="subtitle">{{scopeName}} · 员工看自己的数据，主管看团队数据</view>
+  </view>
+
+  <view class="metrics">
+    <view class="metric-card">
+      <text>本月回款</text>
+      <view class="metric-value">¥{{payment}}万</view>
+      <view class="muted">目标 ¥150.0万</view>
+      <view class="progress"><view style="width: {{paymentRate}}%;"></view></view>
+    </view>
+    <view class="metric-card">
+      <text>本月签单</text>
+      <view class="metric-value">{{orders}}单</view>
+      <view class="muted">最佳销售：{{bestSeller}}</view>
+    </view>
+    <view class="metric-card">
+      <text>平均成交周期</text>
+      <view class="metric-value">18.5天</view>
+      <view class="muted">平均客单价 ¥5.0万</view>
+    </view>
+    <view class="metric-card">
+      <text>团队规模</text>
+      <view class="metric-value">{{teamSize}}人</view>
+      <view class="muted">活跃客户 {{activeCount}}个</view>
+    </view>
+  </view>
+
+  <view class="card">
+    <view class="section-title">五大核心问题分析</view>
+    <view class="problem" wx:for="{{problems}}" wx:key="name">
+      <view class="row">
+        <text class="problem-name">{{item.name}}</text>
+        <text class="severity {{item.level === '严重' ? 'danger' : 'warn'}}">{{item.level}}</text>
+      </view>
+      <view class="problem-grid">
+        <text>当前值：{{item.current}}</text>
+        <text>基准值：{{item.base}}</text>
+        <text>差距：{{item.gap}}</text>
+      </view>
+      <view class="advice">{{item.advice}}</view>
+    </view>
+  </view>
+
+  <view class="card">
+    <view class="section-title">AI经营提醒</view>
+    <view class="alert" wx:for="{{alerts}}" wx:key="title">
+      <text class="alert-title">{{item.title}}</text>
+      <text class="alert-text">{{item.text}}</text>
+    </view>
+  </view>
+</view>
