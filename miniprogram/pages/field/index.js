@@ -121,9 +121,13 @@ Page({
         url: `${app.globalData.apiBase}/amap/regeo`,
         data: { longitude, latitude },
         success: (res) => {
+          if (res.data.error) {
+            wx.showToast({ title: "地址解析未配置，请选择位置", icon: "none" });
+          }
+          const address = res.data.address || "";
           this.setData({
-            currentCity: res.data.city || "",
-            currentAddress: res.data.address || ""
+            currentCity: res.data.city || this.extractCity(address),
+            currentAddress: address
           });
           resolve(res.data || {});
         },
@@ -133,6 +137,37 @@ Page({
         }
       });
     });
+  },
+
+  chooseLocation() {
+    wx.chooseLocation({
+      latitude: this.data.latitude,
+      longitude: this.data.longitude,
+      success: (res) => {
+        const latitude = Number(res.latitude.toFixed(6));
+        const longitude = Number(res.longitude.toFixed(6));
+        const address = res.address || res.name || "";
+        this.setData({
+          latitude,
+          longitude,
+          locationReady: true,
+          currentCity: this.extractCity(address) || res.name || "已选位置",
+          currentAddress: address || res.name || "已选择地图位置"
+        });
+        wx.showToast({ title: "位置已选择" });
+      },
+      fail: () => {
+        wx.showToast({ title: "未选择位置", icon: "none" });
+      }
+    });
+  },
+
+  extractCity(address) {
+    const text = String(address || "");
+    const municipality = text.match(/^(北京市|上海市|天津市|重庆市)/);
+    if (municipality) return municipality[1];
+    const city = text.match(/([\u4e00-\u9fa5]{2,12}市)/);
+    return city ? city[1] : "";
   },
 
   async submitVisit(event) {
@@ -145,11 +180,22 @@ Page({
       wx.showToast({ title: "请至少上传1张现场图片", icon: "none" });
       return;
     }
+    if (this.data.locationReady && !this.data.currentCity && !this.data.currentAddress) {
+      wx.showModal({
+        title: "地址未解析",
+        content: "当前只有经纬度，没有城市地址。请点“选择位置”确认工厂位置后再上传。",
+        showCancel: false
+      });
+      return;
+    }
 
     wx.showLoading({ title: "定位中" });
     try {
       if (!this.data.locationReady) {
         await this.locate({ silent: true });
+      }
+      if (!this.data.currentCity && !this.data.currentAddress) {
+        throw new Error("当前只有经纬度，没有城市地址。请点“选择位置”确认工厂位置后再上传。");
       }
       wx.showLoading({ title: "上传中" });
       const photoUrls = await this.uploadPhotos(this.data.photos);
@@ -178,9 +224,9 @@ Page({
       wx.showToast({ title: "已上传" });
     } catch (error) {
       wx.showModal({
-        title: this.data.locationReady ? "图片上传失败" : "定位失败",
+        title: this.data.locationReady ? "上传失败" : "定位失败",
         content: this.data.locationReady
-          ? error.message || "请确认后端已启动，体验版需配置 HTTPS 合法域名。"
+          ? error.message || "请确认地址已解析，或使用“选择位置”确认工厂地址。"
           : "请打开手机定位权限后重新打卡，不能使用默认城市位置。",
         showCancel: false
       });

@@ -116,6 +116,10 @@
   font-size: 25rpx;
 }
 
+.field-page .actions {
+  grid-template-columns: repeat(3, 1fr);
+}
+
 .visit {
   padding: 20rpx 0;
   border-top: 1rpx solid #e4e9f0;
