@@ -13,52 +13,58 @@
   <view class="card filter-card">
     <view class="form-item">
       <text class="label">关键词</text>
-      <input value="{{keyword}}" placeholder="客户名称 / 手机号 / 现用软件" bindinput="onKeyword" />
+      <input value="{{keyword}}" placeholder="客户名称 / 手机号" bindinput="onKeyword" />
     </view>
-    <view class="grid-2">
+    <view class="filter-grid">
+      <view class="form-item">
+        <text class="label">渠道来源</text>
+        <picker range="{{channelSources}}" value="{{channelIndex}}" bindchange="onChannel">
+          <view class="picker-box">{{channelSources[channelIndex]}}</view>
+        </picker>
+      </view>
       <view class="form-item">
         <text class="label">负责人</text>
         <picker range="{{owners}}" value="{{ownerIndex}}" bindchange="onOwner">
           <view class="picker-box">{{owners[ownerIndex]}}</view>
         </picker>
       </view>
+    </view>
+    <view class="filter-grid">
       <view class="form-item">
         <text class="label">区域</text>
         <picker range="{{regions}}" value="{{regionIndex}}" bindchange="onRegion">
           <view class="picker-box">{{regions[regionIndex]}}</view>
         </picker>
       </view>
-    </view>
-    <view class="grid-2">
       <view class="form-item">
         <text class="label">开始日期</text>
         <picker mode="date" value="{{startDate}}" bindchange="onStartDate">
           <view class="picker-box">{{startDate || '请选择'}}</view>
         </picker>
       </view>
+    </view>
+    <view class="filter-grid">
       <view class="form-item">
         <text class="label">结束日期</text>
         <picker mode="date" value="{{endDate}}" bindchange="onEndDate">
           <view class="picker-box">{{endDate || '请选择'}}</view>
         </picker>
       </view>
-    </view>
-    <view class="grid-2">
       <view class="form-item">
         <text class="label">跟进状态</text>
         <picker range="{{followStatuses}}" value="{{followStatusIndex}}" bindchange="onFollowStatus">
           <view class="picker-box">{{followStatuses[followStatusIndex]}}</view>
         </picker>
       </view>
-      <view class="form-item actions compact-actions">
-        <button class="plain-btn" bindtap="resetFilters">重置</button>
-        <button class="primary-btn" bindtap="applyFilters">查询</button>
-      </view>
+    </view>
+    <view class="filter-actions">
+      <button class="plain-btn" bindtap="resetFilters">重置</button>
+      <button class="primary-btn" bindtap="applyFilters">查询</button>
     </view>
   </view>
 
-  <view class="row list-head">
-    <text class="muted">共 {{filtered.length}} 个客户</text>
+  <view class="list-head">
+    <text class="muted list-count">共 {{filtered.length}} 个客户</text>
     <view class="head-actions">
       <button class="plain-btn mini-btn" bindtap="goBatchImport">批量导入</button>
       <button class="primary-btn mini-btn" bindtap="goAdd">单个添加</button>
@@ -69,14 +75,16 @@
     <view class="row">
       <view>
         <view class="customer-name">{{item.name}}</view>
-        <view class="muted">{{item.region}} · {{item.owner}} · 预计{{item.amount}}万</view>
+        <view class="muted">{{item.phone}} · {{item.channelLabel}}</view>
       </view>
       <text class="tag">{{item.stage}}</text>
     </view>
+    <view class="info">跟进人：{{item.followPerson || item.owner}} · 单位：{{item.unit || '待分配'}}</view>
+    <view class="info">地址：{{item.address || item.region || '待补充'}}</view>
     <view class="info">现用软件：{{item.software}}</view>
     <view class="info">最近跟进：{{item.lastFollow || '-'}} · 下次：{{item.nextFollow || '未设置'}}</view>
     <view class="note">{{item.lastNote}}</view>
-    <view class="actions">
+    <view class="customer-actions">
       <button class="plain-btn" data-phone="{{item.phone}}" bindtap="callCustomer">拨打</button>
       <button class="plain-btn" data-id="{{item.id}}" bindtap="goFollow">跟进</button>
       <button class="primary-btn" data-id="{{item.id}}" bindtap="advanceCustomer">{{item.stage === '成交' ? '查看' : '推进'}}</button>

@@ -3,6 +3,8 @@ const AUTH_KEY = "zhixiao_ai_auth_v1";
 const LOCAL_API_BASE = "http://127.0.0.1:8787/api";
 const PROD_API_BASE = "https://zhixiaoai1.onrender.com/api";
 const API_BASE = getApiBase();
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const CHANNEL_SOURCES = ["自媒体", "官网留言", "自主注册", "渠道介绍", "企查查", "客源汇", "公众号", "地推", "其他"];
 const LOCAL_DEMO_PASSWORDS = {
   admin: "123456",
   linchen: "123456",
@@ -41,6 +43,26 @@ function formatRequestError(error) {
   return message || "后端暂不可用";
 }
 
+function normalizeChannelSource(value) {
+  const text = String(value || "").trim();
+  if (CHANNEL_SOURCES.includes(text)) return text;
+  const aliases = {
+    官方资源: "官网留言",
+    官网: "官网留言",
+    网站留言: "官网留言",
+    官网注册: "自主注册",
+    注册: "自主注册",
+    转介绍: "渠道介绍",
+    介绍: "渠道介绍",
+    企查: "企查查",
+    微信公众号: "公众号",
+    手动录入: "其他",
+    批量导入: "其他",
+    展会: "其他"
+  };
+  return aliases[text] || "其他";
+}
+
 function getApiBase() {
   try {
     const info = wx.getAccountInfoSync();
@@ -71,7 +93,7 @@ const seedState = {
       id: 101,
       name: "杭州雅居全屋定制工厂",
       phone: "13800138000",
-      channelSource: "官方资源",
+      channelSource: "官网留言",
       createdBy: "运营小组",
       followPerson: "林晨",
       address: "浙江省杭州市",
@@ -93,7 +115,7 @@ const seedState = {
       id: 102,
       name: "佛山柜体门板厂",
       phone: "13900139000",
-      channelSource: "展会",
+      channelSource: "企查查",
       createdBy: "运营小组",
       followPerson: "周扬",
       address: "广东省佛山市",
@@ -137,7 +159,7 @@ const seedState = {
       id: 104,
       name: "合肥橱柜衣柜智造厂",
       phone: "13700000004",
-      channelSource: "转介绍",
+      channelSource: "渠道介绍",
       createdBy: "周扬",
       followPerson: "周扬",
       address: "安徽省合肥市",
@@ -203,6 +225,7 @@ App({
   globalData: {
     today,
     apiBase: API_BASE,
+    channelSources: CHANNEL_SOURCES,
     stageColors: {
       名单: "#64748b",
       线索: "#409eff",
@@ -254,6 +277,10 @@ App({
           if (res.statusCode >= 200 && res.statusCode < 300) {
             resolve(res.data);
           } else {
+            if (res.statusCode === 401) {
+              wx.removeStorageSync(AUTH_KEY);
+              wx.reLaunch({ url: "/pages/login/index" });
+            }
             reject(new Error(res.data?.error || `请求失败 ${res.statusCode}`));
           }
         },
@@ -271,7 +298,7 @@ App({
       method: "POST",
       data: { account, password }
     }).then((data) => {
-      wx.setStorageSync(AUTH_KEY, { token: data.token, user: data.user });
+      wx.setStorageSync(AUTH_KEY, { token: data.token, user: data.user, loginAt: Date.now() });
       const remoteState = data.state || this.getState();
       remoteState.currentUserId = data.user.id;
       wx.setStorageSync(STORAGE_KEY, remoteState);
@@ -280,6 +307,7 @@ App({
   },
 
   localLogin(account, password) {
+    if (API_BASE !== LOCAL_API_BASE) return null;
     const loginAccount = String(account || "").trim().toLowerCase();
     if (LOCAL_DEMO_PASSWORDS[loginAccount] !== String(password || "")) return null;
     const state = this.getState();
@@ -291,7 +319,7 @@ App({
     delete safeUser.password;
     const token = `local-${safeUser.id}-${Date.now()}`;
     state.currentUserId = safeUser.id;
-    wx.setStorageSync(AUTH_KEY, { token, user: safeUser, mode: "local" });
+    wx.setStorageSync(AUTH_KEY, { token, user: safeUser, mode: "local", loginAt: Date.now() });
     wx.setStorageSync(STORAGE_KEY, state);
     return { token, user: safeUser, state };
   },
@@ -312,13 +340,21 @@ App({
   },
 
   getSession() {
-    return wx.getStorageSync(AUTH_KEY) || null;
+    const session = wx.getStorageSync(AUTH_KEY) || null;
+    if (!session) return null;
+    if (!session.loginAt || Date.now() - session.loginAt > SESSION_TTL_MS) {
+      wx.removeStorageSync(AUTH_KEY);
+      return null;
+    }
+    return session;
   },
 
   isLoggedIn() {
     const session = this.getSession();
     return Boolean(session && session.user && session.user.id);
   },
+
+  normalizeChannelSource,
 
   ensureLogin() {
     if (this.isLoggedIn()) return true;
@@ -352,6 +388,9 @@ App({
           if (session && session.user) nextState.currentUserId = session.user.id;
           wx.setStorageSync(STORAGE_KEY, nextState);
           if (callback) callback(nextState);
+        } else if (res.statusCode === 401) {
+          wx.removeStorageSync(AUTH_KEY);
+          wx.reLaunch({ url: "/pages/login/index" });
         } else if (callback) {
           callback(this.getState());
         }

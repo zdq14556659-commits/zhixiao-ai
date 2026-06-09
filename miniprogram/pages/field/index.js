@@ -188,6 +188,8 @@ Page({
   },
 
   uploadPhotos(paths) {
+    const session = app.getSession();
+    const header = session && session.token ? { Authorization: `Bearer ${session.token}` } : {};
     return Promise.all(
       paths.map(
         (filePath) =>
@@ -197,6 +199,7 @@ Page({
               url: `${app.globalData.apiBase}/uploads`,
               filePath,
               name: "file",
+              header,
               formData: { scene: "field-visit" },
               success: (res) => {
                 if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {

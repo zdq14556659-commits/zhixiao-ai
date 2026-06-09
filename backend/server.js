@@ -18,7 +18,9 @@ const FALLBACK_SEED_FILE = path.join(__dirname, "data", "seed.json");
 const PUBLIC_ROOT = path.resolve(__dirname, "..");
 const CUSTOMER_TEMPLATE_FILE = path.join(__dirname, "templates", "customer-import-template.xlsx");
 const STAGES = ["名单", "线索", "商机", "成交"];
+const CHANNEL_SOURCES = ["自媒体", "官网留言", "自主注册", "渠道介绍", "企查查", "客源汇", "公众号", "地推", "其他"];
 const ZONES = ["东部战区", "南部战区", "西部战区", "北部战区", "中部战区"];
+const TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 const ADMIN_ROLES = ["总负责人", "运营", "管理员"];
 const DEFAULT_PERMISSIONS = ["dashboard", "customers", "field", "assistant"];
 const ADMIN_PERMISSIONS = [...DEFAULT_PERMISSIONS, "admin"];
@@ -101,15 +103,18 @@ async function routeApi(req, res, url) {
     return sendJson(res, 200, { ok: true });
   }
 
+  if (req.method === "GET" && url.pathname === "/api/import/customers/template") {
+    return sendFile(res, CUSTOMER_TEMPLATE_FILE, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "CRM名单模板.xlsx");
+  }
+
+  const authState = readState();
+  const authUser = getAuthUser(req, authState);
+  if (!authUser) return sendJson(res, 401, { error: "请先登录" });
+
   if (req.method === "GET" && url.pathname === "/api/state") {
     const client = url.searchParams.get("client") || "web";
-    const state = readState();
-    const viewer = getAuthUser(req, state);
-    if (!viewer) {
-      const anonymousState = { ...state, users: [], customers: [], visits: [], activities: [] };
-      return sendJson(res, 200, client === "mini" ? toMiniState(anonymousState) : publicState(anonymousState));
-    }
-    return sendJson(res, 200, client === "mini" ? toMiniState(state, viewer) : publicState(state, viewer));
+    const state = authState;
+    return sendJson(res, 200, client === "mini" ? toMiniState(state, authUser) : publicState(state, authUser));
   }
 
   if (req.method === "PUT" && url.pathname === "/api/state") {
@@ -536,7 +541,7 @@ function normalizeCustomer(customer, context = {}) {
     id: Number(customer.id || Date.now()),
     name: customer.name || "",
     phone: customer.phone || "待补充",
-    channelSource: customer.channelSource || customer.source || customer.channel || "手动录入",
+    channelSource: normalizeChannelSource(customer.channelSource || customer.source || customer.channel),
     createdBy: customer.createdBy || customer.inputBy || customer.creator || customer.owner || ownerUser.name || "未记录",
     followPerson: customer.followPerson || customer.followOwner || customer.owner || ownerUser.name || "未分配",
     address: customer.address || customer.customerAddress || "",
@@ -623,7 +628,7 @@ function syncVisitToCustomer(state, visit) {
       id: Date.now() + 1,
       name: factory,
       phone: "待补充",
-      channelSource: "地推",
+      channelSource: normalizeChannelSource("地推"),
       createdBy: owner,
       followPerson: owner,
       address: visit.address || "",
@@ -750,7 +755,10 @@ function getAuthUser(req, state) {
       return state.users.find((user) => Number(user.id) === id) || null;
     }
     const decoded = Buffer.from(token, "base64url").toString("utf8");
-    const id = Number(decoded.split(":")[0]);
+    const [idText, timeText] = decoded.split(":");
+    const issuedAt = Number(timeText || 0);
+    if (!issuedAt || Date.now() - issuedAt > TOKEN_TTL_MS) return null;
+    const id = Number(idText);
     return state.users.find((user) => Number(user.id) === id) || null;
   } catch {
     return null;
@@ -980,6 +988,30 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
   const stageHeader = rawHeaders.find((header) => STAGES.includes(header));
   return dataRows
     .map((row) => {
+      if (!hasHeader) {
+        const third = String(row[2] || "").trim();
+        const thirdLooksLikeChannel = isKnownChannelText(third) || row.length >= 6;
+        return {
+          name: row[0] || "",
+          phone: row[1] || "待补充",
+          channelSource: thirdLooksLikeChannel ? normalizeChannelSource(third) : normalizeChannelSource(defaults.channelSource),
+          createdBy: defaults.createdBy || defaults.owner || "未记录",
+          followPerson: defaults.followPerson || defaults.owner || "未分配",
+          address: thirdLooksLikeChannel ? row[3] || "" : "",
+          stage: defaults.stage || "名单",
+          owner: defaults.owner || "未分配",
+          ownerId: defaults.ownerId || "",
+          unitId: defaults.unitId || "",
+          unit: defaults.unit || "",
+          zone: defaults.zone || "",
+          region: thirdLooksLikeChannel ? row[3] || defaults.zone || "待分区" : third || defaults.zone || "待分区",
+          amount: Number(thirdLooksLikeChannel ? row[5] || 15 : row[3] || 15) || 15,
+          software: thirdLooksLikeChannel ? row[4] || "待补充" : row[4] || "待补充",
+          lastNote: "名单文件导入。",
+          lastFollow: "",
+          nextFollow: ""
+        };
+      }
       const record = {};
       headers.forEach((header, index) => {
         if (!header || STAGES.includes(header)) return;
@@ -990,7 +1022,7 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
       return {
         name: record.name || "",
         phone: record.phone || "待补充",
-        channelSource: record.channelSource || defaults.channelSource || "批量导入",
+        channelSource: normalizeChannelSource(record.channelSource || defaults.channelSource),
         createdBy: record.createdBy || defaults.createdBy || defaults.owner || "未记录",
         followPerson: record.followPerson || defaults.followPerson || defaults.owner || "未分配",
         address: record.address || "",
@@ -1031,6 +1063,32 @@ function normalizeHeader(value) {
   if (/软件|software/i.test(text)) return "software";
   if (/区域|战区|region|zone/i.test(text)) return "region";
   return "";
+}
+
+function normalizeChannelSource(value) {
+  const text = String(value || "").trim();
+  if (CHANNEL_SOURCES.includes(text)) return text;
+  const aliases = {
+    官方资源: "官网留言",
+    官网: "官网留言",
+    网站留言: "官网留言",
+    官网注册: "自主注册",
+    注册: "自主注册",
+    转介绍: "渠道介绍",
+    介绍: "渠道介绍",
+    企查: "企查查",
+    微信公众号: "公众号",
+    手动录入: "其他",
+    批量导入: "其他",
+    展会: "其他"
+  };
+  return aliases[text] || "其他";
+}
+
+function isKnownChannelText(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return CHANNEL_SOURCES.includes(text) || ["官方资源", "官网", "网站留言", "官网注册", "注册", "转介绍", "介绍", "企查", "微信公众号", "手动录入", "批量导入", "展会"].includes(text);
 }
 
 function normalizeDateText(value) {

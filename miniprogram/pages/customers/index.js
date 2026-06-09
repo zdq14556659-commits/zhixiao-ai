@@ -7,6 +7,8 @@ Page({
     customers: [],
     filtered: [],
     keyword: "",
+    channelSources: ["全部"],
+    channelIndex: 0,
     owners: ["全部"],
     ownerIndex: 0,
     regions: ["全部"],
@@ -31,12 +33,16 @@ Page({
     const currentUser = app.getCurrentUser();
     const role = app.getRole(currentUser);
     const customers = app.scopeCustomers();
+    const channelSources = ["全部", ...app.globalData.channelSources];
     const owners = role.customerScope === "self" ? [currentUser.name] : ["全部", ...app.visibleSales().map((user) => user.name)];
     const regions = ["全部", ...Array.from(new Set(customers.map((item) => item.region).filter(Boolean)))];
+    const channelIndex = Math.min(this.data.channelIndex, channelSources.length - 1);
     const ownerIndex = Math.min(this.data.ownerIndex, owners.length - 1);
     const regionIndex = Math.min(this.data.regionIndex, regions.length - 1);
     this.setData({
       customers,
+      channelSources,
+      channelIndex,
       owners,
       regions,
       ownerIndex,
@@ -63,6 +69,11 @@ Page({
     this.applyFilters();
   },
 
+  onChannel(event) {
+    this.setData({ channelIndex: Number(event.detail.value) });
+    this.applyFilters();
+  },
+
   onRegion(event) {
     this.setData({ regionIndex: Number(event.detail.value) });
     this.applyFilters();
@@ -85,13 +96,16 @@ Page({
 
   applyFilters() {
     const keyword = this.data.keyword.trim().toLowerCase();
+    const channel = this.data.channelSources[this.data.channelIndex];
     const owner = this.data.owners[this.data.ownerIndex];
     const region = this.data.regions[this.data.regionIndex];
     const status = this.data.followStatuses[this.data.followStatusIndex];
     const filtered = this.data.customers.filter((item) => {
+      const itemChannel = app.normalizeChannelSource(item.channelSource);
       const source = `${item.name} ${item.phone} ${item.software} ${item.lastNote}`.toLowerCase();
       if (item.stage !== this.data.currentStage) return false;
       if (keyword && !source.includes(keyword)) return false;
+      if (channel !== "全部" && itemChannel !== channel) return false;
       if (owner !== "全部" && item.owner !== owner) return false;
       if (region !== "全部" && item.region !== region) return false;
       if (this.data.startDate && item.createdAt < this.data.startDate) return false;
@@ -100,13 +114,14 @@ Page({
       if (status === "已逾期" && (!item.nextFollow || item.nextFollow >= app.globalData.today)) return false;
       if (status === "未设置" && item.nextFollow) return false;
       return true;
-    });
+    }).map((item) => ({ ...item, channelLabel: app.normalizeChannelSource(item.channelSource) }));
     this.setData({ filtered });
   },
 
   resetFilters() {
     this.setData({
       keyword: "",
+      channelIndex: 0,
       ownerIndex: 0,
       regionIndex: 0,
       startDate: "",

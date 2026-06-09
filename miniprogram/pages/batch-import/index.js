@@ -7,6 +7,8 @@ Page({
     owners: [],
     ownerUsers: [],
     ownerIndex: 0,
+    channelSources: [],
+    channelIndex: 0,
     filePath: "",
     fileName: ""
   },
@@ -16,7 +18,7 @@ Page({
     const ownerUsers = app.visibleSales();
     const owners = ownerUsers.map((user) => user.name);
     const stageIndex = Math.max(0, this.data.stages.indexOf(options.stage || "名单"));
-    this.setData({ owners, ownerUsers, stageIndex });
+    this.setData({ owners, ownerUsers, stageIndex, channelSources: app.globalData.channelSources });
   },
 
   onStage(event) {
@@ -25,6 +27,10 @@ Page({
 
   onOwner(event) {
     this.setData({ ownerIndex: Number(event.detail.value) });
+  },
+
+  onChannel(event) {
+    this.setData({ channelIndex: Number(event.detail.value) });
   },
 
   submitImport(event) {
@@ -40,16 +46,25 @@ Page({
     const stage = this.data.stages[this.data.stageIndex];
     const owner = this.data.owners[this.data.ownerIndex];
     const ownerUser = this.data.ownerUsers[this.data.ownerIndex] || {};
+    const defaultChannel = this.data.channelSources[this.data.channelIndex] || "其他";
     rows.forEach((line, index) => {
-      const [name, phone = "待补充", region = "待分区", amount = "15", software = "待补充"] = line.split(/,|，|\t/).map((item) => item.trim());
+      const parts = line.split(/,|，|\t/).map((item) => item.trim());
+      const [name, phone = "待补充"] = parts;
+      const third = parts[2] || "";
+      const usesNewTemplate = app.globalData.channelSources.includes(third) || parts.length >= 6;
+      const channelSource = usesNewTemplate ? app.normalizeChannelSource(third) : defaultChannel;
+      const address = usesNewTemplate ? parts[3] || "" : "";
+      const region = usesNewTemplate ? address || "待分区" : third || "待分区";
+      const amount = usesNewTemplate ? parts[5] || "15" : parts[3] || "15";
+      const software = usesNewTemplate ? parts[4] || "待补充" : parts[4] || "待补充";
       state.customers.unshift({
         id: Date.now() + index,
         name,
         phone,
-        channelSource: "批量导入",
+        channelSource,
         createdBy: app.getCurrentUser().name || "未记录",
         followPerson: owner,
-        address: "",
+        address,
         stage,
         owner,
         ownerId: ownerUser.id || "",
@@ -74,7 +89,7 @@ Page({
     wx.chooseMessageFile({
       count: 1,
       type: "file",
-      extension: ["csv", "txt"],
+      extension: ["xlsx", "csv", "txt"],
       success: (res) => {
         const file = res.tempFiles[0];
         this.setData({ filePath: file.path, fileName: file.name });
@@ -85,10 +100,12 @@ Page({
 
   uploadImportFile(filePath) {
     wx.showLoading({ title: "导入中" });
+    const session = app.getSession();
     wx.uploadFile({
       url: `${app.globalData.apiBase}/import/customers`,
       filePath,
       name: "file",
+      header: session && session.token ? { Authorization: `Bearer ${session.token}` } : {},
       formData: {
         stage: this.data.stages[this.data.stageIndex],
         owner: this.data.owners[this.data.ownerIndex],
@@ -97,7 +114,8 @@ Page({
         unit: (this.data.ownerUsers[this.data.ownerIndex] || {}).unit || "",
         zone: (this.data.ownerUsers[this.data.ownerIndex] || {}).zone || "",
         createdBy: app.getCurrentUser().name || "未记录",
-        followPerson: this.data.owners[this.data.ownerIndex]
+        followPerson: this.data.owners[this.data.ownerIndex],
+        channelSource: this.data.channelSources[this.data.channelIndex] || "其他"
       },
       success: (res) => {
         wx.hideLoading();

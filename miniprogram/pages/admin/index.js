@@ -13,6 +13,7 @@ Page({
     scopeIndex: 1,
     users: [],
     knowledge: [],
+    activeTab: "accounts",
     saving: false
   },
 
@@ -53,6 +54,10 @@ Page({
 
   onScope(event) {
     this.setData({ scopeIndex: Number(event.detail.value) });
+  },
+
+  switchTab(event) {
+    this.setData({ activeTab: event.currentTarget.dataset.tab });
   },
 
   submitUser(event) {

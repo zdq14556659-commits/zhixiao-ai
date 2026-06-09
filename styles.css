@@ -209,6 +209,34 @@ h1, h2 { margin: 0; }
   gap: 20px;
 }
 
+.settings-tabs {
+  display: inline-flex;
+  gap: 8px;
+  margin-bottom: 18px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.settings-tabs button {
+  min-width: 120px;
+  border-color: transparent;
+}
+
+.settings-tabs button.active {
+  color: #fff;
+  background: var(--blue);
+}
+
+.settings-pane {
+  display: none;
+}
+
+.settings-pane.active {
+  display: grid;
+}
+
 .panel { padding: 22px; margin-bottom: 20px; }
 .panel-title { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
 .panel-title h2 { font-size: 20px; }

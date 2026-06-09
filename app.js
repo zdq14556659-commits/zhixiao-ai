@@ -4,9 +4,10 @@ const API_BASE =
 const AUTH_KEY = "zhixiao-web-auth";
 const today = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 const stages = ["名单", "线索", "商机", "成交"];
+const channelSources = ["自媒体", "官网留言", "自主注册", "渠道介绍", "企查查", "客源汇", "公众号", "地推", "其他"];
 const zones = ["东部战区", "南部战区", "西部战区", "北部战区", "中部战区"];
 const scopeLabels = { self: "仅本人客户", unit: "本单位客户", zone: "本战区客户", all: "全部客户" };
-const permissionLabels = { dashboard: "看板", customers: "客户管理", field: "地推地图", assistant: "AI话术", admin: "账号后台" };
+const permissionLabels = { dashboard: "看板", customers: "客户管理", field: "地推地图", assistant: "AI话术", admin: "系统设置" };
 const defaultRoles = [
   { id: "role-owner", name: "总负责人", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] },
   { id: "role-region", name: "区域经理", customerScope: "zone", permissions: ["dashboard", "customers", "field", "assistant"] },
@@ -19,6 +20,7 @@ const defaultRoles = [
 let state = { users: [], customers: [], visits: [], knowledge: [], stages, roles: defaultRoles, units: [] };
 let currentStage = "名单";
 let currentView = "dashboard";
+let currentSettingsTab = "accounts";
 let fieldMap = null;
 let fieldLayer = null;
 
@@ -36,14 +38,15 @@ function escapeHtml(value) {
 
 function session() {
   try {
-    return JSON.parse(localStorage.getItem(AUTH_KEY) || "null");
+    return JSON.parse(sessionStorage.getItem(AUTH_KEY) || "null");
   } catch {
     return null;
   }
 }
 
 function setSession(data) {
-  localStorage.setItem(AUTH_KEY, JSON.stringify(data));
+  localStorage.removeItem(AUTH_KEY);
+  sessionStorage.setItem(AUTH_KEY, JSON.stringify({ ...data, loginAt: Date.now() }));
 }
 
 function currentUser() {
@@ -121,6 +124,13 @@ function optionList(label, values) {
   return `<option value="">${label}</option>${options.map((value) => `<option>${escapeHtml(value)}</option>`).join("")}`;
 }
 
+function normalizeChannelSource(value) {
+  const text = String(value || "").trim();
+  if (channelSources.includes(text)) return text;
+  const aliases = { 官方资源: "官网留言", 官网: "官网留言", 网站留言: "官网留言", 官网注册: "自主注册", 注册: "自主注册", 转介绍: "渠道介绍", 介绍: "渠道介绍", 企查: "企查查", 微信公众号: "公众号", 手动录入: "其他", 批量导入: "其他", 展会: "其他" };
+  return aliases[text] || "其他";
+}
+
 function inDateRange(value, start, end) {
   if (start && (!value || value < start)) return false;
   if (end && (!value || value > end)) return false;
@@ -139,6 +149,11 @@ async function api(path, options = {}) {
   });
   const text = await response.text();
   const data = text ? JSON.parse(text) : {};
+  if (response.status === 401) {
+    sessionStorage.removeItem(AUTH_KEY);
+    localStorage.removeItem(AUTH_KEY);
+    requireLogin();
+  }
   if (!response.ok) throw new Error(data.error || `请求失败 ${response.status}`);
   return data;
 }
@@ -185,6 +200,7 @@ async function login(event) {
 }
 
 function logout() {
+  sessionStorage.removeItem(AUTH_KEY);
   localStorage.removeItem(AUTH_KEY);
   requireLogin();
 }
@@ -270,7 +286,7 @@ function renderCustomers() {
     .join("");
 
   const ownerOptions = visibleSales();
-  $("#channelFilter").innerHTML = optionList("全部渠道来源", customers.map((item) => item.channelSource));
+  $("#channelFilter").innerHTML = optionList("全部渠道来源", channelSources);
   $("#createdByFilter").innerHTML = optionList("全部录入人", customers.map((item) => item.createdBy));
   $("#followPersonFilter").innerHTML = `${roleForUser(currentUser()).customerScope === "self" ? "" : '<option value="">全部跟进人</option>'}${ownerOptions.map((user) => `<option>${escapeHtml(user.name)}</option>`).join("")}`;
   $("#unitFilter").innerHTML = optionList("全部单位", customers.map((item) => item.unit));
@@ -281,6 +297,7 @@ function renderCustomers() {
   $("#customerOwnerSelect").innerHTML = ownerOptions.map((user) => `<option>${user.name}</option>`).join("");
   $("#batchOwnerSelect").innerHTML = ownerOptions.map((user) => `<option>${user.name}</option>`).join("");
   $("#customerStageSelect").innerHTML = stages.map((stage) => `<option>${stage}</option>`).join("");
+  $("#customerChannelSelect").innerHTML = channelSources.map((source) => `<option>${source}</option>`).join("");
 
   const keyword = $("#customerKeyword").value.trim().toLowerCase();
   const channel = $("#channelFilter").value;
@@ -295,7 +312,7 @@ function renderCustomers() {
     const source = `${item.name} ${item.phone}`.toLowerCase();
     if (item.stage !== currentStage) return false;
     if (keyword && !source.includes(keyword)) return false;
-    if (channel && item.channelSource !== channel) return false;
+    if (channel && normalizeChannelSource(item.channelSource) !== channel) return false;
     if (createdBy && item.createdBy !== createdBy) return false;
     if (followPerson && (item.followPerson || item.owner) !== followPerson) return false;
     if (unit && item.unit !== unit) return false;
@@ -314,7 +331,7 @@ function customerRow(item) {
     <tr>
       <td><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.stage || "")}</small></td>
       <td><a href="tel:${item.phone}">${item.phone}</a></td>
-      <td>${escapeHtml(item.channelSource || "手动录入")}</td>
+      <td>${escapeHtml(normalizeChannelSource(item.channelSource))}</td>
       <td>${escapeHtml(item.createdBy || "未记录")}</td>
       <td>${escapeHtml(item.followPerson || item.owner || "未分配")}</td>
       <td><small>${escapeHtml(item.lastNote || "暂无跟进记录")}</small></td>
@@ -332,7 +349,7 @@ function openCustomerDialog(customer = null) {
   form.id.value = customer?.id || "";
   form.name.value = customer?.name || "";
   form.phone.value = customer?.phone || "";
-  form.channelSource.value = customer?.channelSource || "";
+  form.channelSource.value = normalizeChannelSource(customer?.channelSource || "其他");
   form.stage.value = customer?.stage || currentStage;
   form.owner.value = customer?.owner || $("#customerOwnerSelect").value;
   form.createdBy.value = customer?.createdBy || currentUser().name || "";
@@ -357,7 +374,7 @@ async function saveCustomer(event) {
     id: id || Date.now(),
     name: String(form.get("name")).trim(),
     phone: String(form.get("phone")).trim(),
-    channelSource: String(form.get("channelSource") || "手动录入"),
+    channelSource: normalizeChannelSource(form.get("channelSource") || "其他"),
     createdBy: String(form.get("createdBy") || currentUser().name || "未记录"),
     followPerson: String(form.get("followPerson") || form.get("owner") || "未分配"),
     address: String(form.get("address") || ""),
@@ -412,6 +429,7 @@ async function batchImport(event) {
   importBody.append("unitId", ownerUser.unitId || "");
   importBody.append("unit", ownerUser.unit || "");
   importBody.append("zone", ownerUser.zone || "");
+  importBody.append("channelSource", "其他");
   importBody.append("createdBy", currentUser().name || "未记录");
   importBody.append("followPerson", owner);
   if (file && file.size) {
@@ -572,6 +590,12 @@ async function addKnowledge(event) {
 }
 
 function renderAdmin() {
+  $("#settingsAccountsPane").classList.toggle("active", currentSettingsTab === "accounts");
+  $("#settingsKnowledgePane").classList.toggle("active", currentSettingsTab === "knowledge");
+  $$("#settingsTabs button").forEach((button) => button.classList.toggle("active", button.dataset.settingsTab === currentSettingsTab));
+  $("#knowledgeList").innerHTML = (state.knowledge || [])
+    .map((item) => `<article><b>${escapeHtml(item.question)}</b><p>${escapeHtml(item.answer)}</p></article>`)
+    .join("");
   const roleSelect = $("#userRoleSelect");
   const unitSelect = $("#userUnitSelect");
   const zoneSelect = $("#unitZoneSelect");
@@ -672,6 +696,12 @@ function wireEvents() {
   $("#loginForm").addEventListener("submit", login);
   $("#logoutBtn").addEventListener("click", logout);
   $$(".nav-item").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
+  $("#settingsTabs").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-settings-tab]");
+    if (!button) return;
+    currentSettingsTab = button.dataset.settingsTab;
+    renderAdmin();
+  });
   $("#stageTabs").addEventListener("click", (event) => {
     const button = event.target.closest("button");
     if (!button) return;
@@ -711,6 +741,3 @@ function wireEvents() {
 wireEvents();
 if (requireLogin()) loadState().catch((error) => toast(error.message));
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("./service-worker.js").catch(() => {});
-  $("#knowledgeList").innerHTML = (state.knowledge || [])
-    .map((item) => `<article><b>${escapeHtml(item.question)}</b><p>${escapeHtml(item.answer)}</p></article>`)
-    .join("");

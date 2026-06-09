@@ -7,6 +7,8 @@ Page({
     owners: [],
     ownerUsers: [],
     ownerIndex: 0,
+    channelSources: [],
+    channelIndex: 0,
     nextFollow: "2026-06-05"
   },
 
@@ -17,7 +19,7 @@ Page({
     const ownerUsers = app.visibleSales();
     const owners = ownerUsers.map((user) => user.name);
     const stageIndex = Math.max(0, this.data.stages.indexOf(options.stage || "名单"));
-    this.setData({ owners, ownerUsers, stageIndex, nextFollow: app.globalData.today });
+    this.setData({ owners, ownerUsers, stageIndex, channelSources: app.globalData.channelSources, nextFollow: app.globalData.today });
   },
 
   onStage(event) {
@@ -26,6 +28,10 @@ Page({
 
   onOwner(event) {
     this.setData({ ownerIndex: Number(event.detail.value) });
+  },
+
+  onChannel(event) {
+    this.setData({ channelIndex: Number(event.detail.value) });
   },
 
   onNextFollow(event) {
@@ -43,7 +49,7 @@ Page({
       id: Date.now(),
       name: form.name,
       phone: form.phone,
-      channelSource: form.channelSource || "手动录入",
+      channelSource: this.data.channelSources[this.data.channelIndex] || "其他",
       createdBy: app.getCurrentUser().name || "未记录",
       followPerson: ownerUser.name || this.data.owners[this.data.ownerIndex],
       address: form.address || "",

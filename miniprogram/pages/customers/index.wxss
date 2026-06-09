@@ -1,5 +1,5 @@
 .stage-tabs {
-  display: flex;
+  width: 100%;
   white-space: nowrap;
   margin-bottom: 20rpx;
   border: 1rpx solid #e4e9f0;
@@ -12,6 +12,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 25%;
   min-width: 150rpx;
   height: 88rpx;
   color: #606266;
@@ -31,20 +32,35 @@
 }
 
 .filter-card {
-  padding-bottom: 10rpx;
+  padding-bottom: 20rpx;
 }
 
-.compact-actions {
-  align-items: end;
-  margin-top: 34rpx;
+.filter-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 18rpx;
+}
+
+.filter-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16rpx;
+  margin-top: 4rpx;
 }
 
 .list-head {
+  display: block;
   margin: 20rpx 0;
 }
 
+.list-count {
+  display: block;
+  margin-bottom: 14rpx;
+}
+
 .head-actions {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 12rpx;
 }
 
@@ -61,6 +77,10 @@
   border: 1rpx solid #e4e9f0;
   border-radius: 12rpx;
   background: #fff;
+}
+
+.customer-card .row {
+  align-items: flex-start;
 }
 
 .customer-name {
@@ -85,6 +105,17 @@
 
 .actions {
   grid-template-columns: 1fr 1fr 1fr;
+}
+
+.customer-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12rpx;
+}
+
+.customer-actions button {
+  min-width: 0;
+  padding: 0 8rpx;
 }
 
 .empty {

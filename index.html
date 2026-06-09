@@ -129,7 +129,11 @@
         </section>
 
         <section class="view" id="settingsView">
-          <section class="panel">
+          <div class="settings-tabs" id="settingsTabs">
+            <button class="active" data-settings-tab="accounts">账号管理</button>
+            <button data-settings-tab="knowledge">知识库</button>
+          </div>
+          <section class="settings-pane panel" id="settingsKnowledgePane">
             <div class="panel-title"><h2>知识库</h2><span>小智会优先检索这里的标准话术</span></div>
             <form class="form-stack" id="knowledgeForm">
               <label>常见问题<input name="question" required placeholder="例如：价格太高" /></label>
@@ -138,7 +142,7 @@
             </form>
             <div class="kb-list compact-list" id="knowledgeList"></div>
           </section>
-          <div class="admin-grid">
+          <div class="settings-pane admin-grid active" id="settingsAccountsPane">
             <section class="panel">
               <div class="panel-title"><h2>新建员工账号</h2><span>员工可用账号密码登录小程序和 Web</span></div>
               <form class="form-stack" id="userForm">
@@ -167,7 +171,7 @@
                   <label><input type="checkbox" name="permissions" value="customers" checked /> 客户管理</label>
                   <label><input type="checkbox" name="permissions" value="field" checked /> 地推地图</label>
                   <label><input type="checkbox" name="permissions" value="assistant" checked /> AI话术</label>
-                  <label><input type="checkbox" name="permissions" value="admin" /> 账号后台</label>
+                  <label><input type="checkbox" name="permissions" value="admin" /> 系统设置</label>
                 </div>
                 <button class="primary" type="submit">添加角色</button>
               </form>
@@ -197,7 +201,7 @@
         <input type="hidden" name="id" />
         <label>客户名称<input name="name" required /></label>
         <label>手机号<input name="phone" required /></label>
-        <label>渠道来源<input name="channelSource" placeholder="地推 / 官方资源 / 转介绍 / 展会" /></label>
+        <label>渠道来源<select name="channelSource" id="customerChannelSelect"></select></label>
         <label>阶段<select name="stage" id="customerStageSelect"></select></label>
         <label>负责人<select name="owner" id="customerOwnerSelect"></select></label>
         <label>录入人<input name="createdBy" /></label>
@@ -218,7 +222,7 @@
         <a class="template-link" id="downloadTemplateLink" href="/api/import/customers/template" target="_blank" rel="noreferrer">下载样表</a>
         <label>默认负责人<select name="owner" id="batchOwnerSelect"></select></label>
         <label>上传名单文件<input name="file" type="file" accept=".xlsx,.csv,.txt" /></label>
-        <textarea name="rows" rows="8" placeholder="佛山柜体门板厂,13900139000,华南,26,酷家乐+手工报价"></textarea>
+        <textarea name="rows" rows="8" placeholder="佛山柜体门板厂,13900139000,地推,广东省佛山市,酷家乐+手工报价,26"></textarea>
         <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">导入</button></div>
       </form>
     </dialog>

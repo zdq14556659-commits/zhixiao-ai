@@ -16,7 +16,9 @@
       </view>
       <view class="form-item">
         <text class="label">渠道来源</text>
-        <input name="channelSource" placeholder="地推 / 官方资源 / 转介绍 / 展会" />
+        <picker range="{{channelSources}}" value="{{channelIndex}}" bindchange="onChannel">
+          <view class="picker-box">{{channelSources[channelIndex]}}</view>
+        </picker>
       </view>
       <view class="grid-2">
         <view class="form-item">
