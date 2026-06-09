@@ -21,26 +21,4 @@
     <view class="answer">{{result.answer}}</view>
     <view wx:if="{{result.matched && result.matched.length}}" class="muted">命中知识：{{result.matched[0].question}}</view>
   </view>
-
-  <view class="card">
-    <view class="row">
-      <view class="section-title no-bottom">知识库</view>
-      <button class="plain-btn mini-btn" bindtap="toggleAdd">{{showAdd ? '收起' : '添加'}}</button>
-    </view>
-    <view wx:if="{{showAdd}}" class="kb-form">
-      <view class="form-item">
-        <text class="label">常见问题</text>
-        <input value="{{newQuestion}}" bindinput="onNewQuestion" placeholder="例如：能否对接开料机？" />
-      </view>
-      <view class="form-item">
-        <text class="label">标准话术</text>
-        <textarea value="{{newAnswer}}" bindinput="onNewAnswer" placeholder="填写标准应答"></textarea>
-      </view>
-      <button class="primary-btn" bindtap="addKnowledge">保存知识</button>
-    </view>
-    <view class="kb" wx:for="{{knowledge}}" wx:key="question">
-      <view class="kb-q">{{item.question}}</view>
-      <view class="muted">{{item.answer}}</view>
-    </view>
-  </view>
 </view>

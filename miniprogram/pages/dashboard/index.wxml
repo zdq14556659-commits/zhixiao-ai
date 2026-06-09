@@ -2,12 +2,12 @@
   <view class="header">
     <text class="crumb">首页 / CEO管理看板</text>
     <view class="title">CEO管理看板</view>
-    <view class="subtitle">{{scopeName}} · 员工看自己的数据，主管看团队数据</view>
+    <view class="subtitle">{{scopeName}}</view>
   </view>
 
   <view class="metrics">
     <view class="metric-card">
-      <text>本月回款</text>
+      <text>本月进款</text>
       <view class="metric-value">¥{{payment}}万</view>
       <view class="muted">目标 ¥150.0万</view>
       <view class="progress"><view style="width: {{paymentRate}}%;"></view></view>
@@ -23,9 +23,9 @@
       <view class="muted">平均客单价 ¥5.0万</view>
     </view>
     <view class="metric-card">
-      <text>团队规模</text>
-      <view class="metric-value">{{teamSize}}人</view>
-      <view class="muted">活跃客户 {{activeCount}}个</view>
+      <text>活跃客户</text>
+      <view class="metric-value">{{activeCount}}个</view>
+      <view class="muted">今日已跟进客户</view>
     </view>
   </view>
 

@@ -3,6 +3,7 @@ const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const zlib = require("zlib");
 const { URL } = require("url");
 
 const PORT = Number(process.env.PORT || 8787);
@@ -15,6 +16,7 @@ const SEED_FILE = path.join(DATA_DIR, "seed.json");
 const UPLOAD_DIR = process.env.UPLOAD_DIR ? path.resolve(process.env.UPLOAD_DIR) : path.join(__dirname, "uploads");
 const FALLBACK_SEED_FILE = path.join(__dirname, "data", "seed.json");
 const PUBLIC_ROOT = path.resolve(__dirname, "..");
+const CUSTOMER_TEMPLATE_FILE = path.join(__dirname, "templates", "customer-import-template.xlsx");
 const STAGES = ["名单", "线索", "商机", "成交"];
 const ZONES = ["东部战区", "南部战区", "西部战区", "北部战区", "中部战区"];
 const ADMIN_ROLES = ["总负责人", "运营", "管理员"];
@@ -186,6 +188,10 @@ async function routeApi(req, res, url) {
     return sendJson(res, 201, result);
   }
 
+  if (req.method === "GET" && url.pathname === "/api/import/customers/template") {
+    return sendFile(res, CUSTOMER_TEMPLATE_FILE, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "CRM名单模板.xlsx");
+  }
+
   if (req.method === "POST" && url.pathname === "/api/users") {
     const body = await readBody(req);
     const state = readState();
@@ -214,6 +220,20 @@ async function routeApi(req, res, url) {
     state.users.push(user);
     writeState(state);
     return sendJson(res, 201, publicUser(user));
+  }
+
+  const userDelete = url.pathname.match(/^\/api\/users\/(\d+)$/);
+  if (req.method === "DELETE" && userDelete) {
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无员工删除权限" });
+    const id = Number(userDelete[1]);
+    if (viewer && Number(viewer.id) === id) return sendJson(res, 400, { error: "不能删除当前登录账号" });
+    const before = state.users.length;
+    state.users = state.users.filter((user) => Number(user.id) !== id);
+    if (state.users.length === before) return sendJson(res, 404, { error: "员工不存在" });
+    writeState(state);
+    return sendJson(res, 200, { ok: true });
   }
 
   if (req.method === "POST" && url.pathname === "/api/roles") {
@@ -253,6 +273,20 @@ async function routeApi(req, res, url) {
     state.units.push(unit);
     writeState(state);
     return sendJson(res, 201, unit);
+  }
+
+  const unitDelete = url.pathname.match(/^\/api\/units\/([^/]+)$/);
+  if (req.method === "DELETE" && unitDelete) {
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无单位删除权限" });
+    const id = decodeURIComponent(unitDelete[1]);
+    const before = state.units.length;
+    state.units = state.units.filter((unit) => unit.id !== id);
+    if (state.units.length === before) return sendJson(res, 404, { error: "单位不存在" });
+    state.users = state.users.map((user) => user.unitId === id ? { ...user, unitId: "", unit: "待分配" } : user);
+    writeState(state);
+    return sendJson(res, 200, { ok: true });
   }
 
   if (req.method === "POST" && url.pathname === "/api/knowledge") {
@@ -502,6 +536,10 @@ function normalizeCustomer(customer, context = {}) {
     id: Number(customer.id || Date.now()),
     name: customer.name || "",
     phone: customer.phone || "待补充",
+    channelSource: customer.channelSource || customer.source || customer.channel || "手动录入",
+    createdBy: customer.createdBy || customer.inputBy || customer.creator || customer.owner || ownerUser.name || "未记录",
+    followPerson: customer.followPerson || customer.followOwner || customer.owner || ownerUser.name || "未分配",
+    address: customer.address || customer.customerAddress || "",
     stage: customer.stage || "名单",
     owner: customer.owner || ownerUser.name || "林晨",
     ownerId: customer.ownerId || ownerUser.id || "",
@@ -585,6 +623,10 @@ function syncVisitToCustomer(state, visit) {
       id: Date.now() + 1,
       name: factory,
       phone: "待补充",
+      channelSource: "地推",
+      createdBy: owner,
+      followPerson: owner,
+      address: visit.address || "",
       stage,
       owner,
       ownerId,
@@ -606,6 +648,8 @@ function syncVisitToCustomer(state, visit) {
     ...state.customers[index],
     stage,
     owner,
+    followPerson: owner,
+    address: visit.address || state.customers[index].address,
     region: visit.city || state.customers[index].region,
     software: visit.software || state.customers[index].software
   }, state);
@@ -787,6 +831,18 @@ function sendNoContent(res) {
   res.end();
 }
 
+function sendFile(res, filePath, contentType, downloadName = "") {
+  if (!fs.existsSync(filePath)) {
+    return sendJson(res, 404, { error: "template not found" });
+  }
+  const headers = { "Content-Type": contentType };
+  if (downloadName) {
+    headers["Content-Disposition"] = `attachment; filename*=UTF-8''${encodeURIComponent(downloadName)}`;
+  }
+  res.writeHead(200, headers);
+  fs.createReadStream(filePath).pipe(res);
+}
+
 function serveStatic(req, res, url) {
   let pathname = decodeURIComponent(url.pathname);
   if (pathname.startsWith("/uploads/")) {
@@ -823,7 +879,8 @@ function serveStatic(req, res, url) {
     ".json": "application/json; charset=utf-8",
     ".svg": "image/svg+xml",
     ".png": "image/png",
-    ".webmanifest": "application/manifest+json"
+    ".webmanifest": "application/manifest+json",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
   }[ext] || "application/octet-stream";
   res.writeHead(200, { "Content-Type": contentType });
   fs.createReadStream(filePath).pipe(res);
@@ -849,29 +906,45 @@ async function importCustomers(req) {
   const unitId = multipart.fields.unitId || "";
   const unit = multipart.fields.unit || "";
   const zone = multipart.fields.zone || "";
-  const text = multipart.files[0] ? multipart.files[0].buffer.toString("utf8") : multipart.fields.rows || "";
-  const rows = parseCustomerRows(text);
   const state = readState();
+  const file = multipart.files[0];
+  const defaults = {
+    stage,
+    owner,
+    ownerId,
+    unitId,
+    unit,
+    zone,
+    createdBy: multipart.fields.createdBy || owner,
+    followPerson: multipart.fields.followPerson || owner
+  };
+  const rows = file
+    ? parseCustomerImportFile(file, defaults)
+    : parseCustomerRows(multipart.fields.rows || "", defaults);
   const customers = rows.map((row, index) => {
     const customer = normalizeCustomer({
       id: Date.now() + index,
       name: row.name,
       phone: row.phone,
-      stage,
-      owner,
-      ownerId,
-      unitId,
-      unit,
-      zone,
+      channelSource: row.channelSource,
+      createdBy: row.createdBy,
+      followPerson: row.followPerson,
+      address: row.address,
+      stage: row.stage,
+      owner: row.owner,
+      ownerId: row.ownerId,
+      unitId: row.unitId,
+      unit: row.unit,
+      zone: row.zone,
       region: row.region,
       amount: row.amount,
       software: row.software,
       createdAt: today(),
-      lastFollow: today(),
-      nextFollow: today(),
-      lastNote: "名单文件导入。"
+      lastFollow: row.lastFollow || today(),
+      nextFollow: row.nextFollow || today(),
+      lastNote: row.lastNote || "名单文件导入。"
     }, state);
-    state.activities.push({ date: today(), owner, type: stage, customerId: customer.id });
+    state.activities.push({ date: today(), owner: customer.owner, type: customer.stage, customerId: customer.id });
     return customer;
   });
   state.customers.unshift(...customers);
@@ -879,20 +952,173 @@ async function importCustomers(req) {
   return { imported: customers.length, customers: customers.map(toMiniCustomer) };
 }
 
-function parseCustomerRows(text) {
-  return text
+function parseCustomerImportFile(file, defaults) {
+  const filename = String(file.filename || "").toLowerCase();
+  if (filename.endsWith(".xlsx")) {
+    return parseCustomerRowsFromMatrix(parseXlsxFirstSheet(file.buffer), defaults);
+  }
+  return parseCustomerRows(file.buffer.toString("utf8"), defaults);
+}
+
+function parseCustomerRows(text, defaults = {}) {
+  const matrix = text
     .replace(/^\ufeff/, "")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .filter((line, index) => index !== 0 || !/(客户|名称|手机号|phone)/i.test(line))
-    .map((line) => {
-      const [name, phone = "待补充", region = "待分区", amount = "15", software = "待补充"] = line
-        .split(/,|，|\t/)
-        .map((item) => item.trim());
-      return { name, phone, region, amount: Number(amount) || 15, software };
+    .map((line) => line.split(/,|，|\t/).map((item) => item.trim()));
+  return parseCustomerRowsFromMatrix(matrix, defaults);
+}
+
+function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
+  const rows = matrix.filter((row) => row.some((cell) => String(cell || "").trim()));
+  if (!rows.length) return [];
+  const rawHeaders = rows[0].map((cell) => normalizeHeader(cell));
+  const hasHeader = rawHeaders.some((header) => ["name", "phone", "channelSource", "address"].includes(header) || STAGES.includes(header));
+  const headers = hasHeader ? rawHeaders : ["name", "phone", "region", "amount", "software"];
+  const dataRows = hasHeader ? rows.slice(1) : rows;
+  const stageHeader = rawHeaders.find((header) => STAGES.includes(header));
+  return dataRows
+    .map((row) => {
+      const record = {};
+      headers.forEach((header, index) => {
+        if (!header || STAGES.includes(header)) return;
+        record[header] = row[index];
+      });
+      const stageCell = row[headers.findIndex((header) => header === "stage")];
+      const stage = STAGES.includes(stageCell) ? stageCell : stageHeader || defaults.stage || "名单";
+      return {
+        name: record.name || "",
+        phone: record.phone || "待补充",
+        channelSource: record.channelSource || defaults.channelSource || "批量导入",
+        createdBy: record.createdBy || defaults.createdBy || defaults.owner || "未记录",
+        followPerson: record.followPerson || defaults.followPerson || defaults.owner || "未分配",
+        address: record.address || "",
+        stage,
+        owner: record.owner || defaults.owner || record.followPerson || "未分配",
+        ownerId: defaults.ownerId || "",
+        unitId: defaults.unitId || "",
+        unit: record.unit || defaults.unit || "",
+        zone: defaults.zone || "",
+        region: record.region || record.address || defaults.zone || "待分区",
+        amount: Number(record.amount || 15) || 15,
+        software: record.software || "待补充",
+        lastNote: record.lastNote || record.followRecord || "名单文件导入。",
+        lastFollow: normalizeDateText(record.lastFollow || ""),
+        nextFollow: normalizeDateText(record.nextFollow || "")
+      };
     })
     .filter((row) => row.name);
+}
+
+function normalizeHeader(value) {
+  const text = String(value || "").trim().replace(/\s/g, "");
+  if (!text) return "";
+  if (STAGES.includes(text)) return text;
+  if (/^客户/.test(text) && !/电话|地址/.test(text)) return "name";
+  if (/^name$|customer|客户名称/i.test(text)) return "name";
+  if (/客户电话|电话|手机号|phone|mobile|tel/i.test(text)) return "phone";
+  if (/渠道来源|来源|source|channel/i.test(text)) return "channelSource";
+  if (/录入人|创建人|input|createdby|creator/i.test(text)) return "createdBy";
+  if (/跟进人|负责人|owner|followperson|follower/i.test(text)) return "followPerson";
+  if (/跟进记录|记录|note|remark|followrecord/i.test(text)) return "lastNote";
+  if (/最新跟进|最后跟进|lastfollow|last/i.test(text)) return "lastFollow";
+  if (/下次跟进|nextfollow|next/i.test(text)) return "nextFollow";
+  if (/单位|部门|团队|unit|department|team/i.test(text)) return "unit";
+  if (/客户地址|地址|address/i.test(text)) return "address";
+  if (/阶段|状态|stage|status/i.test(text)) return "stage";
+  if (/金额|进款|回款|amount|payment/i.test(text)) return "amount";
+  if (/软件|software/i.test(text)) return "software";
+  if (/区域|战区|region|zone/i.test(text)) return "region";
+  return "";
+}
+
+function normalizeDateText(value) {
+  if (!value) return "";
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  const text = String(value).trim();
+  const match = text.match(/(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})/);
+  if (!match) return text;
+  return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+}
+
+function parseXlsxFirstSheet(buffer) {
+  const entries = unzipXlsxEntries(buffer);
+  const sharedStrings = parseSharedStrings(entries["xl/sharedStrings.xml"]?.toString("utf8") || "");
+  const sheetName = entries["xl/worksheets/sheet1.xml"] ? "xl/worksheets/sheet1.xml" : Object.keys(entries).find((name) => /^xl\/worksheets\/sheet\d+\.xml$/.test(name));
+  if (!sheetName) return [];
+  return parseWorksheet(entries[sheetName].toString("utf8"), sharedStrings);
+}
+
+function unzipXlsxEntries(buffer) {
+  const eocd = findSignature(buffer, 0x06054b50, Math.max(0, buffer.length - 66000));
+  if (eocd < 0) throw new Error("无法读取 xlsx 文件");
+  const totalEntries = buffer.readUInt16LE(eocd + 10);
+  const centralOffset = buffer.readUInt32LE(eocd + 16);
+  const entries = {};
+  let offset = centralOffset;
+  for (let i = 0; i < totalEntries; i += 1) {
+    if (buffer.readUInt32LE(offset) !== 0x02014b50) break;
+    const method = buffer.readUInt16LE(offset + 10);
+    const compressedSize = buffer.readUInt32LE(offset + 20);
+    const nameLength = buffer.readUInt16LE(offset + 28);
+    const extraLength = buffer.readUInt16LE(offset + 30);
+    const commentLength = buffer.readUInt16LE(offset + 32);
+    const localOffset = buffer.readUInt32LE(offset + 42);
+    const name = buffer.slice(offset + 46, offset + 46 + nameLength).toString("utf8");
+    const localNameLength = buffer.readUInt16LE(localOffset + 26);
+    const localExtraLength = buffer.readUInt16LE(localOffset + 28);
+    const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+    const compressed = buffer.slice(dataStart, dataStart + compressedSize);
+    entries[name] = method === 0 ? compressed : zlib.inflateRawSync(compressed);
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  return entries;
+}
+
+function findSignature(buffer, signature, start) {
+  for (let index = buffer.length - 4; index >= start; index -= 1) {
+    if (buffer.readUInt32LE(index) === signature) return index;
+  }
+  return -1;
+}
+
+function parseSharedStrings(xml) {
+  if (!xml) return [];
+  return [...xml.matchAll(/<si[\s\S]*?<\/si>/g)].map((match) => {
+    return [...match[0].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((part) => decodeXml(part[1])).join("");
+  });
+}
+
+function parseWorksheet(xml, sharedStrings) {
+  const matrix = [];
+  for (const rowMatch of xml.matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)) {
+    const cells = [];
+    for (const cellMatch of rowMatch[1].matchAll(/<c([^>]*)>([\s\S]*?)<\/c>/g)) {
+      const attrs = cellMatch[1];
+      const body = cellMatch[2];
+      const ref = (attrs.match(/\sr="([A-Z]+\d+)"/) || [])[1] || "";
+      const col = columnIndex((ref.match(/[A-Z]+/) || ["A"])[0]);
+      const type = (attrs.match(/\st="([^"]+)"/) || [])[1] || "";
+      const raw = (body.match(/<v[^>]*>([\s\S]*?)<\/v>/) || body.match(/<t[^>]*>([\s\S]*?)<\/t>/) || [])[1] || "";
+      cells[col] = type === "s" ? sharedStrings[Number(raw)] || "" : decodeXml(raw);
+    }
+    matrix.push(cells.map((cell) => cell ?? ""));
+  }
+  return matrix;
+}
+
+function columnIndex(name) {
+  return [...name].reduce((sum, char) => sum * 26 + char.charCodeAt(0) - 64, 0) - 1;
+}
+
+function decodeXml(value) {
+  return String(value || "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
 }
 
 function parseMultipart(req) {

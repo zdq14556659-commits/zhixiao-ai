@@ -18,9 +18,9 @@
   </view>
 
   <view class="card" wx:if="{{canAdmin}}">
-    <view class="section-title">管理员后台</view>
-    <view class="muted line">给员工开账号、设置角色、区域和初始密码。</view>
-    <button class="primary-btn admin-btn" bindtap="goAdmin">进入管理员后台</button>
+    <view class="section-title">系统设置</view>
+    <view class="muted line">管理员可维护员工账号、角色权限、单位和小智知识库。</view>
+    <button class="primary-btn admin-btn" bindtap="goAdmin">进入系统设置</button>
   </view>
 
   <view class="card">

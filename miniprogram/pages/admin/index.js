@@ -12,6 +12,7 @@ Page({
     zoneIndex: 0,
     scopeIndex: 1,
     users: [],
+    knowledge: [],
     saving: false
   },
 
@@ -22,13 +23,19 @@ Page({
       setTimeout(() => wx.navigateBack(), 500);
       return;
     }
+    this.reload();
+  },
+
+  reload(callback) {
     app.loadRemoteState(() => {
       const state = app.getState();
       this.setData({
         users: app.visibleUsers(),
         roles: app.getRoles(),
-        units: app.getUnits()
+        units: app.getUnits(),
+        knowledge: state.knowledge || []
       });
+      if (callback) callback();
     });
   },
 
@@ -75,9 +82,9 @@ Page({
         data: payload
       })
       .then(() => {
-        app.loadRemoteState(() => {
-          this.setData({ users: app.visibleUsers(), roles: app.getRoles(), units: app.getUnits(), roleIndex: 0, unitIndex: 0 });
-          wx.showToast({ title: "已开通" });
+        this.reload(() => {
+          this.setData({ roleIndex: 0, unitIndex: 0 });
+          wx.showToast({ title: "员工添加成功" });
         });
       })
       .catch((error) => {
@@ -100,9 +107,9 @@ Page({
         data: { name, zone: this.data.zones[this.data.zoneIndex] }
       })
       .then(() => {
-        app.loadRemoteState(() => {
-          this.setData({ units: app.getUnits(), zoneIndex: 0 });
-          wx.showToast({ title: "单位已添加" });
+        this.reload(() => {
+          this.setData({ zoneIndex: 0 });
+          wx.showToast({ title: "单位添加成功" });
         });
       })
       .catch((error) => wx.showToast({ title: error.message || "添加失败", icon: "none" }));
@@ -124,11 +131,67 @@ Page({
         }
       })
       .then(() => {
-        app.loadRemoteState(() => {
-          this.setData({ roles: app.getRoles(), scopeIndex: 1 });
-          wx.showToast({ title: "角色已添加" });
+        this.reload(() => {
+          this.setData({ scopeIndex: 1 });
+          wx.showToast({ title: "角色添加成功" });
         });
       })
       .catch((error) => wx.showToast({ title: error.message || "添加失败", icon: "none" }));
+  },
+
+  submitKnowledge(event) {
+    const question = String(event.detail.value.question || "").trim();
+    const answer = String(event.detail.value.answer || "").trim();
+    if (!question || !answer) {
+      wx.showToast({ title: "问题和话术必填", icon: "none" });
+      return;
+    }
+    app
+      .requestApi("/knowledge", {
+        method: "POST",
+        data: { question, answer }
+      })
+      .then(() => {
+        this.reload(() => wx.showToast({ title: "知识添加成功" }));
+      })
+      .catch((error) => wx.showToast({ title: error.message || "添加失败", icon: "none" }));
+  },
+
+  deleteUser(event) {
+    const id = event.currentTarget.dataset.id;
+    const user = this.data.users.find((item) => Number(item.id) === Number(id));
+    if (!user) return;
+    wx.showModal({
+      title: "删除员工",
+      content: `确认删除员工：${user.name}？`,
+      confirmText: "删除",
+      confirmColor: "#f56c6c",
+      success: (res) => {
+        if (!res.confirm) return;
+        app
+          .requestApi(`/users/${id}`, { method: "DELETE" })
+          .then(() => this.reload(() => wx.showToast({ title: "员工已删除" })))
+          .catch((error) => wx.showToast({ title: error.message || "删除失败", icon: "none" }));
+      }
+    });
+  },
+
+  deleteUnit(event) {
+    const id = event.currentTarget.dataset.id;
+    const unit = this.data.units.find((item) => item.id === id);
+    if (!unit) return;
+    wx.showModal({
+      title: "删除单位",
+      content: `确认删除单位：${unit.name}？`,
+      confirmText: "删除",
+      confirmColor: "#f56c6c",
+      success: (res) => {
+        if (!res.confirm) return;
+        app
+          .requestApi(`/units/${encodeURIComponent(id)}`, { method: "DELETE" })
+          .then(() => this.reload(() => wx.showToast({ title: "单位已删除" })))
+          .catch((error) => wx.showToast({ title: error.message || "删除失败", icon: "none" }));
+      }
+    });
   }
 });

@@ -7,7 +7,6 @@ Page({
     paymentRate: 0,
     orders: 0,
     bestSeller: "-",
-    teamSize: 0,
     activeCount: 0,
     problems: [],
     alerts: []
@@ -41,12 +40,11 @@ Page({
       }));
 
     this.setData({
-      scopeName: isSales ? `${currentUser.name}的数据` : "团队数据",
+      scopeName: isSales ? `${currentUser.name}的数据` : "当前权限内数据",
       payment: payment.toFixed(1),
       paymentRate: Math.min(Math.round((payment / 150) * 100), 100),
       orders: signed.length,
       bestSeller: isSales ? currentUser.name : best ? best.name : "-",
-      teamSize: isSales ? 1 : state.users.length,
       activeCount: customers.filter((item) => item.lastFollow === app.globalData.today).length,
       problems: this.buildProblems(customers, isSales),
       alerts

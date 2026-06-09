@@ -4,10 +4,7 @@ Page({
   data: {
     question: "你们软件能不能从设计图直接拆单到开料？我们现在酷家乐出图，后面还要人工算板件。",
     knowledge: [],
-    result: null,
-    showAdd: false,
-    newQuestion: "",
-    newAnswer: ""
+    result: null
   },
 
   onShow() {
@@ -20,41 +17,6 @@ Page({
 
   onQuestion(event) {
     this.setData({ question: event.detail.value });
-  },
-
-  toggleAdd() {
-    this.setData({ showAdd: !this.data.showAdd });
-  },
-
-  onNewQuestion(event) {
-    this.setData({ newQuestion: event.detail.value });
-  },
-
-  onNewAnswer(event) {
-    this.setData({ newAnswer: event.detail.value });
-  },
-
-  addKnowledge() {
-    if (!this.data.newQuestion || !this.data.newAnswer) {
-      wx.showToast({ title: "请填写问题和话术", icon: "none" });
-      return;
-    }
-    const item = {
-      id: Date.now(),
-      question: this.data.newQuestion,
-      answer: this.data.newAnswer,
-      createdAt: app.globalData.today
-    };
-    const state = app.getState();
-    state.knowledge.unshift(item);
-    app.setState(state);
-    this.setData({
-      knowledge: state.knowledge,
-      newQuestion: "",
-      newAnswer: "",
-      showAdd: false
-    });
-    wx.showToast({ title: "已添加" });
   },
 
   recommend() {

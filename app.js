@@ -112,6 +112,21 @@ function visibleSales() {
   return visibleUsers().filter((user) => roleForUser(user).name === "销售" || user.role === "销售");
 }
 
+function latestFollow(customer = {}) {
+  return customer.lastFollow || customer.createdAt || "";
+}
+
+function optionList(label, values) {
+  const options = [...new Set(values.filter(Boolean))];
+  return `<option value="">${label}</option>${options.map((value) => `<option>${escapeHtml(value)}</option>`).join("")}`;
+}
+
+function inDateRange(value, start, end) {
+  if (start && (!value || value < start)) return false;
+  if (end && (!value || value > end)) return false;
+  return true;
+}
+
 async function api(path, options = {}) {
   const active = session();
   const headers = { ...(options.headers || {}) };
@@ -193,7 +208,7 @@ function switchView(view) {
   $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
   $$(".view").forEach((item) => item.classList.remove("active"));
   $(`#${view}View`).classList.add("active");
-  const titles = { dashboard: "看板", customers: "客户管理", field: "地推地图", assistant: "AI话术", admin: "账号后台" };
+  const titles = { dashboard: "看板", customers: "客户管理", field: "地推地图", assistant: "AI话术", settings: "系统设置" };
   $("#viewTitle").textContent = titles[view];
   $("#viewCrumb").textContent = titles[view];
   render();
@@ -204,7 +219,7 @@ function render() {
   const user = currentUser();
   $("#currentUserText").textContent = `${user.name || "用户"} · ${user.role || ""}`;
   $$(".admin-only").forEach((node) => node.classList.toggle("hidden", !canAdmin()));
-  if (currentView === "admin" && !canAdmin()) switchView("dashboard");
+  if (currentView === "settings" && !canAdmin()) switchView("dashboard");
   renderDashboard();
   renderCustomers();
   renderField();
@@ -222,7 +237,6 @@ function renderDashboard() {
   $("#metricSigned").textContent = `${signed.length}家`;
   $("#metricFollow").textContent = `${todayFollow}条`;
   $("#metricOverdue").textContent = `${overdue}个`;
-  $("#metricScope").textContent = roleForUser(currentUser()).customerScope === "self" ? "我的数据" : "团队数据";
 
   const lists = customers.filter((item) => item.stage === "名单").length;
   const leads = customers.filter((item) => item.stage === "线索").length;
@@ -245,44 +259,69 @@ function renderDashboard() {
 
 function renderCustomers() {
   const customers = scopeCustomers();
+  const currentFilters = {
+    channel: $("#channelFilter")?.value || "",
+    createdBy: $("#createdByFilter")?.value || "",
+    followPerson: $("#followPersonFilter")?.value || "",
+    unit: $("#unitFilter")?.value || ""
+  };
   $("#stageTabs").innerHTML = stages
     .map((stage) => `<button class="${currentStage === stage ? "active" : ""}" data-stage="${stage}">${stage}<span>${customers.filter((item) => item.stage === stage).length}</span></button>`)
     .join("");
 
   const ownerOptions = visibleSales();
-  $("#ownerFilter").innerHTML = `${roleForUser(currentUser()).customerScope === "self" ? "" : '<option value="">全部销售</option>'}${ownerOptions.map((user) => `<option>${user.name}</option>`).join("")}`;
+  $("#channelFilter").innerHTML = optionList("全部渠道来源", customers.map((item) => item.channelSource));
+  $("#createdByFilter").innerHTML = optionList("全部录入人", customers.map((item) => item.createdBy));
+  $("#followPersonFilter").innerHTML = `${roleForUser(currentUser()).customerScope === "self" ? "" : '<option value="">全部跟进人</option>'}${ownerOptions.map((user) => `<option>${escapeHtml(user.name)}</option>`).join("")}`;
+  $("#unitFilter").innerHTML = optionList("全部单位", customers.map((item) => item.unit));
+  $("#channelFilter").value = currentFilters.channel;
+  $("#createdByFilter").value = currentFilters.createdBy;
+  $("#followPersonFilter").value = currentFilters.followPerson;
+  $("#unitFilter").value = currentFilters.unit;
   $("#customerOwnerSelect").innerHTML = ownerOptions.map((user) => `<option>${user.name}</option>`).join("");
   $("#batchOwnerSelect").innerHTML = ownerOptions.map((user) => `<option>${user.name}</option>`).join("");
   $("#customerStageSelect").innerHTML = stages.map((stage) => `<option>${stage}</option>`).join("");
 
   const keyword = $("#customerKeyword").value.trim().toLowerCase();
-  const owner = $("#ownerFilter").value;
-  const follow = $("#followFilter").value;
+  const channel = $("#channelFilter").value;
+  const createdBy = $("#createdByFilter").value;
+  const followPerson = $("#followPersonFilter").value;
+  const unit = $("#unitFilter").value;
+  const lastStart = $("#lastFollowStart").value;
+  const lastEnd = $("#lastFollowEnd").value;
+  const nextStart = $("#nextFollowStart").value;
+  const nextEnd = $("#nextFollowEnd").value;
   const rows = customers.filter((item) => {
-    const source = `${item.name} ${item.phone} ${item.software} ${item.lastNote}`.toLowerCase();
+    const source = `${item.name} ${item.phone}`.toLowerCase();
     if (item.stage !== currentStage) return false;
     if (keyword && !source.includes(keyword)) return false;
-    if (owner && item.owner !== owner) return false;
-    if (follow === "today" && item.nextFollow !== today) return false;
-    if (follow === "overdue" && (!item.nextFollow || item.nextFollow >= today)) return false;
-    if (follow === "none" && item.nextFollow) return false;
+    if (channel && item.channelSource !== channel) return false;
+    if (createdBy && item.createdBy !== createdBy) return false;
+    if (followPerson && (item.followPerson || item.owner) !== followPerson) return false;
+    if (unit && item.unit !== unit) return false;
+    if (!inDateRange(latestFollow(item), lastStart, lastEnd)) return false;
+    if (!inDateRange(item.nextFollow || "", nextStart, nextEnd)) return false;
     return true;
   });
   $("#customerRows").innerHTML = rows.length
     ? rows.map(customerRow).join("")
-    : `<tr><td colspan="7" class="empty">暂无客户</td></tr>`;
+    : `<tr><td colspan="11" class="empty">暂无客户</td></tr>`;
 }
 
 function customerRow(item) {
   const dueClass = item.nextFollow && item.nextFollow < today ? "overdue" : item.nextFollow === today ? "today" : "";
   return `
     <tr>
-      <td><b>${item.name}</b><small>${item.lastNote || ""}</small></td>
+      <td><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.stage || "")}</small></td>
       <td><a href="tel:${item.phone}">${item.phone}</a></td>
-      <td>${item.owner}</td>
-      <td>${item.region || "待分区"}</td>
-      <td>${item.software || "待补充"}</td>
+      <td>${escapeHtml(item.channelSource || "手动录入")}</td>
+      <td>${escapeHtml(item.createdBy || "未记录")}</td>
+      <td>${escapeHtml(item.followPerson || item.owner || "未分配")}</td>
+      <td><small>${escapeHtml(item.lastNote || "暂无跟进记录")}</small></td>
+      <td>${latestFollow(item) || "-"}</td>
       <td class="${dueClass}">${item.nextFollow || "未设置"}</td>
+      <td>${escapeHtml(item.unit || "待分配")}</td>
+      <td>${escapeHtml(item.address || item.region || "待补充")}</td>
       <td><button data-action="follow" data-id="${item.id}">跟进</button><button data-action="advance" data-id="${item.id}">${item.stage === "成交" ? "已成交" : "推进"}</button></td>
     </tr>`;
 }
@@ -293,9 +332,12 @@ function openCustomerDialog(customer = null) {
   form.id.value = customer?.id || "";
   form.name.value = customer?.name || "";
   form.phone.value = customer?.phone || "";
+  form.channelSource.value = customer?.channelSource || "";
   form.stage.value = customer?.stage || currentStage;
   form.owner.value = customer?.owner || $("#customerOwnerSelect").value;
-  form.region.value = customer?.region || "";
+  form.createdBy.value = customer?.createdBy || currentUser().name || "";
+  form.followPerson.value = customer?.followPerson || customer?.owner || form.owner.value;
+  form.address.value = customer?.address || "";
   form.amount.value = customer?.amount || 15;
   form.software.value = customer?.software || "";
   form.note.value = "";
@@ -315,13 +357,17 @@ async function saveCustomer(event) {
     id: id || Date.now(),
     name: String(form.get("name")).trim(),
     phone: String(form.get("phone")).trim(),
+    channelSource: String(form.get("channelSource") || "手动录入"),
+    createdBy: String(form.get("createdBy") || currentUser().name || "未记录"),
+    followPerson: String(form.get("followPerson") || form.get("owner") || "未分配"),
+    address: String(form.get("address") || ""),
     stage: String(form.get("stage")),
     owner: String(form.get("owner")),
     ownerId: ownerUser.id || "",
     unitId: ownerUser.unitId || "",
     unit: ownerUser.unit || ownerUnit.name || "",
     zone: ownerUser.zone || ownerUnit.zone || "",
-    region: String(form.get("region") || "待分区"),
+    region: ownerUser.zone || ownerUnit.zone || "待分区",
     amount: Number(form.get("amount") || 15),
     software: String(form.get("software") || "待补充"),
     createdAt: id ? undefined : today,
@@ -358,19 +404,28 @@ async function batchImport(event) {
   const form = new FormData(event.currentTarget);
   const owner = String(form.get("owner"));
   const ownerUser = userByName(owner);
-  const ownerId = ownerUser.id || "";
-  const rows = String(form.get("rows"))
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  rows.forEach((line, index) => {
-    const [name, phone = "待补充", region = "待分区", amount = "15", software = "待补充"] = line.split(/,|，|\t/).map((part) => part.trim());
-    state.customers.unshift({ id: Date.now() + index, name, phone, region, amount: Number(amount) || 15, software, owner, ownerId, unitId: ownerUser.unitId || "", unit: ownerUser.unit || "", zone: ownerUser.zone || "", stage: currentStage, createdAt: today, lastFollow: today, nextFollow: today, lastNote: "批量导入客户。" });
-  });
-  await saveState();
+  const file = form.get("file");
+  const importBody = new FormData();
+  importBody.append("stage", currentStage);
+  importBody.append("owner", owner);
+  importBody.append("ownerId", ownerUser.id || "");
+  importBody.append("unitId", ownerUser.unitId || "");
+  importBody.append("unit", ownerUser.unit || "");
+  importBody.append("zone", ownerUser.zone || "");
+  importBody.append("createdBy", currentUser().name || "未记录");
+  importBody.append("followPerson", owner);
+  if (file && file.size) {
+    importBody.append("file", file);
+  } else {
+    const rows = String(form.get("rows") || "").trim();
+    if (!rows) return toast("请选择文件或粘贴客户数据");
+    importBody.append("rows", rows);
+  }
+  const result = await api("/import/customers", { method: "POST", body: importBody });
   $("#batchDialog").close();
+  event.currentTarget.reset();
   await loadState();
-  toast(`已导入 ${rows.length} 个`);
+  toast(`已导入 ${result.imported || 0} 个客户`);
 }
 
 function isSoldStatus(status) {
@@ -410,9 +465,9 @@ function initFieldMap() {
     zoomControl: true,
     attributionControl: true
   }).setView([35.86166, 104.195397], 5);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
     maxZoom: 18,
-    attribution: "&copy; OpenStreetMap"
+    attribution: "&copy; OpenStreetMap &copy; CARTO"
   }).addTo(fieldMap);
   fieldLayer = L.layerGroup().addTo(fieldMap);
   return true;
@@ -497,9 +552,6 @@ function renderField() {
 }
 
 function renderAssistant() {
-  $("#knowledgeList").innerHTML = (state.knowledge || [])
-    .map((item) => `<article><b>${item.question}</b><p>${item.answer}</p></article>`)
-    .join("");
 }
 
 async function recommend() {
@@ -533,13 +585,13 @@ function renderAdmin() {
     zoneSelect.innerHTML = zones.map((zone) => `<option>${zone}</option>`).join("");
   }
   $("#userList").innerHTML = visibleUsers()
-    .map((user) => `<article><b>${user.name}</b><span>${user.status || "启用"}</span><p>${user.role} · ${user.unit || "待分配"} · ${user.zone || "未分战区"} · 账号：${user.account || user.username || user.phone || "-"}</p></article>`)
+    .map((user) => `<article><b>${escapeHtml(user.name)}</b><span>${user.status || "启用"}</span><p>${escapeHtml(user.role)} · ${escapeHtml(user.unit || "待分配")} · ${escapeHtml(user.zone || "未分战区")} · 账号：${escapeHtml(user.account || user.username || user.phone || "-")}</p><button data-action="delete-user" data-id="${user.id}">删除员工</button></article>`)
     .join("");
   $("#roleList").innerHTML = roles()
     .map((role) => `<article><b>${role.name}</b><span>${scopeLabels[role.customerScope] || role.customerScope}</span><p>${(role.permissions || []).map((permission) => permissionLabels[permission] || permission).join(" · ")}</p></article>`)
     .join("");
   $("#unitList").innerHTML = (state.units || [])
-    .map((unit) => `<article><b>${unit.name}</b><span>${unit.zone}</span><p>销售选择该单位后，客户自动归属到该单位和战区。</p></article>`)
+    .map((unit) => `<article><b>${escapeHtml(unit.name)}</b><span>${escapeHtml(unit.zone)}</span><p>销售选择该单位后，客户自动归属到该单位和战区。</p><button data-action="delete-unit" data-id="${escapeHtml(unit.id)}">删除单位</button></article>`)
     .join("");
 }
 
@@ -564,7 +616,7 @@ async function addUser(event) {
   });
   event.currentTarget.reset();
   await loadState();
-  toast("账号已开通");
+  toast("员工添加成功");
 }
 
 async function addRole(event) {
@@ -581,7 +633,7 @@ async function addRole(event) {
   });
   event.currentTarget.reset();
   await loadState();
-  toast("角色已添加");
+  toast("角色添加成功");
 }
 
 async function addUnit(event) {
@@ -596,10 +648,27 @@ async function addUnit(event) {
   });
   event.currentTarget.reset();
   await loadState();
-  toast("单位已添加");
+  toast("单位添加成功");
+}
+
+async function deleteUser(id) {
+  const user = state.users.find((item) => Number(item.id) === Number(id));
+  if (!user || !confirm(`确认删除员工：${user.name}？`)) return;
+  await api(`/users/${id}`, { method: "DELETE" });
+  await loadState();
+  toast("员工已删除");
+}
+
+async function deleteUnit(id) {
+  const unit = (state.units || []).find((item) => item.id === id);
+  if (!unit || !confirm(`确认删除单位：${unit.name}？`)) return;
+  await api(`/units/${encodeURIComponent(id)}`, { method: "DELETE" });
+  await loadState();
+  toast("单位已删除");
 }
 
 function wireEvents() {
+  $("#downloadTemplateLink").href = `${API_BASE}/import/customers/template`;
   $("#loginForm").addEventListener("submit", login);
   $("#logoutBtn").addEventListener("click", logout);
   $$(".nav-item").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
@@ -609,7 +678,10 @@ function wireEvents() {
     currentStage = button.dataset.stage;
     renderCustomers();
   });
-  ["customerKeyword", "ownerFilter", "followFilter"].forEach((id) => $(`#${id}`).addEventListener("input", renderCustomers));
+  ["customerKeyword", "channelFilter", "createdByFilter", "followPersonFilter", "unitFilter", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
+    $(`#${id}`).addEventListener("input", renderCustomers);
+    $(`#${id}`).addEventListener("change", renderCustomers);
+  });
   $("#addCustomerBtn").addEventListener("click", () => openCustomerDialog());
   $("#batchImportBtn").addEventListener("click", () => $("#batchDialog").showModal());
   $("#customerRows").addEventListener("click", (event) => {
@@ -626,8 +698,19 @@ function wireEvents() {
   $("#userForm").addEventListener("submit", addUser);
   $("#roleForm").addEventListener("submit", addRole);
   $("#unitForm").addEventListener("submit", addUnit);
+  $("#userList").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-action='delete-user']");
+    if (button) deleteUser(button.dataset.id);
+  });
+  $("#unitList").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-action='delete-unit']");
+    if (button) deleteUnit(button.dataset.id);
+  });
 }
 
 wireEvents();
 if (requireLogin()) loadState().catch((error) => toast(error.message));
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("./service-worker.js").catch(() => {});
+  $("#knowledgeList").innerHTML = (state.knowledge || [])
+    .map((item) => `<article><b>${escapeHtml(item.question)}</b><p>${escapeHtml(item.answer)}</p></article>`)
+    .join("");

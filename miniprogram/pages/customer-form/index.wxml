@@ -14,6 +14,10 @@
         <text class="label">手机号</text>
         <input name="phone" type="number" placeholder="客户手机号" />
       </view>
+      <view class="form-item">
+        <text class="label">渠道来源</text>
+        <input name="channelSource" placeholder="地推 / 官方资源 / 转介绍 / 展会" />
+      </view>
       <view class="grid-2">
         <view class="form-item">
           <text class="label">阶段</text>
@@ -41,6 +45,10 @@
       <view class="form-item">
         <text class="label">现用软件</text>
         <input name="software" placeholder="酷家乐 + Excel排产" />
+      </view>
+      <view class="form-item">
+        <text class="label">客户地址</text>
+        <input name="address" placeholder="客户工厂地址" />
       </view>
       <view class="form-item">
         <text class="label">跟进记录</text>

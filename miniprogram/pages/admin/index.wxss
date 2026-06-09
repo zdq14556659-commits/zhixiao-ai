@@ -2,6 +2,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 20rpx;
   padding: 20rpx 0;
   border-top: 1rpx solid #e4e9f0;
 }
@@ -15,10 +16,41 @@
   font-weight: 800;
 }
 
+.row-main {
+  flex: 1;
+  min-width: 0;
+}
+
 .status {
   padding: 6rpx 16rpx;
   border-radius: 999rpx;
   color: #67c23a;
   background: #f0f9eb;
   font-size: 24rpx;
+}
+
+.mini-danger {
+  width: 120rpx;
+  height: 56rpx;
+  line-height: 56rpx;
+  padding: 0;
+  border-radius: 8rpx;
+  color: #f56c6c;
+  background: #fff5f5;
+  font-size: 24rpx;
+}
+
+.knowledge-row {
+  padding: 18rpx 0;
+  border-top: 1rpx solid #e4e9f0;
+}
+
+.knowledge-row:first-of-type {
+  border-top: 0;
+}
+
+.kb-q {
+  margin-bottom: 8rpx;
+  font-size: 28rpx;
+  font-weight: 800;
 }

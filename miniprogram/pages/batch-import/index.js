@@ -46,6 +46,10 @@ Page({
         id: Date.now() + index,
         name,
         phone,
+        channelSource: "批量导入",
+        createdBy: app.getCurrentUser().name || "未记录",
+        followPerson: owner,
+        address: "",
         stage,
         owner,
         ownerId: ownerUser.id || "",
@@ -91,7 +95,9 @@ Page({
         ownerId: (this.data.ownerUsers[this.data.ownerIndex] || {}).id || "",
         unitId: (this.data.ownerUsers[this.data.ownerIndex] || {}).unitId || "",
         unit: (this.data.ownerUsers[this.data.ownerIndex] || {}).unit || "",
-        zone: (this.data.ownerUsers[this.data.ownerIndex] || {}).zone || ""
+        zone: (this.data.ownerUsers[this.data.ownerIndex] || {}).zone || "",
+        createdBy: app.getCurrentUser().name || "未记录",
+        followPerson: this.data.owners[this.data.ownerIndex]
       },
       success: (res) => {
         wx.hideLoading();

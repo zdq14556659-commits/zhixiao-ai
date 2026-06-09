@@ -40,7 +40,7 @@
           <button class="nav-item" data-view="customers">客户管理</button>
           <button class="nav-item" data-view="field">地推地图</button>
           <button class="nav-item" data-view="assistant">AI话术</button>
-          <button class="nav-item admin-only" data-view="admin">账号后台</button>
+          <button class="nav-item admin-only" data-view="settings">系统设置</button>
         </nav>
       </aside>
 
@@ -58,7 +58,7 @@
 
         <section class="view active" id="dashboardView">
           <div class="metric-grid">
-            <article class="metric-card"><span>本月回款</span><strong id="metricPayment">¥0.0万</strong><small id="metricScope">我的数据</small></article>
+            <article class="metric-card"><span>本月进款</span><strong id="metricPayment">¥0.0万</strong><small>按当前可见客户统计</small></article>
             <article class="metric-card"><span>成交客户</span><strong id="metricSigned">0家</strong><small>成交阶段客户数</small></article>
             <article class="metric-card"><span>今日跟进</span><strong id="metricFollow">0条</strong><small>今日新增跟进记录</small></article>
             <article class="metric-card"><span>逾期提醒</span><strong id="metricOverdue">0个</strong><small>需要优先处理</small></article>
@@ -79,21 +79,22 @@
           <div class="stage-tabs" id="stageTabs"></div>
           <section class="panel">
             <div class="toolbar">
-              <input id="customerKeyword" placeholder="搜索客户 / 手机号 / 现用软件" />
-              <select id="ownerFilter"></select>
-              <select id="followFilter">
-                <option value="">全部跟进</option>
-                <option value="today">今日待跟进</option>
-                <option value="overdue">已逾期</option>
-                <option value="none">未设置</option>
-              </select>
+              <input id="customerKeyword" placeholder="搜索客户 / 客户电话" />
+              <select id="channelFilter"></select>
+              <select id="createdByFilter"></select>
+              <select id="followPersonFilter"></select>
+              <select id="unitFilter"></select>
+              <label class="inline-filter">最新跟进<input id="lastFollowStart" type="date" /></label>
+              <label class="inline-filter">至<input id="lastFollowEnd" type="date" /></label>
+              <label class="inline-filter">下次跟进<input id="nextFollowStart" type="date" /></label>
+              <label class="inline-filter">至<input id="nextFollowEnd" type="date" /></label>
               <button id="addCustomerBtn" class="primary">单个添加</button>
               <button id="batchImportBtn">批量导入</button>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr><th>客户</th><th>电话</th><th>负责人</th><th>区域</th><th>现用软件</th><th>下次跟进</th><th>操作</th></tr>
+                  <tr><th>客户</th><th>客户电话</th><th>渠道来源</th><th>录入人</th><th>跟进人</th><th>跟进记录</th><th>最新跟进时间</th><th>下次跟进时间</th><th>单位</th><th>客户地址</th><th>操作</th></tr>
                 </thead>
                 <tbody id="customerRows"></tbody>
               </table>
@@ -119,26 +120,24 @@
         </section>
 
         <section class="view" id="assistantView">
-          <div class="grid-2">
-            <section class="panel">
-              <div class="panel-title"><h2>小智话术推荐</h2><span>从知识库检索并生成跟进策略</span></div>
-              <textarea id="customerQuestion" rows="6" placeholder="输入客户问题"></textarea>
-              <button class="primary full" id="recommendBtn">让小智推荐话术</button>
-              <pre class="ai-result" id="aiResult"></pre>
-            </section>
-            <section class="panel">
-              <div class="panel-title"><h2>知识库</h2><span>运营持续添加标准话术</span></div>
-              <form class="form-stack" id="knowledgeForm">
-                <label>常见问题<input name="question" required placeholder="例如：价格太高" /></label>
-                <label>标准话术<textarea name="answer" rows="4" required></textarea></label>
-                <button class="primary" type="submit">添加知识</button>
-              </form>
-              <div class="kb-list" id="knowledgeList"></div>
-            </section>
-          </div>
+          <section class="panel">
+            <div class="panel-title"><h2>小智话术推荐</h2><span>从知识库检索并调用 DeepSeek 生成跟进策略</span></div>
+            <textarea id="customerQuestion" rows="7" placeholder="输入客户问题"></textarea>
+            <button class="primary full" id="recommendBtn">让小智推荐话术</button>
+            <pre class="ai-result" id="aiResult"></pre>
+          </section>
         </section>
 
-        <section class="view" id="adminView">
+        <section class="view" id="settingsView">
+          <section class="panel">
+            <div class="panel-title"><h2>知识库</h2><span>小智会优先检索这里的标准话术</span></div>
+            <form class="form-stack" id="knowledgeForm">
+              <label>常见问题<input name="question" required placeholder="例如：价格太高" /></label>
+              <label>标准话术<textarea name="answer" rows="4" required></textarea></label>
+              <button class="primary" type="submit">添加知识</button>
+            </form>
+            <div class="kb-list compact-list" id="knowledgeList"></div>
+          </section>
           <div class="admin-grid">
             <section class="panel">
               <div class="panel-title"><h2>新建员工账号</h2><span>员工可用账号密码登录小程序和 Web</span></div>
@@ -198,9 +197,12 @@
         <input type="hidden" name="id" />
         <label>客户名称<input name="name" required /></label>
         <label>手机号<input name="phone" required /></label>
+        <label>渠道来源<input name="channelSource" placeholder="地推 / 官方资源 / 转介绍 / 展会" /></label>
         <label>阶段<select name="stage" id="customerStageSelect"></select></label>
         <label>负责人<select name="owner" id="customerOwnerSelect"></select></label>
-        <label>区域<input name="region" /></label>
+        <label>录入人<input name="createdBy" /></label>
+        <label>跟进人<input name="followPerson" /></label>
+        <label>客户地址<input name="address" /></label>
         <label>预计金额（万）<input name="amount" type="number" step="0.1" /></label>
         <label>现用软件<input name="software" /></label>
         <label>跟进记录<textarea name="note" rows="4"></textarea></label>
@@ -212,9 +214,11 @@
     <dialog id="batchDialog">
       <form method="dialog" class="dialog-form" id="batchForm">
         <h2>批量导入客户</h2>
-        <p class="muted">每行一个客户：客户名称,手机号,区域,预计金额,现用软件</p>
+        <p class="muted">下载样表后按表头填写，支持 xlsx / csv / txt 上传，也可继续粘贴导入。</p>
+        <a class="template-link" id="downloadTemplateLink" href="/api/import/customers/template" target="_blank" rel="noreferrer">下载样表</a>
         <label>默认负责人<select name="owner" id="batchOwnerSelect"></select></label>
-        <textarea name="rows" rows="8" required placeholder="佛山柜体门板厂,13900139000,华南,26,酷家乐+手工报价"></textarea>
+        <label>上传名单文件<input name="file" type="file" accept=".xlsx,.csv,.txt" /></label>
+        <textarea name="rows" rows="8" placeholder="佛山柜体门板厂,13900139000,华南,26,酷家乐+手工报价"></textarea>
         <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">导入</button></div>
       </form>
     </dialog>
