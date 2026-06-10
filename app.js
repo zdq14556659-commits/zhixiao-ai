@@ -23,6 +23,7 @@ let currentView = "dashboard";
 let currentSettingsTab = "accounts";
 let fieldMap = null;
 let fieldLayer = null;
+let fieldInfoWindow = null;
 let currentCustomerRows = [];
 let selectedCustomerIds = new Set();
 
@@ -593,24 +594,43 @@ function validVisitLocation(visit) {
 
 function initFieldMap() {
   const node = $("#mapCanvas");
-  if (!node || !window.L) {
+  if (!node || !window.TMap) {
     if (node) node.innerHTML = '<div class="map-empty">地图资源加载中，请稍后刷新</div>';
     return false;
   }
   if (fieldMap) {
-    setTimeout(() => fieldMap.invalidateSize(), 0);
     return true;
   }
-  fieldMap = L.map(node, {
-    zoomControl: true,
-    attributionControl: true
-  }).setView([35.86166, 104.195397], 5);
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
-    maxZoom: 18,
-    attribution: "&copy; OpenStreetMap &copy; CARTO"
-  }).addTo(fieldMap);
-  fieldLayer = L.layerGroup().addTo(fieldMap);
+  fieldMap = new TMap.Map(node, {
+    center: new TMap.LatLng(35.86166, 104.195397),
+    zoom: 5,
+    pitch: 0,
+    rotation: 0,
+    baseMap: { type: "vector" },
+    viewMode: "2D"
+  });
+  fieldInfoWindow = new TMap.InfoWindow({
+    map: fieldMap,
+    position: fieldMap.getCenter(),
+    offset: { x: 0, y: -14 }
+  });
+  fieldInfoWindow.close();
   return true;
+}
+
+function mapDotIcon(color) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 28;
+  canvas.height = 28;
+  const context = canvas.getContext("2d");
+  context.beginPath();
+  context.arc(14, 14, 9, 0, Math.PI * 2);
+  context.fillStyle = color;
+  context.fill();
+  context.lineWidth = 4;
+  context.strokeStyle = "#ffffff";
+  context.stroke();
+  return canvas.toDataURL("image/png");
 }
 
 function renderFieldSummary(visits) {
@@ -641,20 +661,35 @@ function renderFieldSummary(visits) {
 
 function renderFieldMap(visits) {
   if (currentView !== "field" || !initFieldMap()) return;
-  fieldLayer.clearLayers();
-  const bounds = [];
-  visits.filter(validVisitLocation).forEach((visit) => {
+  if (fieldLayer) {
+    fieldLayer.setMap(null);
+    fieldLayer = null;
+  }
+  const locatedVisits = visits.filter(validVisitLocation);
+  const geometries = locatedVisits.map((visit) => {
     const latitude = Number(visit.latitude);
     const longitude = Number(visit.longitude);
     const sold = isSoldStatus(visit.status);
-    const marker = L.circleMarker([latitude, longitude], {
-      radius: 7,
-      color: "#ffffff",
-      weight: 2,
-      fillColor: sold ? "#f56c6c" : "#67c23a",
-      fillOpacity: 0.95
-    });
-    marker.bindPopup(`
+    return {
+      id: String(visit.id),
+      styleId: sold ? "sold" : "active",
+      position: new TMap.LatLng(latitude, longitude),
+      properties: { visit }
+    };
+  });
+  fieldLayer = new TMap.MultiMarker({
+    map: fieldMap,
+    styles: {
+      active: new TMap.MarkerStyle({ width: 28, height: 28, anchor: { x: 14, y: 14 }, src: mapDotIcon("#67c23a") }),
+      sold: new TMap.MarkerStyle({ width: 28, height: 28, anchor: { x: 14, y: 14 }, src: mapDotIcon("#f56c6c") })
+    },
+    geometries
+  });
+  fieldLayer.on("click", (event) => {
+    const visit = event.geometry?.properties?.visit;
+    if (!visit) return;
+    fieldInfoWindow.setPosition(event.geometry.position);
+    fieldInfoWindow.setContent(`
       <strong>${escapeHtml(visit.factory || "未命名工厂")}</strong>
       <p>${escapeHtml(displayVisitStatus(visit.status))} · ${escapeHtml(visit.city || "未知城市")}</p>
       <p>${escapeHtml(visit.address || "")}</p>
@@ -663,12 +698,17 @@ function renderFieldMap(visits) {
       <p>${escapeHtml(visit.software || "待补充")} ${visit.softwarePrice ? `· ${escapeHtml(visit.softwarePrice)}` : ""}</p>
       ${visit.lossReason ? `<p>未成交原因：${escapeHtml(visit.lossReason)}</p>` : ""}
     `);
-    marker.addTo(fieldLayer);
-    bounds.push([latitude, longitude]);
+    fieldInfoWindow.open();
   });
-  if (bounds.length) fieldMap.fitBounds(bounds, { padding: [36, 36], maxZoom: 12 });
-  else fieldMap.setView([35.86166, 104.195397], 5);
-  setTimeout(() => fieldMap.invalidateSize(), 0);
+  if (geometries.length) {
+    const bounds = new TMap.LatLngBounds();
+    geometries.forEach((geometry) => bounds.extend(geometry.position));
+    fieldMap.fitBounds(bounds, { padding: 60 });
+    if (geometries.length === 1) fieldMap.setZoom(12);
+  } else {
+    fieldMap.setCenter(new TMap.LatLng(35.86166, 104.195397));
+    fieldMap.setZoom(5);
+  }
 }
 
 function renderField() {
