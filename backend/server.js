@@ -12,6 +12,7 @@ const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || "";
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-chat";
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(__dirname, "data");
 const DATA_FILE = path.join(DATA_DIR, "db.json");
+const BACKUP_FILE = path.join(DATA_DIR, "db.backup.json");
 const SEED_FILE = path.join(DATA_DIR, "seed.json");
 const UPLOAD_DIR = process.env.UPLOAD_DIR ? path.resolve(process.env.UPLOAD_DIR) : path.join(__dirname, "uploads");
 const FALLBACK_SEED_FILE = path.join(__dirname, "data", "seed.json");
@@ -32,15 +33,16 @@ const DEFAULT_ROLES = [
   { id: "role-ops", name: "运营", customerScope: "all", permissions: ADMIN_PERMISSIONS },
   { id: "role-admin", name: "管理员", customerScope: "all", permissions: ADMIN_PERMISSIONS }
 ];
-const DEFAULT_UNITS = [
-  { id: "unit-east-custom", name: "华东定制产业带", zone: "东部战区" },
-  { id: "unit-south-custom", name: "华南定制产业带", zone: "南部战区" },
-  { id: "unit-west-custom", name: "西部定制产业带", zone: "西部战区" },
-  { id: "unit-north-custom", name: "北部定制产业带", zone: "北部战区" },
-  { id: "unit-central-channel", name: "中部渠道一部", zone: "中部战区" },
-  { id: "unit-national-channel", name: "全国渠道一部", zone: "中部战区" },
-  { id: "unit-hq-growth", name: "总部增长运营", zone: "中部战区" }
-];
+const DEFAULT_UNITS = [];
+const LEGACY_DEMO_UNIT_IDS = new Set([
+  "unit-east-custom",
+  "unit-south-custom",
+  "unit-west-custom",
+  "unit-north-custom",
+  "unit-central-channel",
+  "unit-national-channel",
+  "unit-hq-growth"
+]);
 const DEMO_ACCOUNTS = {
   林晨: "linchen",
   周扬: "zhouyang",
@@ -181,6 +183,24 @@ async function routeApi(req, res, url) {
     syncVisitToCustomer(state, visit);
     writeState(state);
     return sendJson(res, 201, visit);
+  }
+
+  const visitPatch = url.pathname.match(/^\/api\/visits\/(\d+)$/);
+  if ((req.method === "PATCH" || req.method === "PUT") && visitPatch) {
+    const body = await readBody(req);
+    const state = readState();
+    const index = state.visits.findIndex((item) => Number(item.id) === Number(visitPatch[1]));
+    if (index < 0) return sendJson(res, 404, { error: "visit not found" });
+    const visit = normalizeVisit({
+      ...state.visits[index],
+      ...body,
+      id: state.visits[index].id,
+      date: body.date || state.visits[index].date || today()
+    }, state);
+    state.visits[index] = visit;
+    syncVisitToCustomer(state, visit);
+    writeState(state);
+    return sendJson(res, 200, visit);
   }
 
   if (req.method === "POST" && url.pathname === "/api/uploads") {
@@ -422,13 +442,9 @@ function normalizeRole(role = {}) {
   };
 }
 
-function normalizeUnits(units, state = {}) {
+function normalizeUnits(units) {
   const merged = [...DEFAULT_UNITS];
-  const sources = [
-    ...units,
-    ...(state.users || []).map((user) => ({ name: user.unit || user.region, zone: user.zone || user.region })),
-    ...(state.customers || []).map((customer) => ({ name: customer.unit || customer.region, zone: customer.zone || customer.region }))
-  ].filter((unit) => unit && unit.name);
+  const sources = (Array.isArray(units) ? units : []).filter((unit) => unit && unit.name && !LEGACY_DEMO_UNIT_IDS.has(unit.id));
   sources.forEach((unit) => {
     const normalized = normalizeUnit(unit);
     const index = merged.findIndex((item) => item.id === normalized.id || cleanText(item.name) === cleanText(normalized.name));
@@ -472,7 +488,9 @@ function normalizeUser(user = {}, index = 0, context = {}) {
   const roles = context.roles || DEFAULT_ROLES;
   const units = context.units || DEFAULT_UNITS;
   const roleDef = findRole(roles, user.roleId, role);
-  const unit = findUnit(units, user.unitId, user.unit || user.region);
+  const rawUnitId = LEGACY_DEMO_UNIT_IDS.has(user.unitId) ? "" : user.unitId;
+  const rawUnitName = LEGACY_DEMO_UNIT_IDS.has(user.unitId) ? "" : user.unit || user.region;
+  const unit = findUnit(units, rawUnitId, rawUnitName);
   const fallbackAccount = DEMO_ACCOUNTS[name] || (ADMIN_ROLES.includes(roleDef.name) ? "admin" : `user${id}`);
   const account = cleanAccount(user.account || user.username || user.login || user.phone || fallbackAccount);
   return {
@@ -504,6 +522,7 @@ function findRole(roles = DEFAULT_ROLES, roleId, roleName) {
 
 function findUnit(units = DEFAULT_UNITS, unitId, unitName) {
   const name = unitName || "";
+  if (!unitId && !cleanText(name)) return { id: "", name: "待分配", zone: "" };
   return (
     units.find((unit) => unitId && unit.id === unitId) ||
     units.find((unit) => cleanText(unit.name) === cleanText(name)) ||
@@ -565,13 +584,17 @@ function normalizeVisit(visit = {}, context = {}) {
   return {
     id: Number(visit.id || Date.now()),
     factory: visit.factory || "",
+    phone: visit.phone || visit.customerPhone || "",
+    cuttingDevice: visit.cuttingDevice || compactDeviceText(visit.cuttingCount, visit.cuttingBrand),
     cuttingCount: visit.cuttingCount || "",
     cuttingBrand: visit.cuttingBrand || "",
+    drillingDevice: visit.drillingDevice || compactDeviceText(visit.drillingCount, visit.drillingBrand),
     drillingCount: visit.drillingCount || "",
     drillingBrand: visit.drillingBrand || "",
     line: visit.line || buildVisitLine(visit) || "待补充",
     software: visit.software || "待补充",
     softwarePrice: visit.softwarePrice || "",
+    lossReason: visit.lossReason || visit.reason || "",
     status: normalizeVisitStage(visit.status),
     latitude: Number(visit.latitude || 0),
     longitude: Number(visit.longitude || 0),
@@ -598,6 +621,9 @@ function normalizeVisitStage(status) {
 }
 
 function buildVisitLine(visit = {}) {
+  if (visit.cuttingDevice || visit.drillingDevice) {
+    return [`开料：${visit.cuttingDevice || "待补充"}`, `打孔：${visit.drillingDevice || "待补充"}`].join(" / ");
+  }
   const parts = [];
   if (visit.cuttingCount || visit.cuttingBrand) {
     parts.push(`开料设备${visit.cuttingCount || 0}台${visit.cuttingBrand ? ` · ${visit.cuttingBrand}` : ""}`);
@@ -608,6 +634,12 @@ function buildVisitLine(visit = {}) {
   return parts.join(" / ");
 }
 
+function compactDeviceText(count, brand) {
+  if (!count && !brand) return "";
+  if (count && brand) return `${count}*${brand}`;
+  return String(count || brand || "");
+}
+
 function syncVisitToCustomer(state, visit) {
   const factory = String(visit.factory || "").trim();
   if (!factory) return;
@@ -616,18 +648,21 @@ function syncVisitToCustomer(state, visit) {
   const ownerId = visit.ownerId || "";
   const note = [
     `地推打卡：${visit.address || visit.city || "未记录地址"}`,
-    `开料设备：${visit.cuttingCount || "-"}台 ${visit.cuttingBrand || "待补充"}`,
-    `打孔设备：${visit.drillingCount || "-"}台 ${visit.drillingBrand || "待补充"}`,
-    `现用软件：${visit.software || "待补充"}${visit.softwarePrice ? `，版本价格：${visit.softwarePrice}` : ""}`
-  ].join("；");
+    visit.phone ? `客户电话：${visit.phone}` : "",
+    `开料设备：${visit.cuttingDevice || compactDeviceText(visit.cuttingCount, visit.cuttingBrand) || "待补充"}`,
+    `打孔设备：${visit.drillingDevice || compactDeviceText(visit.drillingCount, visit.drillingBrand) || "待补充"}`,
+    `现用软件：${visit.software || "待补充"}${visit.softwarePrice ? `，版本价格：${visit.softwarePrice}` : ""}`,
+    visit.lossReason ? `未成交原因：${visit.lossReason}` : ""
+  ].filter(Boolean).join("；");
   const sameOwner = (customer) => customer.owner === owner || (ownerId && customer.ownerId === ownerId);
-  const index = (state.customers || []).findIndex((customer) => cleanText(customer.name) === cleanText(factory) && sameOwner(customer));
+  const samePhone = (customer) => visit.phone && cleanAccount(customer.phone) === cleanAccount(visit.phone);
+  const index = (state.customers || []).findIndex((customer) => (samePhone(customer) || cleanText(customer.name) === cleanText(factory)) && sameOwner(customer));
 
   if (index < 0) {
     const customer = normalizeCustomer({
       id: Date.now() + 1,
       name: factory,
-      phone: "待补充",
+      phone: visit.phone || "待补充",
       channelSource: normalizeChannelSource("地推"),
       createdBy: owner,
       followPerson: owner,
@@ -655,6 +690,7 @@ function syncVisitToCustomer(state, visit) {
     owner,
     followPerson: owner,
     address: visit.address || state.customers[index].address,
+    phone: visit.phone || state.customers[index].phone,
     region: visit.city || state.customers[index].region,
     software: visit.software || state.customers[index].software
   }, state);
@@ -792,12 +828,14 @@ function readState() {
 
 function writeState(state) {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  if (fs.existsSync(DATA_FILE)) fs.copyFileSync(DATA_FILE, BACKUP_FILE);
   fs.writeFileSync(DATA_FILE, JSON.stringify(migrateState(state), null, 2), "utf8");
 }
 
 function ensureDataFile() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(SEED_FILE)) fs.copyFileSync(FALLBACK_SEED_FILE, SEED_FILE);
+  if (!fs.existsSync(DATA_FILE) && fs.existsSync(BACKUP_FILE)) fs.copyFileSync(BACKUP_FILE, DATA_FILE);
   if (!fs.existsSync(DATA_FILE)) fs.copyFileSync(SEED_FILE, DATA_FILE);
 }
 

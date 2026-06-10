@@ -456,6 +456,9 @@ function displayVisitStatus(status) {
 }
 
 function visitDeviceLine(visit) {
+  if (visit.cuttingDevice || visit.drillingDevice) {
+    return [`开料：${visit.cuttingDevice || "待补充"}`, `打孔：${visit.drillingDevice || "待补充"}`].join(" / ");
+  }
   const cutting = visit.cuttingCount || visit.cuttingBrand
     ? `开料${visit.cuttingCount || "-"}台 · ${visit.cuttingBrand || "待补充"}`
     : "";
@@ -536,8 +539,10 @@ function renderFieldMap(visits) {
       <strong>${escapeHtml(visit.factory || "未命名工厂")}</strong>
       <p>${escapeHtml(displayVisitStatus(visit.status))} · ${escapeHtml(visit.city || "未知城市")}</p>
       <p>${escapeHtml(visit.address || "")}</p>
+      ${visit.phone ? `<p>电话：${escapeHtml(visit.phone)}</p>` : ""}
       <p>${escapeHtml(visitDeviceLine(visit))}</p>
       <p>${escapeHtml(visit.software || "待补充")} ${visit.softwarePrice ? `· ${escapeHtml(visit.softwarePrice)}` : ""}</p>
+      ${visit.lossReason ? `<p>未成交原因：${escapeHtml(visit.lossReason)}</p>` : ""}
     `);
     marker.addTo(fieldLayer);
     bounds.push([latitude, longitude]);
@@ -560,8 +565,10 @@ function renderField() {
             <b>${escapeHtml(visit.factory || "未命名工厂")}</b>
             <span class="${isSoldStatus(status) ? "sold-text" : ""}">${escapeHtml(status)}</span>
             <p>${escapeHtml(visit.city || "未知城市")} · ${escapeHtml(visit.address || "")}</p>
+            ${visit.phone ? `<p>电话：${escapeHtml(visit.phone)}</p>` : ""}
             <p>${escapeHtml(visitDeviceLine(visit))}</p>
             <p>${escapeHtml(visit.software || "待补充")}${visit.softwarePrice ? ` · ${escapeHtml(visit.softwarePrice)}` : ""} · ${escapeHtml(visit.date || "")}</p>
+            ${visit.lossReason ? `<p>未成交原因：${escapeHtml(visit.lossReason)}</p>` : ""}
             ${(visit.photos || []).map((url) => `<img src="${escapeHtml(url)}" alt="${escapeHtml(visit.factory || "现场图片")}" />`).join("")}
           </article>`;
         })

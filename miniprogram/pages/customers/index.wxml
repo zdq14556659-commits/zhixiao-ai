@@ -10,56 +10,65 @@
     </view>
   </scroll-view>
 
-  <view class="card filter-card">
-    <view class="form-item">
-      <text class="label">关键词</text>
-      <input value="{{keyword}}" placeholder="客户名称 / 手机号" bindinput="onKeyword" />
+  <view class="card filter-card {{filtersOpen ? 'open' : ''}}">
+    <view class="filter-toggle" bindtap="toggleFilters">
+      <view>
+        <view class="filter-title">搜索筛选</view>
+        <text class="muted">{{keyword || channelSources[channelIndex] !== '全部' || owners[ownerIndex] !== '全部' ? '已设置筛选条件' : '点击展开搜索客户'}}</text>
+      </view>
+      <text class="filter-arrow">{{filtersOpen ? '⌃' : '⌄'}}</text>
     </view>
-    <view class="filter-grid">
+    <view wx:if="{{filtersOpen}}" class="filter-body">
       <view class="form-item">
-        <text class="label">渠道来源</text>
-        <picker range="{{channelSources}}" value="{{channelIndex}}" bindchange="onChannel">
-          <view class="picker-box">{{channelSources[channelIndex]}}</view>
-        </picker>
+        <text class="label">关键词</text>
+        <input value="{{keyword}}" placeholder="客户名称 / 手机号" bindinput="onKeyword" />
       </view>
-      <view class="form-item">
-        <text class="label">负责人</text>
-        <picker range="{{owners}}" value="{{ownerIndex}}" bindchange="onOwner">
-          <view class="picker-box">{{owners[ownerIndex]}}</view>
-        </picker>
+      <view class="filter-grid">
+        <view class="form-item">
+          <text class="label">渠道来源</text>
+          <picker range="{{channelSources}}" value="{{channelIndex}}" bindchange="onChannel">
+            <view class="picker-box">{{channelSources[channelIndex]}}</view>
+          </picker>
+        </view>
+        <view class="form-item">
+          <text class="label">负责人</text>
+          <picker range="{{owners}}" value="{{ownerIndex}}" bindchange="onOwner">
+            <view class="picker-box">{{owners[ownerIndex]}}</view>
+          </picker>
+        </view>
       </view>
-    </view>
-    <view class="filter-grid">
-      <view class="form-item">
-        <text class="label">区域</text>
-        <picker range="{{regions}}" value="{{regionIndex}}" bindchange="onRegion">
-          <view class="picker-box">{{regions[regionIndex]}}</view>
-        </picker>
+      <view class="filter-grid">
+        <view class="form-item">
+          <text class="label">区域</text>
+          <picker range="{{regions}}" value="{{regionIndex}}" bindchange="onRegion">
+            <view class="picker-box">{{regions[regionIndex]}}</view>
+          </picker>
+        </view>
+        <view class="form-item">
+          <text class="label">开始日期</text>
+          <picker mode="date" value="{{startDate}}" bindchange="onStartDate">
+            <view class="picker-box">{{startDate || '请选择'}}</view>
+          </picker>
+        </view>
       </view>
-      <view class="form-item">
-        <text class="label">开始日期</text>
-        <picker mode="date" value="{{startDate}}" bindchange="onStartDate">
-          <view class="picker-box">{{startDate || '请选择'}}</view>
-        </picker>
+      <view class="filter-grid">
+        <view class="form-item">
+          <text class="label">结束日期</text>
+          <picker mode="date" value="{{endDate}}" bindchange="onEndDate">
+            <view class="picker-box">{{endDate || '请选择'}}</view>
+          </picker>
+        </view>
+        <view class="form-item">
+          <text class="label">跟进状态</text>
+          <picker range="{{followStatuses}}" value="{{followStatusIndex}}" bindchange="onFollowStatus">
+            <view class="picker-box">{{followStatuses[followStatusIndex]}}</view>
+          </picker>
+        </view>
       </view>
-    </view>
-    <view class="filter-grid">
-      <view class="form-item">
-        <text class="label">结束日期</text>
-        <picker mode="date" value="{{endDate}}" bindchange="onEndDate">
-          <view class="picker-box">{{endDate || '请选择'}}</view>
-        </picker>
+      <view class="filter-actions">
+        <button class="plain-btn" bindtap="resetFilters">重置</button>
+        <button class="primary-btn" bindtap="applyFilters">查询</button>
       </view>
-      <view class="form-item">
-        <text class="label">跟进状态</text>
-        <picker range="{{followStatuses}}" value="{{followStatusIndex}}" bindchange="onFollowStatus">
-          <view class="picker-box">{{followStatuses[followStatusIndex]}}</view>
-        </picker>
-      </view>
-    </view>
-    <view class="filter-actions">
-      <button class="plain-btn" bindtap="resetFilters">重置</button>
-      <button class="primary-btn" bindtap="applyFilters">查询</button>
     </view>
   </view>
 
@@ -71,7 +80,7 @@
     </view>
   </view>
 
-  <view class="customer-card" wx:for="{{filtered}}" wx:key="id">
+  <view class="customer-card" wx:for="{{filtered}}" wx:key="id" data-id="{{item.id}}" bindtap="editCustomer">
     <view class="row">
       <view>
         <view class="customer-name">{{item.name}}</view>
@@ -85,9 +94,9 @@
     <view class="info">最近跟进：{{item.lastFollow || '-'}} · 下次：{{item.nextFollow || '未设置'}}</view>
     <view class="note">{{item.lastNote}}</view>
     <view class="customer-actions">
-      <button class="plain-btn" data-phone="{{item.phone}}" bindtap="callCustomer">拨打</button>
-      <button class="plain-btn" data-id="{{item.id}}" bindtap="goFollow">跟进</button>
-      <button class="primary-btn" data-id="{{item.id}}" bindtap="advanceCustomer">{{item.stage === '成交' ? '查看' : '推进'}}</button>
+      <button class="plain-btn" data-phone="{{item.phone}}" catchtap="callCustomer">拨打</button>
+      <button class="plain-btn" data-id="{{item.id}}" catchtap="goFollow">跟进</button>
+      <button class="primary-btn" data-id="{{item.id}}" catchtap="advanceCustomer">{{item.stage === '成交' ? '查看' : '推进'}}</button>
     </view>
   </view>
 

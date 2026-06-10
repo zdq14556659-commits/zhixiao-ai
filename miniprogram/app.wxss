@@ -62,10 +62,21 @@ picker {
 .primary-btn,
 .plain-btn,
 .danger-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   min-height: 72rpx;
+  line-height: 1.2;
   margin: 0;
+  padding: 0 18rpx;
   border-radius: 8rpx;
   font-size: 28rpx;
+}
+
+.primary-btn::after,
+.plain-btn::after,
+.danger-btn::after {
+  border: 0;
 }
 
 .primary-btn {

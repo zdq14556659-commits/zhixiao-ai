@@ -13,7 +13,11 @@ Page({
     scopeIndex: 1,
     users: [],
     knowledge: [],
+    unitPickerText: "请先添加单位",
     activeTab: "accounts",
+    deletingUserId: 0,
+    deletingUnitId: "",
+    successMessage: "",
     saving: false
   },
 
@@ -34,7 +38,8 @@ Page({
         users: app.visibleUsers(),
         roles: app.getRoles(),
         units: app.getUnits(),
-        knowledge: state.knowledge || []
+        knowledge: state.knowledge || [],
+        unitPickerText: this.formatUnitPicker(app.getUnits(), this.data.unitIndex)
       });
       if (callback) callback();
     });
@@ -45,7 +50,8 @@ Page({
   },
 
   onUnit(event) {
-    this.setData({ unitIndex: Number(event.detail.value) });
+    const unitIndex = Number(event.detail.value);
+    this.setData({ unitIndex, unitPickerText: this.formatUnitPicker(this.data.units, unitIndex) });
   },
 
   onZone(event) {
@@ -58,6 +64,17 @@ Page({
 
   switchTab(event) {
     this.setData({ activeTab: event.currentTarget.dataset.tab });
+  },
+
+  formatUnitPicker(units = [], index = 0) {
+    const unit = units[index];
+    return unit ? `${unit.name} · ${unit.zone}` : "请先添加单位";
+  },
+
+  flashSuccess(title) {
+    this.setData({ successMessage: title });
+    wx.showToast({ title, icon: "success" });
+    setTimeout(() => this.setData({ successMessage: "" }), 1200);
   },
 
   submitUser(event) {
@@ -89,7 +106,7 @@ Page({
       .then(() => {
         this.reload(() => {
           this.setData({ roleIndex: 0, unitIndex: 0 });
-          wx.showToast({ title: "员工添加成功" });
+          this.flashSuccess("员工添加成功");
         });
       })
       .catch((error) => {
@@ -114,7 +131,7 @@ Page({
       .then(() => {
         this.reload(() => {
           this.setData({ zoneIndex: 0 });
-          wx.showToast({ title: "单位添加成功" });
+          this.flashSuccess("单位添加成功");
         });
       })
       .catch((error) => wx.showToast({ title: error.message || "添加失败", icon: "none" }));
@@ -138,7 +155,7 @@ Page({
       .then(() => {
         this.reload(() => {
           this.setData({ scopeIndex: 1 });
-          wx.showToast({ title: "角色添加成功" });
+          this.flashSuccess("角色添加成功");
         });
       })
       .catch((error) => wx.showToast({ title: error.message || "添加失败", icon: "none" }));
@@ -157,7 +174,7 @@ Page({
         data: { question, answer }
       })
       .then(() => {
-        this.reload(() => wx.showToast({ title: "知识添加成功" }));
+        this.reload(() => this.flashSuccess("知识添加成功"));
       })
       .catch((error) => wx.showToast({ title: error.message || "添加失败", icon: "none" }));
   },
@@ -173,10 +190,21 @@ Page({
       confirmColor: "#f56c6c",
       success: (res) => {
         if (!res.confirm) return;
+        this.setData({ deletingUserId: Number(id) });
         app
           .requestApi(`/users/${id}`, { method: "DELETE" })
-          .then(() => this.reload(() => wx.showToast({ title: "员工已删除" })))
-          .catch((error) => wx.showToast({ title: error.message || "删除失败", icon: "none" }));
+          .then(() => {
+            setTimeout(() => {
+              this.reload(() => {
+                this.setData({ deletingUserId: 0 });
+                this.flashSuccess("员工已删除");
+              });
+            }, 220);
+          })
+          .catch((error) => {
+            this.setData({ deletingUserId: 0 });
+            wx.showToast({ title: error.message || "删除失败", icon: "none" });
+          });
       }
     });
   },
@@ -192,10 +220,21 @@ Page({
       confirmColor: "#f56c6c",
       success: (res) => {
         if (!res.confirm) return;
+        this.setData({ deletingUnitId: id });
         app
           .requestApi(`/units/${encodeURIComponent(id)}`, { method: "DELETE" })
-          .then(() => this.reload(() => wx.showToast({ title: "单位已删除" })))
-          .catch((error) => wx.showToast({ title: error.message || "删除失败", icon: "none" }));
+          .then(() => {
+            setTimeout(() => {
+              this.reload(() => {
+                this.setData({ deletingUnitId: "" });
+                this.flashSuccess("单位已删除");
+              });
+            }, 220);
+          })
+          .catch((error) => {
+            this.setData({ deletingUnitId: "" });
+            wx.showToast({ title: error.message || "删除失败", icon: "none" });
+          });
       }
     });
   }

@@ -30,40 +30,43 @@
 
   <form bindsubmit="submitVisit">
     <view class="card fresh-card">
-      <view class="section-title">上传打卡</view>
+      <view class="row form-title-row">
+        <view class="section-title no-bottom">{{editingVisitId ? '编辑拜访' : '上传打卡'}}</view>
+        <button wx:if="{{editingVisitId}}" class="plain-btn mini-cancel" type="button" bindtap="cancelEdit">取消编辑</button>
+      </view>
       <view class="form-item">
         <text class="label">工厂名称</text>
-        <input name="factory" placeholder="杭州雅居全屋定制工厂" />
+        <input name="factory" value="{{form.factory}}" placeholder="杭州雅居全屋定制工厂" />
       </view>
       <view class="form-item">
-        <text class="label">开料设备（几台）</text>
-        <input name="cuttingCount" type="number" placeholder="2" />
+        <text class="label">客户电话</text>
+        <input name="phone" type="number" value="{{form.phone}}" placeholder="客户手机号" />
       </view>
       <view class="form-item">
-        <text class="label">开料设备品牌</text>
-        <input name="cuttingBrand" placeholder="豪迈 / 南兴 / 极东" />
+        <text class="label">数量*开料设备</text>
+        <input name="cuttingDevice" value="{{form.cuttingDevice}}" placeholder="2*电子锯" />
       </view>
       <view class="form-item">
-        <text class="label">打孔设备（几台）</text>
-        <input name="drillingCount" type="number" placeholder="1" />
-      </view>
-      <view class="form-item">
-        <text class="label">打孔设备品牌</text>
-        <input name="drillingBrand" placeholder="豪迈六面钻 / 南兴六面钻" />
+        <text class="label">数量*打孔设备</text>
+        <input name="drillingDevice" value="{{form.drillingDevice}}" placeholder="1*六面钻" />
       </view>
       <view class="form-item">
         <text class="label">现使用软件</text>
-        <input name="software" placeholder="酷家乐 + Excel排产" />
+        <input name="software" value="{{form.software}}" placeholder="酷家乐 + Excel排产" />
       </view>
       <view class="form-item">
         <text class="label">软件版本价格</text>
-        <input name="softwarePrice" placeholder="基础版 / 每年3万 / 一次性买断" />
+        <input name="softwarePrice" value="{{form.softwarePrice}}" placeholder="基础版 / 每年3万 / 一次性买断" />
       </view>
       <view class="form-item">
         <text class="label">市场状态</text>
         <picker range="{{statuses}}" value="{{statusIndex}}" bindchange="onStatus">
           <view class="picker-box">{{statuses[statusIndex]}}</view>
         </picker>
+      </view>
+      <view class="form-item">
+        <text class="label">未成交原因</text>
+        <input name="lossReason" value="{{form.lossReason}}" placeholder="预算不足 / 老板未决策 / 现系统未到期" />
       </view>
 
       <view class="form-item">
@@ -86,24 +89,25 @@
       <view class="location-actions">
         <button class="plain-btn" type="button" bindtap="chooseLocation">选择位置</button>
       </view>
-      <button class="primary-btn submit-visit-btn" form-type="submit">上传打卡</button>
+      <button class="primary-btn submit-visit-btn" form-type="submit">{{editingVisitId ? '保存拜访' : '上传打卡'}}</button>
     </view>
   </form>
 
   <view class="card fresh-card">
     <view class="section-title">最近拜访</view>
-    <view class="visit" wx:for="{{visits}}" wx:key="id">
+    <view class="visit" wx:for="{{visits}}" wx:key="id" data-id="{{item.id}}" bindtap="editVisit">
       <view class="row">
         <text class="visit-title">{{item.factory}}</text>
         <text class="tag {{item.status === '成交' || item.status === '已成交' ? 'sold' : ''}}">{{item.status}}</text>
       </view>
       <view class="muted">{{item.city || '未知城市'}} · {{item.address || '暂无地址'}}</view>
-      <view class="muted">拜访人：{{item.owner || '未记录'}} · {{item.date}}</view>
-      <view class="muted">开料：{{item.cuttingCount || '-'}}台 · {{item.cuttingBrand || '待补充'}}</view>
-      <view class="muted">打孔：{{item.drillingCount || '-'}}台 · {{item.drillingBrand || '待补充'}}</view>
+      <view class="muted">电话：{{item.phone || '待补充'}} · 拜访人：{{item.owner || '未记录'}} · {{item.date}}</view>
+      <view class="muted">开料：{{item.cuttingDevice || item.cuttingCount || '待补充'}}</view>
+      <view class="muted">打孔：{{item.drillingDevice || item.drillingCount || '待补充'}}</view>
       <view class="muted">{{item.software || '待补充'}} · {{item.softwarePrice || '价格待补充'}}</view>
+      <view wx:if="{{item.lossReason}}" class="muted">未成交原因：{{item.lossReason}}</view>
       <scroll-view wx:if="{{item.photos && item.photos.length}}" class="visit-photos" scroll-x>
-        <image wx:for="{{item.photos}}" wx:key="*this" src="{{item}}" mode="aspectFill" bindtap="previewPhoto" data-src="{{item}}"></image>
+        <image wx:for="{{item.photos}}" wx:key="*this" src="{{item}}" mode="aspectFill" catchtap="previewPhoto" data-src="{{item}}"></image>
       </scroll-view>
     </view>
   </view>

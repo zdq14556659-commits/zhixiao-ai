@@ -13,7 +13,9 @@ Page({
     markers: [],
     photos: [],
     cityStats: [],
-    currentUser: {}
+    currentUser: {},
+    editingVisitId: 0,
+    form: {}
   },
 
   onShow() {
@@ -117,9 +119,52 @@ Page({
   },
 
   buildDeviceLine(form) {
-    const cutting = `开料设备${form.cuttingCount || "0"}台${form.cuttingBrand ? ` · ${form.cuttingBrand}` : ""}`;
-    const drilling = `打孔设备${form.drillingCount || "0"}台${form.drillingBrand ? ` · ${form.drillingBrand}` : ""}`;
-    return `${cutting} / ${drilling}`;
+    const cutting = form.cuttingDevice || form.cuttingCount || "";
+    const drilling = form.drillingDevice || form.drillingCount || "";
+    return [`开料：${cutting || "待补充"}`, `打孔：${drilling || "待补充"}`].join(" / ");
+  },
+
+  editVisit(event) {
+    const id = Number(event.currentTarget.dataset.id);
+    const visit = this.data.visits.find((item) => Number(item.id) === id);
+    if (!visit) return;
+    const statusIndex = Math.max(0, this.data.statuses.indexOf(visit.status || "线索"));
+    this.setData({
+      editingVisitId: id,
+      statusIndex,
+      photos: visit.photos || [],
+      latitude: Number(visit.latitude || this.data.latitude),
+      longitude: Number(visit.longitude || this.data.longitude),
+      currentCity: visit.city || "",
+      currentAddress: visit.address || "",
+      locationReady: Boolean(visit.latitude && visit.longitude),
+      form: {
+        factory: visit.factory || "",
+        phone: visit.phone || "",
+        cuttingDevice: visit.cuttingDevice || visit.cuttingCount || "",
+        drillingDevice: visit.drillingDevice || visit.drillingCount || "",
+        software: visit.software || "",
+        softwarePrice: visit.softwarePrice || "",
+        lossReason: visit.lossReason || ""
+      }
+    });
+    wx.pageScrollTo({ scrollTop: 520, duration: 220 });
+  },
+
+  cancelEdit() {
+    this.resetVisitForm();
+  },
+
+  resetVisitForm() {
+    this.setData({
+      editingVisitId: 0,
+      form: {},
+      photos: [],
+      statusIndex: 1,
+      currentCity: "",
+      currentAddress: "",
+      locationReady: false
+    });
   },
 
   async submitVisit(event) {
@@ -145,14 +190,15 @@ Page({
       wx.showLoading({ title: "上传中" });
       const photoUrls = await this.uploadPhotos(this.data.photos);
       const currentUser = this.data.currentUser;
+      const isEditing = Boolean(this.data.editingVisitId);
       const visit = {
         factory: form.factory,
-        cuttingCount: form.cuttingCount || "",
-        cuttingBrand: form.cuttingBrand || "待补充",
-        drillingCount: form.drillingCount || "",
-        drillingBrand: form.drillingBrand || "待补充",
+        phone: form.phone || "",
+        cuttingDevice: form.cuttingDevice || "",
+        drillingDevice: form.drillingDevice || "",
         software: form.software || "待补充",
         softwarePrice: form.softwarePrice || "待补充",
+        lossReason: form.lossReason || "",
         line: this.buildDeviceLine(form),
         status: this.data.statuses[this.data.statusIndex],
         latitude: this.data.latitude,
@@ -167,15 +213,22 @@ Page({
         photos: photoUrls,
         date: app.globalData.today
       };
-      await app.requestApi("/visits", {
-        method: "POST",
-        data: visit
-      });
+      if (isEditing) {
+        await app.requestApi(`/visits/${this.data.editingVisitId}`, {
+          method: "PUT",
+          data: visit
+        });
+      } else {
+        await app.requestApi("/visits", {
+          method: "POST",
+          data: visit
+        });
+      }
       app.loadRemoteState(() => {
-        this.setData({ photos: [] });
+        this.resetVisitForm();
         this.loadVisits();
       });
-      wx.showToast({ title: "已上传" });
+      wx.showToast({ title: isEditing ? "已更新" : "已上传", icon: "success" });
     } catch (error) {
       wx.showModal({
         title: "上传失败",

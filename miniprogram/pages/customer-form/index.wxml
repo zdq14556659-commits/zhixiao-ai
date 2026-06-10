@@ -1,18 +1,18 @@
 <view class="page">
   <view class="header">
-    <text class="crumb">客户管理 / 单个添加</text>
-    <view class="title">新增客户</view>
+    <text class="crumb">客户管理 / {{editingId ? '编辑客户' : '单个添加'}}</text>
+    <view class="title">{{editingId ? '编辑客户' : '新增客户'}}</view>
   </view>
 
   <form bindsubmit="submitForm">
     <view class="card">
       <view class="form-item">
         <text class="label">客户名称</text>
-        <input name="name" placeholder="例：佛山柜体门板厂" />
+        <input name="name" value="{{form.name}}" placeholder="例：佛山柜体门板厂" />
       </view>
       <view class="form-item">
         <text class="label">手机号</text>
-        <input name="phone" type="number" placeholder="客户手机号" />
+        <input name="phone" type="number" value="{{form.phone}}" placeholder="客户手机号" />
       </view>
       <view class="form-item">
         <text class="label">渠道来源</text>
@@ -37,24 +37,24 @@
       <view class="grid-2">
         <view class="form-item">
           <text class="label">区域</text>
-          <input name="region" placeholder="华东 / 华南" />
+          <input name="region" value="{{form.region}}" placeholder="华东 / 华南" />
         </view>
         <view class="form-item">
           <text class="label">预计金额（万）</text>
-          <input name="amount" type="digit" placeholder="15" />
+          <input name="amount" type="digit" value="{{form.amount}}" placeholder="15" />
         </view>
       </view>
       <view class="form-item">
         <text class="label">现用软件</text>
-        <input name="software" placeholder="酷家乐 + Excel排产" />
+        <input name="software" value="{{form.software}}" placeholder="酷家乐 + Excel排产" />
       </view>
       <view class="form-item">
         <text class="label">客户地址</text>
-        <input name="address" placeholder="客户工厂地址" />
+        <input name="address" value="{{form.address}}" placeholder="客户工厂地址" />
       </view>
       <view class="form-item">
         <text class="label">跟进记录</text>
-        <textarea name="note" placeholder="填写本次沟通内容"></textarea>
+        <textarea name="note" value="{{form.lastNote}}" placeholder="填写本次沟通内容"></textarea>
       </view>
       <view class="form-item">
         <text class="label">下次跟进</text>
@@ -62,7 +62,7 @@
           <view class="picker-box">{{nextFollow}}</view>
         </picker>
       </view>
-      <button class="primary-btn" form-type="submit">保存客户</button>
+      <button class="primary-btn" form-type="submit">{{editingId ? '保存修改' : '保存客户'}}</button>
     </view>
   </form>
 </view>

@@ -82,6 +82,20 @@
   margin-bottom: 0;
 }
 
+.no-bottom {
+  margin-bottom: 0;
+}
+
+.form-title-row {
+  margin-bottom: 18rpx;
+}
+
+.mini-cancel {
+  width: 144rpx;
+  min-height: 58rpx;
+  font-size: 24rpx;
+}
+
 .photo-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -129,6 +143,10 @@
 .visit {
   padding: 20rpx 0;
   border-top: 1rpx solid #e4e9f0;
+}
+
+.visit:active {
+  background: #f8fbff;
 }
 
 .visit:first-of-type {

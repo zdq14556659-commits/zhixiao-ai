@@ -31,6 +31,14 @@
   gap: 20rpx;
   padding: 20rpx 0;
   border-top: 1rpx solid #e4e9f0;
+  opacity: 1;
+  transform: translateX(0);
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+.user-row.removing {
+  opacity: 0;
+  transform: translateX(40rpx);
 }
 
 .user-row:first-of-type {
@@ -79,4 +87,36 @@
   margin-bottom: 8rpx;
   font-size: 28rpx;
   font-weight: 800;
+}
+
+.success-pop {
+  position: fixed;
+  top: 132rpx;
+  left: 50%;
+  z-index: 20;
+  min-width: 220rpx;
+  padding: 18rpx 28rpx;
+  border-radius: 999rpx;
+  color: #fff;
+  background: #67c23a;
+  text-align: center;
+  box-shadow: 0 12rpx 30rpx rgba(103, 194, 58, 0.28);
+  transform: translateX(-50%);
+  animation: success-pop 1.1s ease both;
+}
+
+@keyframes success-pop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -16rpx) scale(0.94);
+  }
+  18%,
+  78% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -10rpx) scale(0.98);
+  }
 }

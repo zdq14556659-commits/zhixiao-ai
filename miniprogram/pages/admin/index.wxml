@@ -5,6 +5,8 @@
     <view class="subtitle">维护员工账号、角色权限、单位和小智知识库</view>
   </view>
 
+  <view wx:if="{{successMessage}}" class="success-pop">{{successMessage}}</view>
+
   <view class="setting-tabs">
     <view class="setting-tab {{activeTab === 'accounts' ? 'active' : ''}}" data-tab="accounts" bindtap="switchTab">账号管理</view>
     <view class="setting-tab {{activeTab === 'knowledge' ? 'active' : ''}}" data-tab="knowledge" bindtap="switchTab">知识库</view>
@@ -38,7 +40,7 @@
         <view class="form-item">
           <text class="label">单位</text>
           <picker range="{{units}}" range-key="name" value="{{unitIndex}}" bindchange="onUnit">
-            <view class="picker-box">{{units[unitIndex].name}} · {{units[unitIndex].zone}}</view>
+            <view class="picker-box">{{unitPickerText}}</view>
           </picker>
         </view>
       </view>
@@ -82,7 +84,7 @@
 
   <view class="card">
     <view class="section-title">员工列表</view>
-    <view class="user-row" wx:for="{{users}}" wx:key="id">
+    <view class="user-row {{deletingUserId === item.id ? 'removing' : ''}}" wx:for="{{users}}" wx:key="id">
       <view class="row-main">
         <view class="name">{{item.name}}</view>
         <view class="muted">{{item.role}} · {{item.unit || '未填单位'}} · {{item.zone || item.region || '未分战区'}}</view>
@@ -94,7 +96,7 @@
 
   <view class="card">
     <view class="section-title">单位列表</view>
-    <view class="user-row" wx:for="{{units}}" wx:key="id">
+    <view class="user-row {{deletingUnitId === item.id ? 'removing' : ''}}" wx:for="{{units}}" wx:key="id">
       <view class="row-main">
         <view class="name">{{item.name}}</view>
         <view class="muted">{{item.zone}}</view>

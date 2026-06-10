@@ -16,7 +16,8 @@ Page({
     startDate: "",
     endDate: "",
     followStatuses: ["全部", "今日待跟进", "已逾期", "未设置"],
-    followStatusIndex: 0
+    followStatusIndex: 0,
+    filtersOpen: false
   },
 
   onLoad(options) {
@@ -62,6 +63,10 @@ Page({
 
   onKeyword(event) {
     this.setData({ keyword: event.detail.value });
+  },
+
+  toggleFilters() {
+    this.setData({ filtersOpen: !this.data.filtersOpen });
   },
 
   onOwner(event) {
@@ -137,6 +142,10 @@ Page({
 
   goBatchImport() {
     wx.navigateTo({ url: `/pages/batch-import/index?stage=${this.data.currentStage}` });
+  },
+
+  editCustomer(event) {
+    wx.navigateTo({ url: `/pages/customer-form/index?id=${event.currentTarget.dataset.id}` });
   },
 
   callCustomer(event) {

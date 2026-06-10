@@ -21,14 +21,15 @@ const DEFAULT_ROLES = [
   { id: "role-ops", name: "运营", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] },
   { id: "role-admin", name: "管理员", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] }
 ];
-const DEFAULT_UNITS = [
-  { id: "unit-east-custom", name: "华东定制产业带", zone: "东部战区" },
-  { id: "unit-south-custom", name: "华南定制产业带", zone: "南部战区" },
-  { id: "unit-west-custom", name: "西部定制产业带", zone: "西部战区" },
-  { id: "unit-north-custom", name: "北部定制产业带", zone: "北部战区" },
-  { id: "unit-central-channel", name: "中部渠道一部", zone: "中部战区" },
-  { id: "unit-national-channel", name: "全国渠道一部", zone: "中部战区" },
-  { id: "unit-hq-growth", name: "总部增长运营", zone: "中部战区" }
+const DEFAULT_UNITS = [];
+const LEGACY_DEMO_UNIT_IDS = [
+  "unit-east-custom",
+  "unit-south-custom",
+  "unit-west-custom",
+  "unit-north-custom",
+  "unit-central-channel",
+  "unit-national-channel",
+  "unit-hq-growth"
 ];
 
 function getChinaToday() {
@@ -73,6 +74,16 @@ function getApiBase() {
 }
 
 const today = getChinaToday();
+
+function migrateLocalState(state = seedState) {
+  return {
+    ...state,
+    units: (state.units || []).filter((unit) => unit && !LEGACY_DEMO_UNIT_IDS.includes(unit.id)),
+    users: (state.users || []).map((user) => LEGACY_DEMO_UNIT_IDS.includes(user.unitId)
+      ? { ...user, unitId: "", unit: "待分配" }
+      : user)
+  };
+}
 
 const seedState = {
   version: "mini-v3",
@@ -237,6 +248,8 @@ App({
   onLaunch() {
     if (!wx.getStorageSync(STORAGE_KEY)) {
       wx.setStorageSync(STORAGE_KEY, seedState);
+    } else {
+      wx.setStorageSync(STORAGE_KEY, migrateLocalState(wx.getStorageSync(STORAGE_KEY)));
     }
     const session = this.getSession();
     if (session && session.user) {
@@ -246,7 +259,7 @@ App({
   },
 
   getState() {
-    return wx.getStorageSync(STORAGE_KEY) || seedState;
+    return migrateLocalState(wx.getStorageSync(STORAGE_KEY) || seedState);
   },
 
   setState(nextState) {
