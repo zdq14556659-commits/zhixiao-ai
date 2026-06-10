@@ -169,31 +169,54 @@ async function routeApi(req, res, url) {
     if (!isCustomerAssignable(customer)) return sendJson(res, 400, { error: "当前客户暂不满足分配条件" });
     const target = findAssignableSalesUser(state, viewer, body.ownerId, body.owner || body.followPerson);
     if (!target) return sendJson(res, 400, { error: "请选择当前权限内的销售" });
-    const previousStage = customer.stage;
-    const next = normalizeCustomer({
-      ...customer,
-      owner: target.name,
-      ownerId: target.id,
-      followPerson: target.name,
-      unitId: target.unitId || "",
-      unit: target.unit || "",
-      zone: target.zone || "",
-      region: target.zone || customer.region,
-      lastFollow: today(),
-      nextFollow: body.nextFollow || customer.nextFollow || "",
-      lastNote: `${viewer.name || "管理员"}已将客户分配给${target.name}。`
-    }, state);
-    next.followUps.push({
-      date: today(),
-      note: `${viewer.name || "管理员"}已将客户分配给${target.name}。`,
-      nextFollow: body.nextFollow || ""
-    });
+    const { next, previousStage } = buildAssignedCustomer(state, viewer, customer, target, body);
     state.customers[index] = next;
     if (previousStage !== next.stage) {
       state.activities.push({ date: today(), owner: next.owner, type: next.stage, customerId: next.id });
     }
     writeState(state);
     return sendJson(res, 200, toMiniCustomer(next));
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/customers/assign") {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canAssignCustomers(state, viewer)) return sendJson(res, 403, { error: "无客户分配权限" });
+    const ids = [...new Set((body.ids || body.customerIds || []).map((id) => Number(id)).filter(Boolean))];
+    if (!ids.length) return sendJson(res, 400, { error: "请选择要分配的客户" });
+    const target = findAssignableSalesUser(state, viewer, body.ownerId, body.owner || body.followPerson);
+    if (!target) return sendJson(res, 400, { error: "请选择当前权限内的销售" });
+    const assignedCustomers = [];
+    const failed = [];
+    ids.forEach((id) => {
+      const index = state.customers.findIndex((item) => Number(item.id) === Number(id));
+      if (index < 0) {
+        failed.push({ id, reason: "客户不存在" });
+        return;
+      }
+      const customer = state.customers[index];
+      if (!canViewRecord(state, viewer, customer)) {
+        failed.push({ id, name: customer.name, reason: "无权查看" });
+        return;
+      }
+      if (!isCustomerAssignable(customer)) {
+        failed.push({ id, name: customer.name, reason: "不满足分配条件" });
+        return;
+      }
+      const { next, previousStage } = buildAssignedCustomer(state, viewer, customer, target, body);
+      state.customers[index] = next;
+      if (previousStage !== next.stage) {
+        state.activities.push({ date: today(), owner: next.owner, type: next.stage, customerId: next.id });
+      }
+      assignedCustomers.push(toMiniCustomer(next));
+    });
+    if (assignedCustomers.length) writeState(state);
+    return sendJson(res, 200, {
+      assigned: assignedCustomers.length,
+      failed,
+      customers: assignedCustomers
+    });
   }
 
   const customerPatch = url.pathname.match(/^\/api\/customers\/(\d+)$/);
@@ -881,6 +904,30 @@ function canAssignCustomers(state, user) {
   if (!user) return false;
   const role = findRole(state.roles, user.roleId, user.role);
   return role.customerScope !== "self" || (role.permissions || []).includes("admin");
+}
+
+function buildAssignedCustomer(state, viewer, customer, target, body = {}) {
+  const previousStage = customer.stage;
+  const note = `${viewer.name || "管理员"}已将客户分配给${target.name}。`;
+  const next = normalizeCustomer({
+    ...customer,
+    owner: target.name,
+    ownerId: target.id,
+    followPerson: target.name,
+    unitId: target.unitId || "",
+    unit: target.unit || "",
+    zone: target.zone || "",
+    region: target.zone || customer.region,
+    lastFollow: today(),
+    nextFollow: body.nextFollow || customer.nextFollow || "",
+    lastNote: note
+  }, state);
+  next.followUps.push({
+    date: today(),
+    note,
+    nextFollow: body.nextFollow || ""
+  });
+  return { next, previousStage };
 }
 
 function isCustomerAssignable(customer = {}) {

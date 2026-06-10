@@ -23,6 +23,8 @@ let currentView = "dashboard";
 let currentSettingsTab = "accounts";
 let fieldMap = null;
 let fieldLayer = null;
+let currentCustomerRows = [];
+let selectedCustomerIds = new Set();
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -314,8 +316,10 @@ function renderCustomers() {
   $("#unitFilter").value = currentFilters.unit;
   $("#customerOwnerSelect").innerHTML = ownerOptions.map((user) => `<option>${user.name}</option>`).join("");
   $("#batchOwnerSelect").innerHTML = ownerOptions.map((user) => `<option>${user.name}</option>`).join("");
+  $("#assignOwnerSelect").innerHTML = ownerOptions.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
   $("#customerStageSelect").innerHTML = stages.map((stage) => `<option>${stage}</option>`).join("");
   $("#customerChannelSelect").innerHTML = channelSources.map((source) => `<option>${source}</option>`).join("");
+  $("#batchAssignBtn").classList.toggle("hidden", !canAssignCustomers());
 
   const keyword = $("#customerKeyword").value.trim().toLowerCase();
   const channel = $("#channelFilter").value;
@@ -338,9 +342,13 @@ function renderCustomers() {
     if (!inDateRange(item.nextFollow || "", nextStart, nextEnd)) return false;
     return true;
   });
+  currentCustomerRows = rows;
+  const selectableIds = new Set(rows.filter((item) => canAssignCustomers() && isCustomerAssignable(item)).map((item) => Number(item.id)));
+  selectedCustomerIds = new Set([...selectedCustomerIds].filter((id) => selectableIds.has(Number(id))));
   $("#customerRows").innerHTML = rows.length
     ? rows.map(customerRow).join("")
-    : `<tr><td colspan="11" class="empty">暂无客户</td></tr>`;
+    : `<tr><td colspan="12" class="empty">暂无客户</td></tr>`;
+  updateCustomerSelectionUI();
 }
 
 function customerRow(item) {
@@ -350,12 +358,12 @@ function customerRow(item) {
     ? `<div class="customer-photos">${photos.slice(0, 4).map((url) => `<img src="${escapeHtml(url)}" data-photo="${escapeHtml(url)}" alt="${escapeHtml(item.name || "客户图片")}" />`).join("")}${photos.length > 4 ? `<span>+${photos.length - 4}</span>` : ""}</div>`
     : "";
   const assignable = canAssignCustomers() && isCustomerAssignable(item);
-  const salesOptions = visibleSales().map((user) => `<option value="${user.id}" ${Number(user.id) === Number(item.ownerId) ? "selected" : ""}>${escapeHtml(user.name)}</option>`).join("");
-  const assignHtml = assignable && salesOptions
-    ? `<select class="inline-assign" data-role="assign-owner" data-id="${item.id}">${salesOptions}</select><button data-action="assign" data-id="${item.id}">分配</button>`
-    : "";
+  const checked = selectedCustomerIds.has(Number(item.id)) ? "checked" : "";
+  const disabled = assignable ? "" : "disabled";
+  const title = assignable ? "选择客户" : "当前客户暂不满足分配条件";
   return `
     <tr>
+      <td class="select-cell"><input type="checkbox" class="customer-select" data-id="${item.id}" ${checked} ${disabled} title="${title}" /></td>
       <td><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.stage || "")}</small></td>
       <td><a href="tel:${item.phone}">${item.phone}</a></td>
       <td>${escapeHtml(normalizeChannelSource(item.channelSource))}</td>
@@ -366,8 +374,56 @@ function customerRow(item) {
       <td class="${dueClass}">${item.nextFollow || "未设置"}</td>
       <td>${escapeHtml(item.unit || "待分配")}</td>
       <td>${escapeHtml(item.address || item.region || "待补充")}</td>
-      <td><button data-action="follow" data-id="${item.id}">跟进</button><button data-action="advance" data-id="${item.id}">${item.stage === "成交" ? "已成交" : "推进"}</button>${assignHtml}</td>
+      <td><button data-action="follow" data-id="${item.id}">跟进</button><button data-action="advance" data-id="${item.id}">${item.stage === "成交" ? "已成交" : "推进"}</button></td>
     </tr>`;
+}
+
+function updateCustomerSelectionUI() {
+  const selectableRows = currentCustomerRows.filter((item) => canAssignCustomers() && isCustomerAssignable(item));
+  const selectedCount = selectableRows.filter((item) => selectedCustomerIds.has(Number(item.id))).length;
+  const selectAll = $("#selectAllCustomers");
+  if (selectAll) {
+    selectAll.disabled = selectableRows.length === 0;
+    selectAll.checked = selectableRows.length > 0 && selectedCount === selectableRows.length;
+    selectAll.indeterminate = selectedCount > 0 && selectedCount < selectableRows.length;
+  }
+  const batchButton = $("#batchAssignBtn");
+  if (batchButton) {
+    batchButton.disabled = selectedCount === 0;
+    batchButton.textContent = selectedCount ? `批量分配(${selectedCount})` : "批量分配";
+  }
+}
+
+function toggleCustomerSelection(event) {
+  const checkbox = event.target.closest(".customer-select");
+  if (!checkbox) return;
+  const id = Number(checkbox.dataset.id);
+  if (checkbox.checked) selectedCustomerIds.add(id);
+  else selectedCustomerIds.delete(id);
+  updateCustomerSelectionUI();
+}
+
+function toggleAllCustomers(event) {
+  const checked = event.currentTarget.checked;
+  currentCustomerRows.forEach((item) => {
+    if (!canAssignCustomers() || !isCustomerAssignable(item)) return;
+    const id = Number(item.id);
+    if (checked) selectedCustomerIds.add(id);
+    else selectedCustomerIds.delete(id);
+  });
+  renderCustomers();
+}
+
+function openBatchAssignDialog() {
+  const ids = selectedCustomerIdsForAssign();
+  if (!ids.length) return toast("请先勾选客户");
+  $("#assignSummary").textContent = `已选择 ${ids.length} 个客户`;
+  $("#assignDialog").showModal();
+}
+
+function selectedCustomerIdsForAssign() {
+  const selectableIds = new Set(currentCustomerRows.filter((item) => canAssignCustomers() && isCustomerAssignable(item)).map((item) => Number(item.id)));
+  return [...selectedCustomerIds].map(Number).filter((id) => selectableIds.has(id));
 }
 
 function openCustomerDialog(customer = null) {
@@ -456,6 +512,26 @@ async function assignCustomer(id, ownerId) {
   });
   await loadState();
   toast("已分配");
+}
+
+async function batchAssignCustomers(event) {
+  event.preventDefault();
+  if (event.submitter?.value === "cancel") return $("#assignDialog").close();
+  const ids = selectedCustomerIdsForAssign();
+  if (!ids.length) return toast("请先勾选客户");
+  const form = new FormData(event.currentTarget);
+  const ownerId = Number(form.get("ownerId"));
+  const target = state.users.find((user) => Number(user.id) === Number(ownerId));
+  if (!target) return toast("请选择员工");
+  const result = await api("/customers/assign", {
+    method: "POST",
+    body: { ids, ownerId: target.id, owner: target.name }
+  });
+  selectedCustomerIds.clear();
+  $("#assignDialog").close();
+  await loadState();
+  const failedCount = Array.isArray(result.failed) ? result.failed.length : 0;
+  toast(failedCount ? `已分配${result.assigned || 0}个，${failedCount}个未满足条件` : `已分配${result.assigned || ids.length}个客户`);
 }
 
 async function batchImport(event) {
@@ -764,6 +840,9 @@ function wireEvents() {
   });
   $("#addCustomerBtn").addEventListener("click", () => openCustomerDialog());
   $("#batchImportBtn").addEventListener("click", () => $("#batchDialog").showModal());
+  $("#batchAssignBtn").addEventListener("click", openBatchAssignDialog);
+  $("#selectAllCustomers").addEventListener("change", toggleAllCustomers);
+  $("#customerRows").addEventListener("change", toggleCustomerSelection);
   $("#customerRows").addEventListener("click", (event) => {
     const photo = event.target.closest("img[data-photo]");
     if (photo) {
@@ -782,6 +861,7 @@ function wireEvents() {
   });
   $("#customerForm").addEventListener("submit", saveCustomer);
   $("#batchForm").addEventListener("submit", batchImport);
+  $("#assignForm").addEventListener("submit", batchAssignCustomers);
   $("#recommendBtn").addEventListener("click", recommend);
   $("#knowledgeForm").addEventListener("submit", addKnowledge);
   $("#userForm").addEventListener("submit", addUser);

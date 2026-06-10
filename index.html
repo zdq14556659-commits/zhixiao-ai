@@ -90,11 +90,12 @@
               <label class="inline-filter">至<input id="nextFollowEnd" type="date" /></label>
               <button id="addCustomerBtn" class="primary">单个添加</button>
               <button id="batchImportBtn">批量导入</button>
+              <button id="batchAssignBtn" disabled>批量分配</button>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr><th>客户</th><th>客户电话</th><th>渠道来源</th><th>录入人</th><th>跟进人</th><th>跟进记录</th><th>最新跟进时间</th><th>下次跟进时间</th><th>单位</th><th>客户地址</th><th>操作</th></tr>
+                  <tr><th class="select-cell"><input type="checkbox" id="selectAllCustomers" /></th><th>客户</th><th>客户电话</th><th>渠道来源</th><th>录入人</th><th>跟进人</th><th>跟进记录</th><th>最新跟进时间</th><th>下次跟进时间</th><th>单位</th><th>客户地址</th><th>操作</th></tr>
                 </thead>
                 <tbody id="customerRows"></tbody>
               </table>
@@ -224,6 +225,15 @@
         <label>上传名单文件<input name="file" type="file" accept=".xlsx,.csv,.txt" /></label>
         <textarea name="rows" rows="8" placeholder="佛山柜体门板厂,13900139000,地推,广东省佛山市,酷家乐+手工报价,26"></textarea>
         <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">导入</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="assignDialog">
+      <form method="dialog" class="dialog-form" id="assignForm">
+        <h2>批量分配客户</h2>
+        <p class="muted" id="assignSummary">已选择 0 个客户</p>
+        <label>分配给员工<select name="ownerId" id="assignOwnerSelect"></select></label>
+        <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">确认分配</button></div>
       </form>
     </dialog>
 
