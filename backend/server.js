@@ -25,6 +25,7 @@ const TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 const ADMIN_ROLES = ["总负责人", "运营", "管理员"];
 const DEFAULT_PERMISSIONS = ["dashboard", "customers", "field", "assistant"];
 const ADMIN_PERMISSIONS = [...DEFAULT_PERMISSIONS, "admin"];
+const REASSIGN_DAYS = 30;
 const DEFAULT_ROLES = [
   { id: "role-owner", name: "总负责人", customerScope: "all", permissions: ADMIN_PERMISSIONS },
   { id: "role-region", name: "区域经理", customerScope: "zone", permissions: DEFAULT_PERMISSIONS },
@@ -155,14 +156,71 @@ async function routeApi(req, res, url) {
     return sendJson(res, 200, toMiniCustomer(customer));
   }
 
+  const customerAssign = url.pathname.match(/^\/api\/customers\/(\d+)\/assign$/);
+  if (req.method === "POST" && customerAssign) {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    const index = state.customers.findIndex((item) => item.id === Number(customerAssign[1]));
+    if (index < 0) return sendJson(res, 404, { error: "customer not found" });
+    const customer = state.customers[index];
+    if (!canAssignCustomers(state, viewer)) return sendJson(res, 403, { error: "无客户分配权限" });
+    if (!canViewRecord(state, viewer, customer)) return sendJson(res, 403, { error: "不可分配不可见客户" });
+    if (!isCustomerAssignable(customer)) return sendJson(res, 400, { error: "当前客户暂不满足分配条件" });
+    const target = findAssignableSalesUser(state, viewer, body.ownerId, body.owner || body.followPerson);
+    if (!target) return sendJson(res, 400, { error: "请选择当前权限内的销售" });
+    const previousStage = customer.stage;
+    const next = normalizeCustomer({
+      ...customer,
+      owner: target.name,
+      ownerId: target.id,
+      followPerson: target.name,
+      unitId: target.unitId || "",
+      unit: target.unit || "",
+      zone: target.zone || "",
+      region: target.zone || customer.region,
+      lastFollow: today(),
+      nextFollow: body.nextFollow || customer.nextFollow || "",
+      lastNote: `${viewer.name || "管理员"}已将客户分配给${target.name}。`
+    }, state);
+    next.followUps.push({
+      date: today(),
+      note: `${viewer.name || "管理员"}已将客户分配给${target.name}。`,
+      nextFollow: body.nextFollow || ""
+    });
+    state.customers[index] = next;
+    if (previousStage !== next.stage) {
+      state.activities.push({ date: today(), owner: next.owner, type: next.stage, customerId: next.id });
+    }
+    writeState(state);
+    return sendJson(res, 200, toMiniCustomer(next));
+  }
+
   const customerPatch = url.pathname.match(/^\/api\/customers\/(\d+)$/);
   if ((req.method === "PATCH" || req.method === "PUT") && customerPatch) {
     const body = await readBody(req);
     const state = readState();
     const index = state.customers.findIndex((item) => item.id === Number(customerPatch[1]));
     if (index < 0) return sendJson(res, 404, { error: "customer not found" });
-    const previousStage = state.customers[index].stage;
-    state.customers[index] = normalizeCustomer({ ...state.customers[index], ...body, id: state.customers[index].id }, state);
+    const previous = state.customers[index];
+    const previousStage = previous.stage;
+    const next = normalizeCustomer({ ...previous, ...body, id: previous.id }, state);
+    const shouldAddFollow =
+      body.lastNote !== undefined ||
+      body.note !== undefined ||
+      body.nextFollow !== undefined ||
+      body.lastFollow !== undefined ||
+      (body.stage && body.stage !== previousStage);
+    if (shouldAddFollow) {
+      const followDate = body.lastFollow || body.date || today();
+      const followNote = body.lastNote || body.note || (body.stage && body.stage !== previousStage ? `客户推进至${next.stage}阶段。` : "更新了客户信息。");
+      const followNext = body.nextFollow !== undefined ? body.nextFollow : ((next.followUps[next.followUps.length - 1] || {}).nextFollow || "");
+      const latest = next.followUps[next.followUps.length - 1] || {};
+      if (latest.date !== followDate || latest.note !== followNote || latest.nextFollow !== followNext) {
+        next.followUps.push({ date: followDate, note: followNote, nextFollow: followNext });
+      }
+    }
+    state.customers[index] = next;
     if (body.stage && body.stage !== previousStage) {
       state.activities.push({
         date: body.date || today(),
@@ -573,9 +631,19 @@ function normalizeCustomer(customer, context = {}) {
     region: customer.region || ownerUser.zone || unit.zone || "待分区",
     amount: Number(customer.amount || 15),
     software: customer.software || "待补充",
+    photos: normalizePhotos(customer.photos || customer.visitPhotos),
     createdAt: customer.createdAt || today(),
     followUps
   };
+}
+
+function normalizePhotos(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => String(item || "").trim()).filter(Boolean))];
+}
+
+function mergePhotos(...groups) {
+  return normalizePhotos(groups.flatMap((group) => Array.isArray(group) ? group : []));
 }
 
 function normalizeVisit(visit = {}, context = {}) {
@@ -673,6 +741,7 @@ function syncVisitToCustomer(state, visit) {
       region: visit.city || visit.address || "待分区",
       amount: 15,
       software: visit.software || "待补充",
+      photos: normalizePhotos(visit.photos),
       createdAt: visit.date || today(),
       lastFollow: visit.date || today(),
       nextFollow: "",
@@ -692,7 +761,8 @@ function syncVisitToCustomer(state, visit) {
     address: visit.address || state.customers[index].address,
     phone: visit.phone || state.customers[index].phone,
     region: visit.city || state.customers[index].region,
-    software: visit.software || state.customers[index].software
+    software: visit.software || state.customers[index].software,
+    photos: mergePhotos(state.customers[index].photos, visit.photos)
   }, state);
   const latestFollow = customer.followUps[customer.followUps.length - 1] || {};
   customer.followUps.push({
@@ -805,6 +875,44 @@ function canUseAdmin(state, user) {
   if (!user) return false;
   const role = findRole(state.roles, user.roleId, user.role);
   return (role.permissions || []).includes("admin");
+}
+
+function canAssignCustomers(state, user) {
+  if (!user) return false;
+  const role = findRole(state.roles, user.roleId, user.role);
+  return role.customerScope !== "self" || (role.permissions || []).includes("admin");
+}
+
+function isCustomerAssignable(customer = {}) {
+  if (customer.stage === "名单") return true;
+  if (!["线索", "商机"].includes(customer.stage)) return false;
+  const latest = latestCustomerFollow(customer);
+  if (!latest) return true;
+  return daysSince(latest) > REASSIGN_DAYS;
+}
+
+function latestCustomerFollow(customer = {}) {
+  const followUps = Array.isArray(customer.followUps) ? customer.followUps : [];
+  const latest = followUps[followUps.length - 1] || {};
+  return latest.date || customer.lastFollow || customer.createdAt || "";
+}
+
+function daysSince(dateText) {
+  const time = Date.parse(dateText);
+  if (!Number.isFinite(time)) return Number.POSITIVE_INFINITY;
+  return Math.floor((Date.parse(today()) - time) / (24 * 60 * 60 * 1000));
+}
+
+function findAssignableSalesUser(state, viewer, ownerId, ownerName) {
+  const candidates = visibleUsers(state, viewer).filter((user) => {
+    const role = findRole(state.roles, user.roleId, user.role);
+    return role.name === "销售" || user.role === "销售";
+  });
+  return (
+    candidates.find((user) => ownerId && Number(user.id) === Number(ownerId)) ||
+    candidates.find((user) => ownerName && cleanText(user.name) === cleanText(ownerName)) ||
+    null
+  );
 }
 
 function toMiniCustomer(customer) {

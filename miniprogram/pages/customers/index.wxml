@@ -80,25 +80,32 @@
     </view>
   </view>
 
-  <view class="customer-card" wx:for="{{filtered}}" wx:key="id" data-id="{{item.id}}" bindtap="editCustomer">
-    <view class="row">
-      <view>
-        <view class="customer-name">{{item.name}}</view>
-        <view class="muted">{{item.phone}} · {{item.channelLabel}}</view>
+  <view class="customer-strip" wx:for="{{paged}}" wx:key="id" data-id="{{item.id}}" bindtap="editCustomer">
+    <view class="strip-main">
+      <view class="strip-top">
+        <view class="customer-name ellipsis">{{item.name}}</view>
+        <text class="tag">{{item.stage}}</text>
       </view>
-      <text class="tag">{{item.stage}}</text>
+      <view class="strip-line ellipsis">{{item.phone}} · {{item.channelLabel}} · {{item.followPerson || item.owner}}</view>
+      <view class="strip-line ellipsis">{{item.software || '软件待补充'}} · 下次：{{item.nextFollow || '未设置'}}</view>
+      <view class="strip-note ellipsis">{{item.lastNote || '暂无跟进记录'}}</view>
+      <view wx:if="{{item.firstPhoto}}" class="photo-chip" data-id="{{item.id}}" data-src="{{item.firstPhoto}}" catchtap="previewCustomerPhoto">
+        <image src="{{item.firstPhoto}}" mode="aspectFill"></image>
+        <text>{{item.photoCount}}张现场图</text>
+      </view>
     </view>
-    <view class="info">跟进人：{{item.followPerson || item.owner}} · 单位：{{item.unit || '待分配'}}</view>
-    <view class="info">地址：{{item.address || item.region || '待补充'}}</view>
-    <view class="info">现用软件：{{item.software}}</view>
-    <view class="info">最近跟进：{{item.lastFollow || '-'}} · 下次：{{item.nextFollow || '未设置'}}</view>
-    <view class="note">{{item.lastNote}}</view>
-    <view class="customer-actions">
+    <view class="strip-actions {{item.canAssign ? 'has-assign' : ''}}">
       <button class="plain-btn" data-phone="{{item.phone}}" catchtap="callCustomer">拨打</button>
       <button class="plain-btn" data-id="{{item.id}}" catchtap="goFollow">跟进</button>
       <button class="primary-btn" data-id="{{item.id}}" catchtap="advanceCustomer">{{item.stage === '成交' ? '查看' : '推进'}}</button>
+      <button wx:if="{{item.canAssign}}" class="assign-btn" data-id="{{item.id}}" catchtap="assignCustomer">分配</button>
     </view>
   </view>
 
   <view class="empty" wx:if="{{filtered.length === 0}}">暂无符合条件的客户</view>
+  <view class="pager" wx:if="{{filtered.length > pageSize}}">
+    <button class="plain-btn" bindtap="prevPage" disabled="{{page <= 1}}">上一页</button>
+    <text>{{page}} / {{totalPages}}</text>
+    <button class="plain-btn" bindtap="nextPage" disabled="{{page >= totalPages}}">下一页</button>
+  </view>
 </view>

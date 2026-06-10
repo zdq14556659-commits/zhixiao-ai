@@ -137,6 +137,24 @@ function inDateRange(value, start, end) {
   return true;
 }
 
+function canAssignCustomers() {
+  const role = roleForUser(currentUser());
+  return role.customerScope !== "self" || canAdmin();
+}
+
+function daysSince(value) {
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) return Number.POSITIVE_INFINITY;
+  return Math.floor((Date.parse(today) - time) / (24 * 60 * 60 * 1000));
+}
+
+function isCustomerAssignable(customer = {}) {
+  if (customer.stage === "名单") return true;
+  if (!["线索", "商机"].includes(customer.stage)) return false;
+  const latest = latestFollow(customer);
+  return !latest || daysSince(latest) > 30;
+}
+
 async function api(path, options = {}) {
   const active = session();
   const headers = { ...(options.headers || {}) };
@@ -327,6 +345,15 @@ function renderCustomers() {
 
 function customerRow(item) {
   const dueClass = item.nextFollow && item.nextFollow < today ? "overdue" : item.nextFollow === today ? "today" : "";
+  const photos = Array.isArray(item.photos) ? item.photos : [];
+  const photoHtml = photos.length
+    ? `<div class="customer-photos">${photos.slice(0, 4).map((url) => `<img src="${escapeHtml(url)}" data-photo="${escapeHtml(url)}" alt="${escapeHtml(item.name || "客户图片")}" />`).join("")}${photos.length > 4 ? `<span>+${photos.length - 4}</span>` : ""}</div>`
+    : "";
+  const assignable = canAssignCustomers() && isCustomerAssignable(item);
+  const salesOptions = visibleSales().map((user) => `<option value="${user.id}" ${Number(user.id) === Number(item.ownerId) ? "selected" : ""}>${escapeHtml(user.name)}</option>`).join("");
+  const assignHtml = assignable && salesOptions
+    ? `<select class="inline-assign" data-role="assign-owner" data-id="${item.id}">${salesOptions}</select><button data-action="assign" data-id="${item.id}">分配</button>`
+    : "";
   return `
     <tr>
       <td><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.stage || "")}</small></td>
@@ -334,12 +361,12 @@ function customerRow(item) {
       <td>${escapeHtml(normalizeChannelSource(item.channelSource))}</td>
       <td>${escapeHtml(item.createdBy || "未记录")}</td>
       <td>${escapeHtml(item.followPerson || item.owner || "未分配")}</td>
-      <td><small>${escapeHtml(item.lastNote || "暂无跟进记录")}</small></td>
+      <td><small>${escapeHtml(item.lastNote || "暂无跟进记录")}</small>${photoHtml}</td>
       <td>${latestFollow(item) || "-"}</td>
       <td class="${dueClass}">${item.nextFollow || "未设置"}</td>
       <td>${escapeHtml(item.unit || "待分配")}</td>
       <td>${escapeHtml(item.address || item.region || "待补充")}</td>
-      <td><button data-action="follow" data-id="${item.id}">跟进</button><button data-action="advance" data-id="${item.id}">${item.stage === "成交" ? "已成交" : "推进"}</button></td>
+      <td><button data-action="follow" data-id="${item.id}">跟进</button><button data-action="advance" data-id="${item.id}">${item.stage === "成交" ? "已成交" : "推进"}</button>${assignHtml}</td>
     </tr>`;
 }
 
@@ -392,10 +419,11 @@ async function saveCustomer(event) {
     nextFollow: String(form.get("nextFollow") || ""),
     lastNote: String(form.get("note") || "更新了客户跟进。")
   };
-  const index = state.customers.findIndex((item) => item.id === id);
-  if (index >= 0) state.customers[index] = { ...state.customers[index], ...customer };
-  else state.customers.unshift(customer);
-  await saveState();
+  if (id) {
+    await api(`/customers/${id}`, { method: "PUT", body: customer });
+  } else {
+    await api("/customers", { method: "POST", body: customer });
+  }
   $("#customerDialog").close();
   await loadState();
   toast("已保存");
@@ -405,14 +433,29 @@ async function advanceCustomer(id) {
   const customer = state.customers.find((item) => item.id === id);
   const index = stages.indexOf(customer.stage);
   if (index >= stages.length - 1) return;
-  customer.stage = stages[index + 1];
-  customer.lastFollow = today;
-  customer.nextFollow = today;
-  customer.lastNote = `客户推进至${customer.stage}阶段。`;
-  currentStage = customer.stage;
-  await saveState();
+  const nextStage = stages[index + 1];
+  const nextCustomer = {
+    ...customer,
+    stage: nextStage,
+    lastFollow: today,
+    nextFollow: today,
+    lastNote: `客户推进至${nextStage}阶段。`
+  };
+  await api(`/customers/${id}`, { method: "PUT", body: nextCustomer });
+  currentStage = nextStage;
   await loadState();
   toast("已推进");
+}
+
+async function assignCustomer(id, ownerId) {
+  const target = state.users.find((user) => Number(user.id) === Number(ownerId));
+  if (!target) return toast("请选择销售");
+  await api(`/customers/${id}/assign`, {
+    method: "POST",
+    body: { ownerId: target.id, owner: target.name }
+  });
+  await loadState();
+  toast("已分配");
 }
 
 async function batchImport(event) {
@@ -722,11 +765,20 @@ function wireEvents() {
   $("#addCustomerBtn").addEventListener("click", () => openCustomerDialog());
   $("#batchImportBtn").addEventListener("click", () => $("#batchDialog").showModal());
   $("#customerRows").addEventListener("click", (event) => {
+    const photo = event.target.closest("img[data-photo]");
+    if (photo) {
+      window.open(photo.dataset.photo, "_blank", "noopener");
+      return;
+    }
     const button = event.target.closest("button");
     if (!button) return;
     const id = Number(button.dataset.id);
     if (button.dataset.action === "follow") openCustomerDialog(state.customers.find((item) => item.id === id));
     if (button.dataset.action === "advance") advanceCustomer(id);
+    if (button.dataset.action === "assign") {
+      const select = button.parentElement.querySelector(`select[data-role="assign-owner"][data-id="${id}"]`);
+      assignCustomer(id, select?.value);
+    }
   });
   $("#customerForm").addEventListener("submit", saveCustomer);
   $("#batchForm").addEventListener("submit", batchImport);

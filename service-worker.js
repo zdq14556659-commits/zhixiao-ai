@@ -1,4 +1,4 @@
-const CACHE_NAME = "zhixiao-ai-v10";
+const CACHE_NAME = "zhixiao-ai-v11";
 const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest", "./icon.svg"];
 
 self.addEventListener("install", (event) => {
