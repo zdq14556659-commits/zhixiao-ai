@@ -128,6 +128,17 @@ function latestFollow(customer = {}) {
   return customer.lastFollow || customer.createdAt || "";
 }
 
+function stageTimeConfig(stage = currentStage) {
+  if (stage === "名单") return { label: "录入时间", field: "createdAt" };
+  if (stage === "成交") return { label: "成交时间", field: "dealAt" };
+  return { label: "转化时间", field: stage === "商机" ? "opportunityAt" : "leadAt" };
+}
+
+function customerStageTime(customer = {}, stage = currentStage) {
+  const config = stageTimeConfig(stage);
+  return String(customer[config.field] || "").slice(0, 10);
+}
+
 function optionList(label, values) {
   const options = [...new Set(values.filter(Boolean))];
   return `<option value="">${label}</option>${options.map((value) => `<option>${escapeHtml(value)}</option>`).join("")}`;
@@ -312,6 +323,7 @@ function renderDashboard() {
 
 function renderCustomers() {
   const customers = scopeCustomers();
+  const stageTime = stageTimeConfig();
   const currentFilters = {
     channel: $("#channelFilter")?.value || "",
     createdBy: $("#createdByFilter")?.value || "",
@@ -337,12 +349,16 @@ function renderCustomers() {
   $("#customerStageSelect").innerHTML = stages.map((stage) => `<option>${stage}</option>`).join("");
   $("#customerChannelSelect").innerHTML = channelSources.map((source) => `<option>${source}</option>`).join("");
   $("#batchAssignBtn").classList.toggle("hidden", !canAssignCustomers());
+  $("#stageTimeHeader").textContent = stageTime.label;
+  $("#stageTimeFilterLabel").textContent = stageTime.label;
 
   const keyword = $("#customerKeyword").value.trim().toLowerCase();
   const channel = $("#channelFilter").value;
   const createdBy = $("#createdByFilter").value;
   const followPerson = $("#followPersonFilter").value;
   const unit = $("#unitFilter").value;
+  const stageStart = $("#stageTimeStart").value;
+  const stageEnd = $("#stageTimeEnd").value;
   const lastStart = $("#lastFollowStart").value;
   const lastEnd = $("#lastFollowEnd").value;
   const nextStart = $("#nextFollowStart").value;
@@ -355,11 +371,13 @@ function renderCustomers() {
     if (createdBy && item.createdBy !== createdBy) return false;
     if (followPerson && (item.followPerson || item.owner) !== followPerson) return false;
     if (unit && item.unit !== unit) return false;
+    if (!inDateRange(customerStageTime(item), stageStart, stageEnd)) return false;
     if (!inDateRange(latestFollow(item), lastStart, lastEnd)) return false;
     if (!inDateRange(item.nextFollow || "", nextStart, nextEnd)) return false;
     return true;
   });
   currentFilteredCustomerRows = filteredRows;
+  $("#customerResultCount").textContent = `当前${currentStage}：${filteredRows.length}条`;
   const totalPages = Math.max(Math.ceil(filteredRows.length / customerPageSize), 1);
   customerPage = Math.min(Math.max(customerPage, 1), totalPages);
   const start = (customerPage - 1) * customerPageSize;
@@ -369,7 +387,7 @@ function renderCustomers() {
   selectedCustomerIds = new Set([...selectedCustomerIds].filter((id) => selectableIds.has(Number(id))));
   $("#customerRows").innerHTML = rows.length
     ? rows.map(customerRow).join("")
-    : `<tr><td colspan="12" class="empty">暂无客户</td></tr>`;
+    : `<tr><td colspan="13" class="empty">暂无客户</td></tr>`;
   updateCustomerSelectionUI();
   const sizeSelect = $("#customerPageSize");
   if (sizeSelect) sizeSelect.value = String(customerPageSize);
@@ -396,6 +414,7 @@ function customerRow(item) {
       <td>${escapeHtml(normalizeChannelSource(item.channelSource))}</td>
       <td>${escapeHtml(item.createdBy || "未记录")}</td>
       <td>${escapeHtml(item.followPerson || item.owner || "未分配")}</td>
+      <td>${escapeHtml(customerStageTime(item) || "-")}</td>
       <td><small>${escapeHtml(item.lastNote || "暂无跟进记录")}</small><button class="history-link" data-action="history" data-id="${item.id}">查看历史(${(item.followUps || []).length})</button>${photoHtml}</td>
       <td>${latestFollow(item) || "-"}</td>
       <td class="${dueClass}">${item.nextFollow || "未设置"}</td>
@@ -957,13 +976,18 @@ function wireEvents() {
     customerPage = 1;
     renderCustomers();
   });
-  ["customerKeyword", "channelFilter", "createdByFilter", "followPersonFilter", "unitFilter", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
+  ["customerKeyword", "channelFilter", "createdByFilter", "followPersonFilter", "unitFilter", "stageTimeStart", "stageTimeEnd", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
     const resetAndRender = () => {
       customerPage = 1;
       renderCustomers();
     };
     $(`#${id}`).addEventListener("input", resetAndRender);
     $(`#${id}`).addEventListener("change", resetAndRender);
+  });
+  $("#customerFilterToggle").addEventListener("click", () => {
+    const card = $("#customerFilterCard");
+    const collapsed = card.classList.toggle("collapsed");
+    $("#customerFilterToggle").setAttribute("aria-expanded", String(!collapsed));
   });
   $("#customerPageSize").addEventListener("change", (event) => {
     customerPageSize = Number(event.currentTarget.value) || 10;

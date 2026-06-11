@@ -14,7 +14,7 @@
     <view class="filter-toggle" bindtap="toggleFilters">
       <view>
         <view class="filter-title">搜索筛选</view>
-        <text class="muted">{{keyword || channelSources[channelIndex] !== '全部' || owners[ownerIndex] !== '全部' ? '已设置筛选条件' : '点击展开搜索客户'}}</text>
+        <text class="muted">{{keyword || channelSources[channelIndex] !== '全部' || owners[ownerIndex] !== '全部' || regions[regionIndex] !== '全部' || stageStartDate || stageEndDate || lastStartDate || lastEndDate || nextStartDate || nextEndDate || followStatuses[followStatusIndex] !== '全部' ? '已设置筛选条件' : '点击展开搜索客户'}}</text>
       </view>
       <text class="filter-arrow">{{filtersOpen ? '⌃' : '⌄'}}</text>
     </view>
@@ -22,6 +22,48 @@
       <view class="form-item">
         <text class="label">关键词</text>
         <input value="{{keyword}}" placeholder="客户名称 / 手机号" bindinput="onKeyword" />
+      </view>
+      <view class="filter-grid">
+        <view class="form-item">
+          <text class="label">{{stageTimeLabel}}开始</text>
+          <picker mode="date" value="{{stageStartDate}}" bindchange="onStageStartDate">
+            <view class="picker-box">{{stageStartDate || '请选择'}}</view>
+          </picker>
+        </view>
+        <view class="form-item">
+          <text class="label">{{stageTimeLabel}}结束</text>
+          <picker mode="date" value="{{stageEndDate}}" bindchange="onStageEndDate">
+            <view class="picker-box">{{stageEndDate || '请选择'}}</view>
+          </picker>
+        </view>
+      </view>
+      <view class="filter-grid">
+        <view class="form-item">
+          <text class="label">最新跟进开始</text>
+          <picker mode="date" value="{{lastStartDate}}" bindchange="onLastStartDate">
+            <view class="picker-box">{{lastStartDate || '请选择'}}</view>
+          </picker>
+        </view>
+        <view class="form-item">
+          <text class="label">最新跟进结束</text>
+          <picker mode="date" value="{{lastEndDate}}" bindchange="onLastEndDate">
+            <view class="picker-box">{{lastEndDate || '请选择'}}</view>
+          </picker>
+        </view>
+      </view>
+      <view class="filter-grid">
+        <view class="form-item">
+          <text class="label">下次跟进开始</text>
+          <picker mode="date" value="{{nextStartDate}}" bindchange="onNextStartDate">
+            <view class="picker-box">{{nextStartDate || '请选择'}}</view>
+          </picker>
+        </view>
+        <view class="form-item">
+          <text class="label">下次跟进结束</text>
+          <picker mode="date" value="{{nextEndDate}}" bindchange="onNextEndDate">
+            <view class="picker-box">{{nextEndDate || '请选择'}}</view>
+          </picker>
+        </view>
       </view>
       <view class="filter-grid">
         <view class="form-item">
@@ -42,20 +84,6 @@
           <text class="label">区域</text>
           <picker range="{{regions}}" value="{{regionIndex}}" bindchange="onRegion">
             <view class="picker-box">{{regions[regionIndex]}}</view>
-          </picker>
-        </view>
-        <view class="form-item">
-          <text class="label">开始日期</text>
-          <picker mode="date" value="{{startDate}}" bindchange="onStartDate">
-            <view class="picker-box">{{startDate || '请选择'}}</view>
-          </picker>
-        </view>
-      </view>
-      <view class="filter-grid">
-        <view class="form-item">
-          <text class="label">结束日期</text>
-          <picker mode="date" value="{{endDate}}" bindchange="onEndDate">
-            <view class="picker-box">{{endDate || '请选择'}}</view>
           </picker>
         </view>
         <view class="form-item">
@@ -87,6 +115,7 @@
         <text class="tag">{{item.stage}}</text>
       </view>
       <view class="strip-line ellipsis">{{item.phone}} · {{item.channelLabel}} · {{item.followPerson || item.owner}}</view>
+      <view class="strip-line ellipsis">{{stageTimeLabel}}：{{item.stageDate || '未记录'}}</view>
       <view class="strip-line ellipsis">{{item.software || '软件待补充'}} · 下次：{{item.nextFollow || '未设置'}}</view>
       <view class="strip-note ellipsis">{{item.lastNote || '暂无跟进记录'}}</view>
       <view wx:if="{{item.firstPhoto}}" class="photo-chip" data-id="{{item.id}}" data-src="{{item.firstPhoto}}" catchtap="previewCustomerPhoto">

@@ -13,8 +13,13 @@ Page({
     ownerIndex: 0,
     regions: ["全部"],
     regionIndex: 0,
-    startDate: "",
-    endDate: "",
+    stageTimeLabel: "录入时间",
+    stageStartDate: "",
+    stageEndDate: "",
+    lastStartDate: "",
+    lastEndDate: "",
+    nextStartDate: "",
+    nextEndDate: "",
     followStatuses: ["全部", "今日待跟进", "已逾期", "未设置"],
     followStatusIndex: 0,
     filtersOpen: false,
@@ -58,6 +63,7 @@ Page({
       regions,
       ownerIndex,
       regionIndex,
+      stageTimeLabel: this.stageTimeConfig(this.data.currentStage).label,
       canAssign: this.canAssignCustomers(),
       stageTabs: state.stages.map((stage) => ({
         name: stage,
@@ -67,7 +73,8 @@ Page({
   },
 
   switchStage(event) {
-    this.setData({ currentStage: event.currentTarget.dataset.stage, page: 1 });
+    const currentStage = event.currentTarget.dataset.stage;
+    this.setData({ currentStage, stageTimeLabel: this.stageTimeConfig(currentStage).label, page: 1 });
     this.applyFilters();
   },
 
@@ -94,19 +101,56 @@ Page({
     this.applyFilters();
   },
 
-  onStartDate(event) {
-    this.setData({ startDate: event.detail.value });
+  onStageStartDate(event) {
+    this.setData({ stageStartDate: event.detail.value });
     this.applyFilters();
   },
 
-  onEndDate(event) {
-    this.setData({ endDate: event.detail.value });
+  onStageEndDate(event) {
+    this.setData({ stageEndDate: event.detail.value });
+    this.applyFilters();
+  },
+
+  onLastStartDate(event) {
+    this.setData({ lastStartDate: event.detail.value });
+    this.applyFilters();
+  },
+
+  onLastEndDate(event) {
+    this.setData({ lastEndDate: event.detail.value });
+    this.applyFilters();
+  },
+
+  onNextStartDate(event) {
+    this.setData({ nextStartDate: event.detail.value });
+    this.applyFilters();
+  },
+
+  onNextEndDate(event) {
+    this.setData({ nextEndDate: event.detail.value });
     this.applyFilters();
   },
 
   onFollowStatus(event) {
     this.setData({ followStatusIndex: Number(event.detail.value) });
     this.applyFilters();
+  },
+
+  stageTimeConfig(stage) {
+    if (stage === "名单") return { label: "录入时间", field: "createdAt" };
+    if (stage === "成交") return { label: "成交时间", field: "dealAt" };
+    return { label: "转化时间", field: stage === "商机" ? "opportunityAt" : "leadAt" };
+  },
+
+  customerStageTime(customer, stage = this.data.currentStage) {
+    const config = this.stageTimeConfig(stage);
+    return String(customer[config.field] || "").slice(0, 10);
+  },
+
+  inDateRange(value, start, end) {
+    if (start && (!value || value < start)) return false;
+    if (end && (!value || value > end)) return false;
+    return true;
   },
 
   applyFilters() {
@@ -123,8 +167,9 @@ Page({
       if (channel !== "全部" && itemChannel !== channel) return false;
       if (owner !== "全部" && item.owner !== owner) return false;
       if (region !== "全部" && item.region !== region) return false;
-      if (this.data.startDate && item.createdAt < this.data.startDate) return false;
-      if (this.data.endDate && item.createdAt > this.data.endDate) return false;
+      if (!this.inDateRange(this.customerStageTime(item), this.data.stageStartDate, this.data.stageEndDate)) return false;
+      if (!this.inDateRange(String(item.lastFollow || "").slice(0, 10), this.data.lastStartDate, this.data.lastEndDate)) return false;
+      if (!this.inDateRange(String(item.nextFollow || "").slice(0, 10), this.data.nextStartDate, this.data.nextEndDate)) return false;
       if (status === "今日待跟进" && item.nextFollow !== app.globalData.today) return false;
       if (status === "已逾期" && (!item.nextFollow || item.nextFollow >= app.globalData.today)) return false;
       if (status === "未设置" && item.nextFollow) return false;
@@ -132,6 +177,7 @@ Page({
     }).map((item) => ({
       ...item,
       channelLabel: app.normalizeChannelSource(item.channelSource),
+      stageDate: this.customerStageTime(item),
       canAssign: this.data.canAssign && this.isCustomerAssignable(item),
       photoCount: Array.isArray(item.photos) ? item.photos.length : 0,
       firstPhoto: Array.isArray(item.photos) && item.photos.length ? item.photos[0] : ""
@@ -148,8 +194,12 @@ Page({
       channelIndex: 0,
       ownerIndex: 0,
       regionIndex: 0,
-      startDate: "",
-      endDate: "",
+      stageStartDate: "",
+      stageEndDate: "",
+      lastStartDate: "",
+      lastEndDate: "",
+      nextStartDate: "",
+      nextEndDate: "",
       followStatusIndex: 0,
       page: 1
     });

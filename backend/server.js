@@ -19,6 +19,7 @@ const FALLBACK_SEED_FILE = path.join(__dirname, "data", "seed.json");
 const PUBLIC_ROOT = path.resolve(__dirname, "..");
 const CUSTOMER_TEMPLATE_FILE = path.join(__dirname, "templates", "customer-import-template.xlsx");
 const STAGES = ["名单", "线索", "商机", "成交"];
+const STAGE_TIME_FIELDS = { 线索: "leadAt", 商机: "opportunityAt", 成交: "dealAt" };
 const CHANNEL_SOURCES = ["自媒体", "官网留言", "自主注册", "渠道介绍", "企查查", "客源汇", "公众号", "地推", "其他"];
 const ZONES = ["东部战区", "南部战区", "西部战区", "北部战区", "中部战区"];
 const TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
@@ -277,6 +278,9 @@ async function routeApi(req, res, url) {
         });
       }
     }
+    if (body.stage && body.stage !== previousStage) {
+      setStageTime(next, next.stage, body.date || today());
+    }
     state.customers[index] = next;
     if (body.stage && body.stage !== previousStage) {
       state.activities.push({
@@ -529,7 +533,8 @@ function migrateState(state) {
   const roles = normalizeRoles(state.roles || []);
   const units = normalizeUnits(state.units || [], state);
   const users = normalizeUsers(state.users || [], { roles, units, resetAdminPassword: state.version !== "backend-v3" });
-  const context = { roles, units, users };
+  const activities = state.activities || [];
+  const context = { roles, units, users, activities };
   return {
     version: "backend-v3",
     currentUserId: Number(state.currentUserId || users[0]?.id || 0),
@@ -539,7 +544,7 @@ function migrateState(state) {
     units,
     users,
     customers: (state.customers || []).map((customer) => normalizeCustomer(customer, context)),
-    activities: state.activities || [],
+    activities,
     visits: (state.visits || []).map((visit) => normalizeVisit(visit, context)),
     knowledge: (state.knowledge || []).map(normalizeKnowledge),
     resources: state.resources || []
@@ -705,6 +710,8 @@ function normalizeCustomer(customer, context = {}) {
           nextFollow: customer.nextFollow || ""
         }, customer)
       ];
+  const createdAt = customer.createdAt || today();
+  const stageTimes = normalizeStageTimes(customer, context.activities || [], createdAt);
   return {
     id: Number(customer.id || Date.now()),
     name: customer.name || "",
@@ -723,9 +730,32 @@ function normalizeCustomer(customer, context = {}) {
     amount: Number(customer.amount || 15),
     software: customer.software || "待补充",
     photos: normalizePhotos(customer.photos || customer.visitPhotos),
-    createdAt: customer.createdAt || today(),
+    createdAt,
+    ...stageTimes,
     followUps
   };
+}
+
+function normalizeStageTimes(customer = {}, activities = [], createdAt = today()) {
+  const activityDate = (stage) => (activities || [])
+    .filter((item) => Number(item.customerId) === Number(customer.id) && item.type === stage && item.date)
+    .map((item) => item.date)
+    .sort()[0] || "";
+  const currentIndex = STAGES.indexOf(customer.stage || "名单");
+  const fallbackFor = (stage) => currentIndex >= STAGES.indexOf(stage)
+    ? (activityDate(stage) || customer.lastFollow || createdAt)
+    : "";
+  return {
+    leadAt: customer.leadAt || customer.leadConvertedAt || fallbackFor("线索"),
+    opportunityAt: customer.opportunityAt || customer.opportunityConvertedAt || fallbackFor("商机"),
+    dealAt: customer.dealAt || customer.closedAt || customer.dealDate || fallbackFor("成交")
+  };
+}
+
+function setStageTime(customer, stage, date = today()) {
+  const field = STAGE_TIME_FIELDS[stage];
+  if (field) customer[field] = date;
+  return customer;
 }
 
 function normalizeFollowUp(item = {}, customer = {}) {
@@ -865,6 +895,7 @@ function syncVisitToCustomer(state, visit) {
     software: visit.software || state.customers[index].software,
     photos: mergePhotos(state.customers[index].photos, visit.photos)
   }, state);
+  if (previousStage !== stage) setStageTime(customer, stage, visit.date || today());
   const latestFollow = customer.followUps[customer.followUps.length - 1] || {};
   customer.followUps.push({
     date: visit.date || today(),
@@ -1002,6 +1033,7 @@ function buildAssignedCustomer(state, viewer, customer, target, body = {}) {
     nextFollow: body.nextFollow || customer.nextFollow || "",
     lastNote: note
   }, state);
+  if (previousStage !== next.stage) setStageTime(next, next.stage, body.date || today());
   next.followUps.push({
     date: today(),
     createdAt: new Date().toISOString(),

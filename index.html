@@ -76,16 +76,28 @@
         <section class="view" id="customersView">
           <div class="stage-tabs" id="stageTabs"></div>
           <section class="panel">
-            <div class="toolbar">
-              <input id="customerKeyword" placeholder="搜索客户 / 客户电话" />
-              <select id="channelFilter"></select>
-              <select id="createdByFilter"></select>
-              <select id="followPersonFilter"></select>
-              <select id="unitFilter"></select>
-              <label class="inline-filter">最新跟进<input id="lastFollowStart" type="date" /></label>
-              <label class="inline-filter">至<input id="lastFollowEnd" type="date" /></label>
-              <label class="inline-filter">下次跟进<input id="nextFollowStart" type="date" /></label>
-              <label class="inline-filter">至<input id="nextFollowEnd" type="date" /></label>
+            <div class="customer-filter-card collapsed" id="customerFilterCard">
+              <button class="customer-filter-toggle" id="customerFilterToggle" type="button" aria-expanded="false">
+                <span><b>搜索筛选</b><small>按客户信息和阶段时间快速统计</small></span>
+                <span class="customer-filter-arrow" aria-hidden="true">⌄</span>
+              </button>
+              <div class="customer-filter-body" id="customerFilterBody">
+                <div class="customer-filter-row customer-search-row">
+                  <input id="customerKeyword" placeholder="搜索客户 / 客户电话" />
+                  <select id="channelFilter"></select>
+                  <select id="createdByFilter"></select>
+                  <select id="followPersonFilter"></select>
+                  <select id="unitFilter"></select>
+                </div>
+                <div class="customer-filter-row customer-time-row">
+                  <div class="date-range-filter"><span id="stageTimeFilterLabel">录入时间</span><input id="stageTimeStart" type="date" aria-label="阶段开始时间" /><em>至</em><input id="stageTimeEnd" type="date" aria-label="阶段结束时间" /></div>
+                  <div class="date-range-filter"><span>最新跟进</span><input id="lastFollowStart" type="date" aria-label="最新跟进开始时间" /><em>至</em><input id="lastFollowEnd" type="date" aria-label="最新跟进结束时间" /></div>
+                  <div class="date-range-filter"><span>下次跟进</span><input id="nextFollowStart" type="date" aria-label="下次跟进开始时间" /><em>至</em><input id="nextFollowEnd" type="date" aria-label="下次跟进结束时间" /></div>
+                </div>
+              </div>
+            </div>
+            <div class="toolbar customer-actions">
+              <strong class="customer-result-count" id="customerResultCount">当前名单：0条</strong>
               <button id="addCustomerBtn" class="primary">单个添加</button>
               <button id="batchImportBtn">批量导入</button>
               <button id="batchAssignBtn" disabled>批量分配</button>
@@ -93,7 +105,7 @@
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr><th class="select-cell"><input type="checkbox" id="selectAllCustomers" /></th><th>客户</th><th>客户电话</th><th>渠道来源</th><th>录入人</th><th>跟进人</th><th>跟进记录</th><th>最新跟进时间</th><th>下次跟进时间</th><th>单位</th><th>客户地址</th><th>操作</th></tr>
+                  <tr><th class="select-cell"><input type="checkbox" id="selectAllCustomers" /></th><th>客户</th><th>客户电话</th><th>渠道来源</th><th>录入人</th><th>跟进人</th><th id="stageTimeHeader">录入时间</th><th>跟进记录</th><th>最新跟进时间</th><th>下次跟进时间</th><th>单位</th><th>客户地址</th><th>操作</th></tr>
                 </thead>
                 <tbody id="customerRows"></tbody>
               </table>
