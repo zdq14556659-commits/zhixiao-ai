@@ -197,6 +197,118 @@ h1, h2 { margin: 0; }
   font-size: 30px;
 }
 
+.dashboard-toolbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
+.dashboard-filter-group {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.dashboard-filter-group label {
+  gap: 6px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dashboard-filter-group input,
+.dashboard-filter-group select { min-width: 142px; }
+.dashboard-metrics { grid-template-columns: repeat(4, minmax(180px, 1fr)); }
+.metric-button { width: 100%; min-height: 132px; color: var(--text); text-align: left; }
+.metric-button:hover { border-color: var(--blue); box-shadow: 0 5px 16px rgba(64, 158, 255, 0.1); transform: translateY(-1px); }
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 20px;
+}
+
+.dashboard-grid .panel { margin-bottom: 0; }
+.dashboard-wide { grid-column: 1 / -1; }
+.dashboard-funnel { display: grid; gap: 2px; }
+.dashboard-funnel-row {
+  display: grid;
+  grid-template-columns: 64px minmax(100px, 1fr) repeat(4, minmax(70px, auto));
+  align-items: center;
+  gap: 12px;
+  min-height: 58px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dashboard-funnel-row:last-child { border-bottom: 0; }
+.dashboard-funnel-row > span { color: var(--muted); font-size: 13px; text-align: right; }
+.dashboard-funnel-row > b { font-size: 15px; }
+.funnel-track { height: 14px; background: #edf2f7; overflow: hidden; }
+.funnel-track i { display: block; height: 100%; background: var(--blue); }
+.dashboard-funnel-row[data-stage="商机"] .funnel-track i { background: var(--orange); }
+.dashboard-funnel-row[data-stage="成交"] .funnel-track i { background: var(--green); }
+
+.action-center { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.action-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 6px 10px;
+  min-height: 78px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  color: var(--text);
+  background: #fff;
+  text-align: left;
+}
+.action-item strong { font-size: 24px; }
+.action-item small { grid-column: 1 / -1; color: var(--muted); }
+.action-item.is-alert strong { color: var(--red); }
+
+.trend-chart {
+  min-height: 230px;
+}
+.trend-columns { display: flex; align-items: end; gap: 10px; min-height: 215px; padding: 22px 10px 0; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.trend-column { display: grid; grid-template-rows: 180px auto; gap: 8px; min-width: 44px; flex: 1; }
+.trend-bars { display: flex; align-items: end; justify-content: center; gap: 4px; height: 180px; }
+.trend-bar { width: 12px; min-height: 2px; background: var(--blue); }
+.trend-bar.contract { background: #9ecbff; }
+.trend-column small { color: var(--muted); font-size: 11px; text-align: center; }
+.trend-legend { display: flex; gap: 16px; margin-top: 12px; color: var(--muted); font-size: 12px; }
+.trend-legend i { display: inline-block; width: 10px; height: 10px; margin-right: 5px; background: var(--blue); }
+.trend-legend i.contract { background: #9ecbff; }
+
+.ranking-table-wrap { overflow-x: auto; }
+.ranking-table { min-width: 900px; }
+.unit-ranking-table { min-width: 820px; }
+.ranking-table th, .ranking-table td { padding: 11px 10px; }
+.ranking-table tr.is-current { background: #f0f7ff; }
+.rank-number { color: var(--blue); font-weight: 800; }
+
+.industry-analysis { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.analysis-block h3 { margin-bottom: 9px; font-size: 14px; }
+.analysis-list { display: grid; gap: 7px; }
+.analysis-list div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; color: var(--muted); font-size: 13px; }
+.analysis-list b { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.insight-list { display: grid; gap: 10px; }
+.insight-item { padding: 14px 0; border-bottom: 1px solid var(--line); }
+.insight-item:last-child { border-bottom: 0; }
+.insight-item b { display: block; margin-bottom: 6px; }
+.insight-item p { margin: 0; color: var(--muted); line-height: 1.6; }
+.dashboard-loading { padding: 50px 0; color: var(--muted); text-align: center; }
+.dialog-section-title { margin-top: 4px; padding-top: 14px; border-top: 1px solid var(--line); font-weight: 800; }
+.target-dialog-form { width: min(760px, calc(100vw - 32px)); }
+.target-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.target-list { display: grid; gap: 8px; max-height: 180px; overflow-y: auto; }
+.target-list article { display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); }
+.target-list small { color: var(--muted); }
+
 .grid-2 {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -722,6 +834,13 @@ dialog::backdrop { background: rgba(31, 45, 61, 0.38); }
   .metric-grid, .grid-2, .admin-grid, .field-layout { grid-template-columns: 1fr; }
   .topbar { align-items: flex-start; flex-direction: column; gap: 12px; padding: 18px; }
   .view { padding: 18px; }
+  .dashboard-toolbar { align-items: stretch; flex-direction: column; }
+  .dashboard-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dashboard-grid { grid-template-columns: 1fr; }
+  .dashboard-wide { grid-column: auto; }
+  .dashboard-funnel-row { grid-template-columns: 52px minmax(80px, 1fr) repeat(2, minmax(60px, auto)); }
+  .dashboard-funnel-row .hide-mobile { display: none; }
+  .target-form-grid { grid-template-columns: 1fr; }
   .customer-search-row,
   .customer-time-row { grid-template-columns: 1fr; }
   .date-range-filter { grid-template-columns: 86px minmax(0, 1fr) auto minmax(0, 1fr); }

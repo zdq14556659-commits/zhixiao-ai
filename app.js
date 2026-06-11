@@ -32,6 +32,10 @@ let currentFilteredCustomerRows = [];
 let selectedCustomerIds = new Set();
 let customerPage = 1;
 let customerPageSize = 10;
+let dashboardData = null;
+let dashboardRequestId = 0;
+let targetManagement = { options: [], targets: [] };
+let dashboardDrilldownIds = null;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -129,13 +133,14 @@ function latestFollow(customer = {}) {
 }
 
 function stageTimeConfig(stage = currentStage) {
+  if (stage === "全部") return { label: "阶段时间", field: "createdAt" };
   if (stage === "名单") return { label: "录入时间", field: "createdAt" };
   if (stage === "成交") return { label: "成交时间", field: "dealAt" };
   return { label: "转化时间", field: stage === "商机" ? "opportunityAt" : "leadAt" };
 }
 
 function customerStageTime(customer = {}, stage = currentStage) {
-  const config = stageTimeConfig(stage);
+  const config = stageTimeConfig(stage === "全部" ? customer.stage : stage);
   return String(customer[config.field] || "").slice(0, 10);
 }
 
@@ -291,34 +296,106 @@ function render() {
   renderAdmin();
 }
 
-function renderDashboard() {
-  const customers = scopeCustomers();
-  const signed = customers.filter((item) => item.stage === "成交");
-  const payment = signed.reduce((sum, item) => sum + Number(item.amount || 0), 0) * 2.8;
-  const todayFollow = customers.filter((item) => item.lastFollow === today).length;
-  const overdue = customers.filter((item) => item.nextFollow && item.nextFollow < today).length;
-  $("#metricPayment").textContent = `¥${payment.toFixed(1)}万`;
-  $("#metricSigned").textContent = `${signed.length}家`;
-  $("#metricFollow").textContent = `${todayFollow}条`;
-  $("#metricOverdue").textContent = `${overdue}个`;
+function formatMoney(value) {
+  return `¥${Number(value || 0).toFixed(1)}万`;
+}
 
-  const lists = customers.filter((item) => item.stage === "名单").length;
-  const leads = customers.filter((item) => item.stage === "线索").length;
-  const deals = customers.filter((item) => item.stage === "商机").length;
-  const problems = [
-    ["逾期跟进", `${overdue}个`, overdue ? "严重" : "正常", overdue ? "优先处理逾期商机，再跟进今日到期线索。" : "保持当前节奏，每条新增客户都设置下次跟进。"],
-    ["名单转线索", `${lists}个名单`, leads < lists ? "警告" : "正常", "优先筛选有设计拆单、报价、开料排产痛点的工厂。"],
-    ["商机推进", `${deals}个商机`, deals ? "警告" : "严重", "约老板、设计主管、生产主管一起看真实订单演示。"]
-  ];
-  $("#problemList").innerHTML = problems
-    .map(([name, value, level, advice]) => `<div class="problem"><b>${name}</b><span class="${level === "严重" ? "danger" : "warn"}">${level}</span><strong>${value}</strong><p>${advice}</p></div>`)
-    .join("");
+function monthDates(month) {
+  const normalized = /^\d{4}-\d{2}$/.test(month || "") ? month : today.slice(0, 7);
+  const [year, number] = normalized.split("-").map(Number);
+  const end = new Date(Date.UTC(year, number, 0)).toISOString().slice(0, 10);
+  return { start: `${normalized}-01`, end };
+}
 
-  const counts = stages.map((stage) => ({ stage, count: customers.filter((item) => item.stage === stage).length }));
-  const max = Math.max(...counts.map((item) => item.count), 1);
-  $("#funnelChart").innerHTML = counts
-    .map((item) => `<div class="funnel-row"><span>${item.stage}</span><i style="width:${Math.max((item.count / max) * 100, 8)}%"></i><b>${item.count}</b></div>`)
-    .join("");
+function dashboardQuery() {
+  const scope = String($("#dashboardScope")?.value || "").split(":");
+  const params = new URLSearchParams({
+    month: $("#dashboardMonth")?.value || today.slice(0, 7),
+    start: $("#dashboardStart")?.value || monthDates(today.slice(0, 7)).start,
+    end: $("#dashboardEnd")?.value || monthDates(today.slice(0, 7)).end
+  });
+  if (scope.length === 2) {
+    params.set("scopeType", scope[0]);
+    params.set("scopeId", scope[1]);
+  }
+  return params;
+}
+
+async function renderDashboard() {
+  const requestId = ++dashboardRequestId;
+  try {
+    const data = await api(`/dashboard?${dashboardQuery().toString()}`);
+    if (requestId !== dashboardRequestId) return;
+    dashboardData = data;
+    const scopeSelect = $("#dashboardScope");
+    const selected = `${data.scope.type}:${data.scope.id}`;
+    scopeSelect.innerHTML = data.scopeOptions.map((item) => `<option value="${escapeHtml(`${item.type}:${item.id}`)}">${escapeHtml(item.name)}</option>`).join("");
+    scopeSelect.value = selected;
+    $("#targetSettingsBtn").classList.toggle("hidden", !data.canManageTargets);
+    renderDashboardSummary(data);
+  } catch (error) {
+    if (requestId !== dashboardRequestId) return;
+    $("#dashboardInsights").innerHTML = `<div class="dashboard-loading">${escapeHtml(error.message || "看板加载失败")}</div>`;
+  }
+}
+
+function renderDashboardSummary(data) {
+  const { summary, target } = data;
+  $("#metricRevenue").textContent = formatMoney(summary.revenue);
+  $("#metricContract").textContent = formatMoney(summary.contract);
+  $("#metricDeals").textContent = `${summary.deals}家`;
+  $("#metricTargetRate").textContent = `${summary.targetCompletionRate}%`;
+  $("#metricLists").textContent = `${summary.lists}家`;
+  $("#metricOpportunities").textContent = `${summary.opportunities}家`;
+  $("#metricCloseRate").textContent = `${summary.opportunityCloseRate}%`;
+  $("#metricOverdueOpportunities").textContent = `${summary.overdueOpportunities}家`;
+  $("#metricRevenueHint").textContent = target.revenueTarget ? `目标 ${formatMoney(target.revenueTarget)}` : "按进款日期统计";
+  $("#metricTargetHint").textContent = target.revenueTarget ? `${target.source === "aggregate" ? "下级目标汇总" : "当前范围目标"} ${formatMoney(target.revenueTarget)}` : "本月未设置目标";
+  $("#metricDealHint").textContent = `平均周期 ${summary.averageDealCycle}天 · 客单 ${formatMoney(summary.averageContractValue)}`;
+
+  const maxFunnel = Math.max(...data.funnel.map((item) => item.count), 1);
+  $("#dashboardFunnel").innerHTML = data.funnel.map((item) => `
+    <div class="dashboard-funnel-row" data-stage="${escapeHtml(item.stage)}">
+      <b>${escapeHtml(item.stage)}</b>
+      <div class="funnel-track"><i style="width:${Math.max((item.count / maxFunnel) * 100, item.count ? 7 : 0)}%"></i></div>
+      <span>${item.count}家</span>
+      <span>${item.stage === "成交" ? "-" : `转化${item.conversionRate}%`}</span>
+      <span class="hide-mobile">停留${item.averageStayDays}天</span>
+      <span class="hide-mobile">超期${item.overdue}家</span>
+    </div>`).join("");
+
+  $("#dashboardActions").innerHTML = data.actions.map((item) => `
+    <button class="action-item ${["overdue", "paymentPending"].includes(item.key) && item.count ? "is-alert" : ""}" data-action-key="${item.key}" ${item.count ? "" : "disabled"}>
+      <span>${escapeHtml(item.label)}</span><strong>${item.count}</strong><small>${item.customers[0] ? escapeHtml(`${item.customers[0].name}${item.count > 1 ? `等${item.count}家` : ""}`) : "暂无待处理客户"}</small>
+    </button>`).join("");
+
+  const maxTrend = Math.max(...data.trend.flatMap((item) => [item.revenue, item.contract]), 1);
+  $("#dashboardTrend").innerHTML = `<div class="trend-columns">${data.trend.map((item) => `
+    <div class="trend-column" title="${escapeHtml(item.label)}：签单${item.contract}万，进款${item.revenue}万">
+      <div class="trend-bars"><i class="trend-bar contract" style="height:${Math.max((item.contract / maxTrend) * 100, item.contract ? 3 : 0)}%"></i><i class="trend-bar" style="height:${Math.max((item.revenue / maxTrend) * 100, item.revenue ? 3 : 0)}%"></i></div>
+      <small>${escapeHtml(item.label)}</small>
+    </div>`).join("")}</div><div class="trend-legend"><span><i class="contract"></i>签单</span><span><i></i>进款</span></div>`;
+
+  $("#dashboardRanking").innerHTML = data.ranking.length ? data.ranking.map((item, index) => `
+    <tr class="${Number(item.userId) === Number(currentUser().id) ? "is-current" : ""}">
+      <td class="rank-number">${index + 1}</td><td><b>${escapeHtml(item.name)}</b></td><td>${escapeHtml(item.unit)}</td><td>${formatMoney(item.revenue)}</td><td>${item.completionRate}%</td><td>${item.deals}家</td><td>${item.conversionRate}%</td><td>${item.onTimeRate}%</td><td class="${item.overdue ? "danger" : ""}">${item.overdue}</td>
+    </tr>`).join("") : '<tr><td colspan="9" class="empty">暂无销售数据</td></tr>';
+
+  $("#dashboardUnitRankingPanel").classList.toggle("hidden", !data.unitRanking?.length);
+  $("#dashboardUnitRanking").innerHTML = (data.unitRanking || []).map((item, index) => `
+    <tr>
+      <td class="rank-number">${index + 1}</td><td><b>${escapeHtml(item.name)}</b></td><td>${escapeHtml(item.zone)}</td><td>${formatMoney(item.revenue)}</td><td>${item.completionRate}%</td><td>${item.deals}家</td><td>${item.opportunities}家</td><td>${item.conversionRate}%</td><td class="${item.overdue ? "danger" : ""}">${item.overdue}</td>
+    </tr>`).join("");
+
+  $("#profileCompleteness").textContent = `资料完整率 ${data.industry.profileCompleteness}%`;
+  const analysisBlock = (title, items) => `<div class="analysis-block"><h3>${title}</h3><div class="analysis-list">${items.length ? items.map((item) => `<div><b>${escapeHtml(item.name)}</b><span>${item.count}家</span></div>`).join("") : '<div><b>暂无数据</b><span>-</span></div>'}</div></div>`;
+  $("#dashboardIndustry").innerHTML = [
+    analysisBlock("现用软件", data.industry.software),
+    analysisBlock("设备品牌", data.industry.equipmentBrands),
+    analysisBlock("未成交原因", data.industry.lossReasons),
+    analysisBlock("地推城市", data.industry.cities)
+  ].join("");
+  $("#dashboardInsights").innerHTML = data.insights.map((item) => `<article class="insight-item"><b>${escapeHtml(item.title)}</b><p>${escapeHtml(item.detail)}</p></article>`).join("");
 }
 
 function renderCustomers() {
@@ -365,7 +442,8 @@ function renderCustomers() {
   const nextEnd = $("#nextFollowEnd").value;
   const filteredRows = customers.filter((item) => {
     const source = `${item.name} ${item.phone}`.toLowerCase();
-    if (item.stage !== currentStage) return false;
+    if (dashboardDrilldownIds && !dashboardDrilldownIds.has(Number(item.id))) return false;
+    if (currentStage !== "全部" && item.stage !== currentStage) return false;
     if (keyword && !source.includes(keyword)) return false;
     if (channel && normalizeChannelSource(item.channelSource) !== channel) return false;
     if (createdBy && item.createdBy !== createdBy) return false;
@@ -377,7 +455,7 @@ function renderCustomers() {
     return true;
   });
   currentFilteredCustomerRows = filteredRows;
-  $("#customerResultCount").textContent = `当前${currentStage}：${filteredRows.length}条`;
+  $("#customerResultCount").textContent = `${dashboardDrilldownIds ? "看板下钻 · " : ""}当前${currentStage}：${filteredRows.length}条`;
   const totalPages = Math.max(Math.ceil(filteredRows.length / customerPageSize), 1);
   customerPage = Math.min(Math.max(customerPage, 1), totalPages);
   const start = (customerPage - 1) * customerPageSize;
@@ -480,12 +558,19 @@ function openCustomerDialog(customer = null) {
   form.name.value = customer?.name || "";
   form.phone.value = customer?.phone || "";
   form.channelSource.value = normalizeChannelSource(customer?.channelSource || "其他");
-  form.stage.value = customer?.stage || currentStage;
+  form.stage.value = customer?.stage || (stages.includes(currentStage) ? currentStage : "名单");
   form.owner.value = customer?.owner || $("#customerOwnerSelect").value;
   form.createdBy.value = customer?.createdBy || currentUser().name || "";
   form.followPerson.value = customer?.followPerson || customer?.owner || form.owner.value;
   form.address.value = customer?.address || "";
   form.amount.value = customer?.amount || 15;
+  form.demoAt.value = customer?.demoAt || "";
+  form.quoteAmount.value = customer?.quoteAmount || "";
+  form.expectedDealDate.value = customer?.expectedDealDate || "";
+  form.contractAmount.value = customer?.contractAmount || "";
+  form.paymentAmount.value = customer?.paymentAmount || "";
+  form.paymentDate.value = customer?.paymentDate || "";
+  form.lossReason.value = customer?.lossReason || "";
   form.software.value = customer?.software || "";
   form.note.value = "";
   form.nextFollow.value = customer?.nextFollow || today;
@@ -537,6 +622,13 @@ async function saveCustomer(event) {
     zone: ownerUser.zone || ownerUnit.zone || "",
     region: ownerUser.zone || ownerUnit.zone || "待分区",
     amount: Number(form.get("amount") || 15),
+    demoAt: String(form.get("demoAt") || ""),
+    quoteAmount: Number(form.get("quoteAmount") || 0),
+    expectedDealDate: String(form.get("expectedDealDate") || ""),
+    contractAmount: Number(form.get("contractAmount") || 0),
+    paymentAmount: Number(form.get("paymentAmount") || 0),
+    paymentDate: String(form.get("paymentDate") || ""),
+    lossReason: String(form.get("lossReason") || ""),
     software: String(form.get("software") || "待补充"),
     createdAt: id ? undefined : today,
     lastFollow: today,
@@ -558,6 +650,14 @@ async function advanceCustomer(id) {
   const index = stages.indexOf(customer.stage);
   if (index >= stages.length - 1) return;
   const nextStage = stages[index + 1];
+  if (nextStage === "商机" && !customer.demoAt) {
+    openCustomerDialog(customer);
+    return toast("进入商机前请填写有效演示时间");
+  }
+  if (nextStage === "成交" && Number(customer.contractAmount || 0) <= 0) {
+    openCustomerDialog(customer);
+    return toast("进入成交前请填写合同金额");
+  }
   const nextCustomer = {
     ...customer,
     stage: nextStage,
@@ -610,7 +710,7 @@ async function batchImport(event) {
   const ownerUser = userByName(owner);
   const file = form.get("file");
   const importBody = new FormData();
-  importBody.append("stage", currentStage);
+  importBody.append("stage", stages.includes(currentStage) ? currentStage : "名单");
   importBody.append("owner", owner);
   importBody.append("ownerId", ownerUser.id || "");
   importBody.append("unitId", ownerUser.unitId || "");
@@ -958,7 +1058,98 @@ async function deleteUnit(id) {
   toast("单位已删除");
 }
 
+function clearCustomerFilters() {
+  ["customerKeyword", "stageTimeStart", "stageTimeEnd", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => { $(`#${id}`).value = ""; });
+  ["channelFilter", "createdByFilter", "followPersonFilter", "unitFilter"].forEach((id) => { $(`#${id}`).value = ""; });
+}
+
+function openDashboardCustomers(customers = [], fallbackStage = "全部") {
+  const ids = customers.map((item) => Number(item.id)).filter(Boolean);
+  const itemStages = [...new Set(customers.map((item) => item.stage).filter(Boolean))];
+  dashboardDrilldownIds = new Set(ids);
+  currentStage = itemStages.length === 1 ? itemStages[0] : fallbackStage;
+  clearCustomerFilters();
+  customerPage = 1;
+  switchView("customers");
+}
+
+function handleDashboardClick(event) {
+  if (!dashboardData) return;
+  const metric = event.target.closest("[data-metric], [data-stage]");
+  if (metric) {
+    const key = metric.dataset.metric || ({ 名单: "lists", 商机: "opportunities", 成交: "deals" }[metric.dataset.stage]);
+    return openDashboardCustomers(dashboardData.drilldowns?.[key] || [], metric.dataset.stage || "成交");
+  }
+  const actionButton = event.target.closest("[data-action-key]");
+  if (!actionButton) return;
+  const action = dashboardData.actions.find((item) => item.key === actionButton.dataset.actionKey);
+  if (!action?.count) return;
+  const customersById = new Map(scopeCustomers().map((item) => [Number(item.id), item]));
+  openDashboardCustomers((action.customerIds || []).map((id) => customersById.get(Number(id))).filter(Boolean));
+}
+
+async function openTargetDialog() {
+  const month = $("#dashboardMonth").value || today.slice(0, 7);
+  targetManagement = await api(`/targets?month=${encodeURIComponent(month)}`);
+  if (!targetManagement.canManage) return toast("当前角色无目标设置权限");
+  const form = $("#targetForm");
+  form.reset();
+  form.month.value = month;
+  $("#targetScopeSelect").innerHTML = targetManagement.options.map((item) => `<option value="${escapeHtml(`${item.type}:${item.id}`)}">${escapeHtml(item.name)}</option>`).join("");
+  fillTargetForm();
+  renderTargetList();
+  $("#targetDialog").showModal();
+}
+
+function selectedTargetScope() {
+  const [scopeType, ...idParts] = String($("#targetScopeSelect").value || "").split(":");
+  const scopeId = idParts.join(":");
+  const option = targetManagement.options.find((item) => item.type === scopeType && String(item.id) === scopeId) || {};
+  return { scopeType, scopeId, scopeName: option.name || "" };
+}
+
+function fillTargetForm() {
+  const form = $("#targetForm");
+  const scope = selectedTargetScope();
+  const month = form.month.value || today.slice(0, 7);
+  const target = targetManagement.targets.find((item) => item.month === month && item.scopeType === scope.scopeType && String(item.scopeId) === String(scope.scopeId)) || {};
+  ["revenueTarget", "contractTarget", "listTarget", "leadTarget", "opportunityTarget", "dealTarget"].forEach((field) => { form[field].value = target[field] || ""; });
+}
+
+function renderTargetList() {
+  $("#targetList").innerHTML = targetManagement.targets.length ? targetManagement.targets.map((item) => `
+    <article><div><b>${escapeHtml(item.scopeName || item.scopeId)}</b><small>${escapeHtml(item.month)}</small></div><small>进款 ${Number(item.revenueTarget || 0).toFixed(1)}万 · 签单 ${Number(item.contractTarget || 0).toFixed(1)}万 · 成交 ${item.dealTarget || 0}家</small></article>`).join("") : '<div class="empty">本月尚未设置目标</div>';
+}
+
+async function saveTarget(event) {
+  event.preventDefault();
+  if (event.submitter?.value === "cancel") return $("#targetDialog").close();
+  const form = new FormData(event.currentTarget);
+  const scope = selectedTargetScope();
+  await api("/targets", {
+    method: "POST",
+    body: {
+      month: form.get("month"),
+      ...scope,
+      revenueTarget: Number(form.get("revenueTarget") || 0),
+      contractTarget: Number(form.get("contractTarget") || 0),
+      listTarget: Number(form.get("listTarget") || 0),
+      leadTarget: Number(form.get("leadTarget") || 0),
+      opportunityTarget: Number(form.get("opportunityTarget") || 0),
+      dealTarget: Number(form.get("dealTarget") || 0)
+    }
+  });
+  $("#targetDialog").close();
+  toast("月度目标已保存");
+  await renderDashboard();
+}
+
 function wireEvents() {
+  const initialMonth = today.slice(0, 7);
+  const initialRange = monthDates(initialMonth);
+  $("#dashboardMonth").value = initialMonth;
+  $("#dashboardStart").value = initialRange.start;
+  $("#dashboardEnd").value = initialRange.end;
   $("#downloadTemplateLink").href = `${API_BASE}/import/customers/template`;
   $("#loginForm").addEventListener("submit", login);
   $("#logoutBtn").addEventListener("click", logout);
@@ -972,12 +1163,14 @@ function wireEvents() {
   $("#stageTabs").addEventListener("click", (event) => {
     const button = event.target.closest("button");
     if (!button) return;
+    dashboardDrilldownIds = null;
     currentStage = button.dataset.stage;
     customerPage = 1;
     renderCustomers();
   });
   ["customerKeyword", "channelFilter", "createdByFilter", "followPersonFilter", "unitFilter", "stageTimeStart", "stageTimeEnd", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
     const resetAndRender = () => {
+      dashboardDrilldownIds = null;
       customerPage = 1;
       renderCustomers();
     };
@@ -993,6 +1186,21 @@ function wireEvents() {
     customerPageSize = Number(event.currentTarget.value) || 10;
     customerPage = 1;
     renderCustomers();
+  });
+  $("#dashboardMonth").addEventListener("change", (event) => {
+    const range = monthDates(event.currentTarget.value);
+    $("#dashboardStart").value = range.start;
+    $("#dashboardEnd").value = range.end;
+    renderDashboard();
+  });
+  ["dashboardStart", "dashboardEnd", "dashboardScope"].forEach((id) => $(`#${id}`).addEventListener("change", renderDashboard));
+  $("#dashboardView").addEventListener("click", handleDashboardClick);
+  $("#targetSettingsBtn").addEventListener("click", () => openTargetDialog().catch((error) => toast(error.message)));
+  $("#targetScopeSelect").addEventListener("change", fillTargetForm);
+  $("#targetForm input[name='month']").addEventListener("change", async (event) => {
+    targetManagement = await api(`/targets?month=${encodeURIComponent(event.currentTarget.value)}`);
+    renderTargetList();
+    fillTargetForm();
   });
   $("#customerPrevPage").addEventListener("click", () => {
     if (customerPage <= 1) return;
@@ -1033,6 +1241,7 @@ function wireEvents() {
   $("#customerForm").addEventListener("submit", saveCustomer);
   $("#batchForm").addEventListener("submit", batchImport);
   $("#assignForm").addEventListener("submit", batchAssignCustomers);
+  $("#targetForm").addEventListener("submit", saveTarget);
   $("#recommendBtn").addEventListener("click", recommend);
   $("#knowledgeForm").addEventListener("submit", addKnowledge);
   $("#userForm").addEventListener("submit", addUser);

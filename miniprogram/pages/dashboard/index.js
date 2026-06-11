@@ -1,95 +1,128 @@
 const app = getApp();
 
+function monthDates(month) {
+  const [year, number] = month.split("-").map(Number);
+  return {
+    start: `${month}-01`,
+    end: new Date(Date.UTC(year, number, 0)).toISOString().slice(0, 10)
+  };
+}
+
 Page({
   data: {
-    scopeName: "我的",
-    payment: "0.0",
-    paymentRate: 0,
-    orders: 0,
-    bestSeller: "-",
-    activeCount: 0,
-    problems: [],
-    alerts: []
+    loading: true,
+    month: "",
+    startDate: "",
+    endDate: "",
+    scopeOptions: [],
+    scopeNames: [],
+    scopeIndex: 0,
+    scopeName: "我的数据",
+    summary: {},
+    target: {},
+    metrics: [],
+    funnel: [],
+    ranking: [],
+    rankingTitle: "销售排名",
+    actions: [],
+    insights: [],
+    drilldowns: {}
+  },
+
+  onLoad() {
+    const month = app.globalData.today.slice(0, 7);
+    const range = monthDates(month);
+    this.setData({ month, startDate: range.start, endDate: range.end });
   },
 
   onShow() {
     if (!app.ensureLogin()) return;
-    app.loadRemoteState(() => this.loadDashboard());
+    this.loadDashboard();
   },
 
-  loadDashboard() {
-    const state = app.getState();
-    const currentUser = app.getCurrentUser();
-    const isSales = app.getRole(currentUser).customerScope === "self";
-    const customers = app.scopeCustomers();
-    const signed = customers.filter((item) => item.stage === "成交");
-    const payment = signed.reduce((sum, item) => sum + Number(item.amount || 0), 0) * 2.8;
-    const sales = app.visibleSales();
-    const best = sales
-      .map((user) => ({
-        name: user.name,
-        score: state.customers.filter((customer) => (customer.ownerId === user.id || customer.owner === user.name) && ["商机", "成交"].includes(customer.stage)).length
-      }))
-      .sort((a, b) => b.score - a.score)[0];
-    const alerts = customers
-      .filter((item) => item.stage === "商机" || (item.nextFollow && item.nextFollow < app.globalData.today))
-      .slice(0, 4)
-      .map((item) => ({
-        title: item.nextFollow && item.nextFollow < app.globalData.today ? `${item.name} 跟进逾期` : `${item.name} 高意向商机`,
-        text: `预计${item.amount}万，重点确认设备对接、样板产线和老板演示时间。`
-      }));
-
-    this.setData({
-      scopeName: isSales ? `${currentUser.name}的数据` : "当前权限内数据",
-      payment: payment.toFixed(1),
-      paymentRate: Math.min(Math.round((payment / 150) * 100), 100),
-      orders: signed.length,
-      bestSeller: isSales ? currentUser.name : best ? best.name : "-",
-      activeCount: customers.filter((item) => item.lastFollow === app.globalData.today).length,
-      problems: this.buildProblems(customers, isSales),
-      alerts
-    });
-  },
-
-  buildProblems(customers, isSales) {
-    const lists = customers.filter((item) => item.stage === "名单").length;
-    const leads = customers.filter((item) => item.stage === "线索").length;
-    const deals = customers.filter((item) => item.stage === "商机").length;
-    const overdue = customers.filter((item) => item.nextFollow && item.nextFollow < app.globalData.today).length;
-    const noSoftware = customers.filter((item) => !item.software || item.software === "待补充").length;
-    return [
-      {
-        name: isSales ? "我的逾期跟进" : "团队逾期跟进",
-        current: `${overdue}个`,
-        base: "0个",
-        gap: overdue ? "需立即处理" : "正常",
-        level: overdue ? "严重" : "警告",
-        advice: overdue ? "小智建议先处理逾期商机，再跟进今日到期线索。" : "保持当前跟进节奏，今日新增客户要设置下次跟进时间。"
-      },
-      {
-        name: "名单转线索不足",
-        current: `${lists}个名单`,
-        base: "每日清理",
-        gap: leads < lists ? "待筛选" : "正常",
-        level: leads < lists ? "警告" : "警告",
-        advice: "优先筛选有设计拆单、报价、开料排产痛点的全屋定制工厂。"
-      },
-      {
-        name: "商机推进压力",
-        current: `${deals}个商机`,
-        base: "每个商机有下一步",
-        gap: deals ? "需推进" : "需补商机",
-        level: deals ? "警告" : "严重",
-        advice: "对商机客户安排老板、设计主管、生产主管一起看真实订单演示。"
-      },
-      {
-        name: "客户资料不完整",
-        current: `${noSoftware}个`,
-        base: "0个",
-        gap: "现用软件缺失",
-        level: noSoftware ? "警告" : "警告",
-        advice: "拜访时必须补充现用软件、设备、生产线和照片，方便判断市场占有率。"
-      }
+  dashboardPath() {
+    const scope = this.data.scopeOptions[this.data.scopeIndex] || {};
+    const query = [
+      `month=${encodeURIComponent(this.data.month)}`,
+      `start=${encodeURIComponent(this.data.startDate)}`,
+      `end=${encodeURIComponent(this.data.endDate)}`
     ];
+    if (scope.type && scope.id) query.push(`scopeType=${encodeURIComponent(scope.type)}`, `scopeId=${encodeURIComponent(scope.id)}`);
+    return `/dashboard?${query.join("&")}`;
+  },
+
+  async loadDashboard() {
+    this.setData({ loading: true });
+    try {
+      const data = await app.requestApi(this.dashboardPath());
+      const scopeOptions = data.scopeOptions || [];
+      const selectedKey = `${data.scope.type}:${data.scope.id}`;
+      const scopeIndex = Math.max(0, scopeOptions.findIndex((item) => `${item.type}:${item.id}` === selectedKey));
+      const summary = data.summary || {};
+      this.setData({
+        loading: false,
+        scopeOptions,
+        scopeNames: scopeOptions.map((item) => item.name),
+        scopeIndex,
+        scopeName: data.scope.name,
+        summary,
+        target: data.target || {},
+        metrics: [
+          { key: "revenue", drilldown: "revenue", label: "实际进款", value: `¥${Number(summary.revenue || 0).toFixed(1)}万`, hint: data.target?.revenueTarget ? `目标 ¥${Number(data.target.revenueTarget).toFixed(1)}万` : "未设置目标" },
+          { key: "contract", drilldown: "contract", label: "签单金额", value: `¥${Number(summary.contract || 0).toFixed(1)}万`, hint: `${summary.deals || 0}家成交` },
+          { key: "opportunity", drilldown: "opportunities", label: "转化商机", value: `${summary.opportunities || 0}家`, hint: "完成有效演示" },
+          { key: "rate", drilldown: "", label: "目标完成", value: `${summary.targetCompletionRate || 0}%`, hint: `商机成交率 ${summary.opportunityCloseRate || 0}%` }
+        ],
+        funnel: data.funnel || [],
+        ranking: (data.ranking || []).slice(0, 8),
+        rankingTitle: data.scope?.type === "company" ? "全公司销售排名" : data.scope?.type === "zone" ? "战区销售排名" : "本单位销售排名",
+        actions: data.actions || [],
+        drilldowns: data.drilldowns || {},
+        insights: data.insights || []
+      });
+    } catch (error) {
+      this.setData({ loading: false });
+      wx.showToast({ title: error.message || "看板加载失败", icon: "none" });
+    }
+  },
+
+  onMonth(event) {
+    const month = event.detail.value;
+    const range = monthDates(month);
+    this.setData({ month, startDate: range.start, endDate: range.end }, () => this.loadDashboard());
+  },
+
+  onStartDate(event) {
+    this.setData({ startDate: event.detail.value }, () => this.loadDashboard());
+  },
+
+  onEndDate(event) {
+    this.setData({ endDate: event.detail.value }, () => this.loadDashboard());
+  },
+
+  onScope(event) {
+    this.setData({ scopeIndex: Number(event.detail.value) }, () => this.loadDashboard());
+  },
+
+  openAction(event) {
+    const action = this.data.actions.find((item) => item.key === event.currentTarget.dataset.key);
+    if (!action?.count) return;
+    wx.setStorageSync("zhixiao_dashboard_drilldown", {
+      stage: "全部",
+      customerIds: action.customerIds || []
+    });
+    wx.switchTab({ url: "/pages/customers/index" });
+  },
+
+  openMetric(event) {
+    const key = event.currentTarget.dataset.drilldown;
+    if (!key) return;
+    const customers = this.data.drilldowns[key] || [];
+    const stages = [...new Set(customers.map((item) => item.stage).filter(Boolean))];
+    wx.setStorageSync("zhixiao_dashboard_drilldown", {
+      stage: stages.length === 1 ? stages[0] : "全部",
+      customerIds: customers.map((item) => item.id)
+    });
+    wx.switchTab({ url: "/pages/customers/index" });
   }
 });

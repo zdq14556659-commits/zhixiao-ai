@@ -1,55 +1,66 @@
 <view class="page">
   <view class="header">
-    <text class="crumb">首页 / CEO管理看板</text>
-    <view class="title">CEO管理看板</view>
+    <text class="crumb">首页 / 经营看板</text>
+    <view class="title">智销经营看板</view>
     <view class="subtitle">{{scopeName}}</view>
   </view>
 
-  <view class="metrics">
-    <view class="metric-card">
-      <text>本月进款</text>
-      <view class="metric-value">¥{{payment}}万</view>
-      <view class="muted">目标 ¥150.0万</view>
-      <view class="progress"><view style="width: {{paymentRate}}%;"></view></view>
+  <view class="card dashboard-filter">
+    <view class="filter-row">
+      <picker mode="date" fields="month" value="{{month}}" bindchange="onMonth"><view class="picker-box">{{month}}</view></picker>
+      <picker range="{{scopeNames}}" value="{{scopeIndex}}" bindchange="onScope"><view class="picker-box">{{scopeNames[scopeIndex] || '当前范围'}}</view></picker>
     </view>
-    <view class="metric-card">
-      <text>本月签单</text>
-      <view class="metric-value">{{orders}}单</view>
-      <view class="muted">最佳销售：{{bestSeller}}</view>
-    </view>
-    <view class="metric-card">
-      <text>平均成交周期</text>
-      <view class="metric-value">18.5天</view>
-      <view class="muted">平均客单价 ¥5.0万</view>
-    </view>
-    <view class="metric-card">
-      <text>活跃客户</text>
-      <view class="metric-value">{{activeCount}}个</view>
-      <view class="muted">今日已跟进客户</view>
+    <view class="filter-row">
+      <picker mode="date" value="{{startDate}}" bindchange="onStartDate"><view class="picker-box">{{startDate}}</view></picker>
+      <picker mode="date" value="{{endDate}}" bindchange="onEndDate"><view class="picker-box">{{endDate}}</view></picker>
     </view>
   </view>
 
-  <view class="card">
-    <view class="section-title">五大核心问题分析</view>
-    <view class="problem" wx:for="{{problems}}" wx:key="name">
-      <view class="row">
-        <text class="problem-name">{{item.name}}</text>
-        <text class="severity {{item.level === '严重' ? 'danger' : 'warn'}}">{{item.level}}</text>
-      </view>
-      <view class="problem-grid">
-        <text>当前值：{{item.current}}</text>
-        <text>基准值：{{item.base}}</text>
-        <text>差距：{{item.gap}}</text>
-      </view>
-      <view class="advice">{{item.advice}}</view>
-    </view>
-  </view>
+  <view wx:if="{{loading}}" class="card loading">经营数据加载中...</view>
 
-  <view class="card">
-    <view class="section-title">AI经营提醒</view>
-    <view class="alert" wx:for="{{alerts}}" wx:key="title">
-      <text class="alert-title">{{item.title}}</text>
-      <text class="alert-text">{{item.text}}</text>
+  <view wx:else>
+    <view class="metrics">
+      <view class="metric-card {{item.drilldown ? 'clickable' : ''}}" wx:for="{{metrics}}" wx:key="key" data-drilldown="{{item.drilldown}}" bindtap="openMetric">
+        <text>{{item.label}}</text>
+        <view class="metric-value">{{item.value}}</view>
+        <view class="muted metric-hint">{{item.hint}}</view>
+      </view>
+    </view>
+
+    <view class="card">
+      <view class="section-title">本期销售漏斗</view>
+      <view class="funnel-row" wx:for="{{funnel}}" wx:key="stage">
+        <text class="funnel-stage">{{item.stage}}</text>
+        <view class="funnel-data"><text class="strong">{{item.count}}家</text><text>{{item.stage === '成交' ? '最终结果' : '转化 ' + item.conversionRate + '%'}}</text></view>
+        <view class="funnel-data"><text class="strong">{{item.averageStayDays}}天</text><text>平均停留</text></view>
+        <view class="funnel-data warning"><text class="strong">{{item.overdue}}</text><text>超期</text></view>
+      </view>
+    </view>
+
+    <view class="card">
+      <view class="section-title">今日行动中心</view>
+      <view class="action-grid">
+        <view class="action-item {{item.count ? 'active' : ''}}" wx:for="{{actions}}" wx:key="key" data-key="{{item.key}}" bindtap="openAction">
+          <text>{{item.label}}</text><text class="strong">{{item.count}}</text>
+        </view>
+      </view>
+    </view>
+
+    <view class="card">
+      <view class="section-title">{{rankingTitle}}</view>
+      <view class="ranking-head"><text>排名 / 销售</text><text>进款</text><text>成交</text><text>完成率</text></view>
+      <view class="ranking-row" wx:for="{{ranking}}" wx:key="userId">
+        <text><text class="rank-number">{{index + 1}}</text> {{item.name}}</text><text>¥{{item.revenue}}万</text><text>{{item.deals}}家</text><text>{{item.completionRate}}%</text>
+      </view>
+      <view wx:if="{{!ranking.length}}" class="empty">暂无排名数据</view>
+    </view>
+
+    <view class="card">
+      <view class="section-title">小智经营分析</view>
+      <view class="insight" wx:for="{{insights}}" wx:key="title">
+        <text class="insight-title">{{item.title}}</text>
+        <text class="insight-text">{{item.detail}}</text>
+      </view>
     </view>
   </view>
 </view>

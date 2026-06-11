@@ -9,12 +9,10 @@
       <view class="form-item">
         <text class="label">客户名称</text>
         <input class="{{identityLocked ? 'locked-input' : ''}}" name="name" value="{{form.name}}" disabled="{{identityLocked}}" placeholder="例：佛山柜体门板厂" />
-        <text wx:if="{{identityLocked}}" class="lock-note">已有客户名称仅管理员可修改</text>
       </view>
       <view class="form-item">
         <text class="label">手机号</text>
         <input class="{{identityLocked ? 'locked-input' : ''}}" name="phone" type="number" value="{{form.phone}}" disabled="{{identityLocked}}" placeholder="客户手机号" />
-        <text wx:if="{{identityLocked}}" class="lock-note">已有客户手机号仅管理员可修改</text>
       </view>
       <view class="form-item">
         <text class="label">渠道来源</text>
@@ -49,6 +47,47 @@
       <view class="form-item">
         <text class="label">现用软件</text>
         <input name="software" value="{{form.software}}" placeholder="酷家乐 + Excel排产" />
+      </view>
+      <view class="section-divider">商机与成交信息</view>
+      <view class="grid-2">
+        <view class="form-item">
+          <text class="label">有效演示时间</text>
+          <picker mode="date" value="{{demoAt}}" bindchange="onDemoAt">
+            <view class="picker-box">{{demoAt || '未完成演示'}}</view>
+          </picker>
+        </view>
+        <view class="form-item">
+          <text class="label">预计成交日期</text>
+          <picker mode="date" value="{{expectedDealDate}}" bindchange="onExpectedDealDate">
+            <view class="picker-box">{{expectedDealDate || '请选择'}}</view>
+          </picker>
+        </view>
+      </view>
+      <view class="grid-2">
+        <view class="form-item">
+          <text class="label">报价金额（万）</text>
+          <input name="quoteAmount" type="digit" value="{{form.quoteAmount}}" placeholder="0" />
+        </view>
+        <view class="form-item">
+          <text class="label">合同金额（万）</text>
+          <input name="contractAmount" type="digit" value="{{form.contractAmount}}" placeholder="成交时必填" />
+        </view>
+      </view>
+      <view class="grid-2">
+        <view class="form-item">
+          <text class="label">实际进款（万）</text>
+          <input name="paymentAmount" type="digit" value="{{form.paymentAmount}}" placeholder="0" />
+        </view>
+        <view class="form-item">
+          <text class="label">进款日期</text>
+          <picker mode="date" value="{{paymentDate}}" bindchange="onPaymentDate">
+            <view class="picker-box">{{paymentDate || '待进款'}}</view>
+          </picker>
+        </view>
+      </view>
+      <view class="form-item">
+        <text class="label">未成交原因</text>
+        <input name="lossReason" value="{{form.lossReason}}" placeholder="如：预算、决策、竞品、暂缓上线" />
       </view>
       <view class="form-item">
         <text class="label">客户地址</text>

@@ -6,9 +6,11 @@
   background: #f5f7fa;
 }
 
-.lock-note {
-  display: block;
-  margin-top: 8rpx;
-  color: #e6a23c;
-  font-size: 23rpx;
+.section-divider {
+  margin: 26rpx 0 18rpx;
+  padding-top: 24rpx;
+  border-top: 1rpx solid #e8edf3;
+  color: #1f2d3d;
+  font-size: 28rpx;
+  font-weight: 800;
 }

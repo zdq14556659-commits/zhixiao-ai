@@ -55,20 +55,63 @@
         </header>
 
         <section class="view active" id="dashboardView">
-          <div class="metric-grid">
-            <article class="metric-card"><span>本月进款</span><strong id="metricPayment">¥0.0万</strong><small>按当前可见客户统计</small></article>
-            <article class="metric-card"><span>成交客户</span><strong id="metricSigned">0家</strong><small>成交阶段客户数</small></article>
-            <article class="metric-card"><span>今日跟进</span><strong id="metricFollow">0条</strong><small>今日新增跟进记录</small></article>
-            <article class="metric-card"><span>逾期提醒</span><strong id="metricOverdue">0个</strong><small>需要优先处理</small></article>
+          <section class="dashboard-toolbar">
+            <div class="dashboard-filter-group">
+              <label>月份<input id="dashboardMonth" type="month" /></label>
+              <label>开始日期<input id="dashboardStart" type="date" /></label>
+              <label>结束日期<input id="dashboardEnd" type="date" /></label>
+              <label>管理范围<select id="dashboardScope"></select></label>
+            </div>
+            <button id="targetSettingsBtn" type="button">设置月度目标</button>
+          </section>
+          <div class="metric-grid dashboard-metrics" id="dashboardMetrics">
+            <button class="metric-card metric-button" data-metric="revenue"><span>实际进款</span><strong id="metricRevenue">¥0.0万</strong><small id="metricRevenueHint">按进款日期统计</small></button>
+            <button class="metric-card metric-button" data-metric="contract"><span>签单金额</span><strong id="metricContract">¥0.0万</strong><small>按成交日期统计</small></button>
+            <button class="metric-card metric-button" data-stage="成交"><span>成交客户</span><strong id="metricDeals">0家</strong><small id="metricDealHint">平均成交周期 0天</small></button>
+            <article class="metric-card"><span>目标完成率</span><strong id="metricTargetRate">0%</strong><small id="metricTargetHint">本月未设置目标</small></article>
+            <button class="metric-card metric-button" data-stage="名单"><span>新增名单</span><strong id="metricLists">0家</strong><small>按录入时间统计</small></button>
+            <button class="metric-card metric-button" data-stage="商机"><span>转化商机</span><strong id="metricOpportunities">0家</strong><small>完成有效演示</small></button>
+            <article class="metric-card"><span>商机成交率</span><strong id="metricCloseRate">0%</strong><small>滚动90天口径</small></article>
+            <button class="metric-card metric-button" data-action-key="overdue"><span>逾期商机</span><strong id="metricOverdueOpportunities">0家</strong><small>需要优先处理</small></button>
           </div>
-          <div class="grid-2">
+          <div class="dashboard-grid">
             <section class="panel">
-              <div class="panel-title"><h2>问题分析</h2><span>小智根据客户阶段和跟进节奏生成</span></div>
-              <div class="problem-list" id="problemList"></div>
+              <div class="panel-title"><h2>销售漏斗</h2><span>本期数量 · 滚动90天转化率</span></div>
+              <div class="dashboard-funnel" id="dashboardFunnel"></div>
             </section>
             <section class="panel">
-              <div class="panel-title"><h2>转化漏斗</h2><span>名单 → 线索 → 商机 → 成交</span></div>
-              <div class="funnel" id="funnelChart"></div>
+              <div class="panel-title"><h2>今日行动中心</h2><span>点击查看对应客户</span></div>
+              <div class="action-center" id="dashboardActions"></div>
+            </section>
+            <section class="panel dashboard-wide">
+              <div class="panel-title"><h2>业绩趋势</h2><span>签单金额与实际进款</span></div>
+              <div class="trend-chart" id="dashboardTrend"></div>
+            </section>
+            <section class="panel dashboard-wide">
+              <div class="panel-title"><h2>团队经营排名</h2><span>销售可查看本单位排名</span></div>
+              <div class="ranking-table-wrap">
+                <table class="ranking-table">
+                  <thead><tr><th>排名</th><th>销售</th><th>单位</th><th>实际进款</th><th>目标完成</th><th>成交</th><th>商机成交率</th><th>按时跟进率</th><th>逾期</th></tr></thead>
+                  <tbody id="dashboardRanking"></tbody>
+                </table>
+              </div>
+            </section>
+            <section class="panel dashboard-wide hidden" id="dashboardUnitRankingPanel">
+              <div class="panel-title"><h2>单位经营排名</h2><span>按当前管理范围汇总</span></div>
+              <div class="ranking-table-wrap">
+                <table class="ranking-table unit-ranking-table">
+                  <thead><tr><th>排名</th><th>单位</th><th>战区</th><th>实际进款</th><th>目标完成</th><th>成交</th><th>转化商机</th><th>商机成交率</th><th>逾期</th></tr></thead>
+                  <tbody id="dashboardUnitRanking"></tbody>
+                </table>
+              </div>
+            </section>
+            <section class="panel">
+              <div class="panel-title"><h2>行业客户画像</h2><span id="profileCompleteness">资料完整率 0%</span></div>
+              <div class="industry-analysis" id="dashboardIndustry"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-title"><h2>小智经营分析</h2><span>只基于系统真实数据</span></div>
+              <div class="insight-list" id="dashboardInsights"></div>
             </section>
           </div>
         </section>
@@ -232,6 +275,14 @@
         <label>跟进人<input name="followPerson" /></label>
         <label>客户地址<input name="address" /></label>
         <label>预计金额（万）<input name="amount" type="number" step="0.1" /></label>
+        <div class="dialog-section-title">经营信息</div>
+        <label>有效演示时间<input name="demoAt" type="date" /></label>
+        <label>正式报价金额（万）<input name="quoteAmount" type="number" min="0" step="0.1" /></label>
+        <label>预计成交日期<input name="expectedDealDate" type="date" /></label>
+        <label>合同金额（万）<input name="contractAmount" type="number" min="0" step="0.1" /></label>
+        <label>实际进款（万）<input name="paymentAmount" type="number" min="0" step="0.1" /></label>
+        <label>进款日期<input name="paymentDate" type="date" /></label>
+        <label>未成交原因<textarea name="lossReason" rows="2" placeholder="价格、竞品、暂时无预算等"></textarea></label>
         <label>现用软件<input name="software" /></label>
         <label>跟进记录<textarea name="note" rows="4"></textarea></label>
         <label>下次跟进<input name="nextFollow" type="date" /></label>
@@ -270,6 +321,25 @@
         <p class="muted" id="assignSummary">已选择 0 个客户</p>
         <label>分配给员工<select name="ownerId" id="assignOwnerSelect"></select></label>
         <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">确认分配</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="targetDialog">
+      <form method="dialog" class="dialog-form target-dialog-form" id="targetForm">
+        <h2>月度目标设置</h2>
+        <p class="muted">主管以上可设置权限范围内目标；上级未单独设置时，系统自动汇总下级目标。</p>
+        <label>目标月份<input name="month" type="month" required /></label>
+        <label>目标对象<select name="scope" id="targetScopeSelect" required></select></label>
+        <div class="target-form-grid">
+          <label>进款目标（万）<input name="revenueTarget" type="number" min="0" step="0.1" /></label>
+          <label>签单目标（万）<input name="contractTarget" type="number" min="0" step="0.1" /></label>
+          <label>新增名单目标<input name="listTarget" type="number" min="0" step="1" /></label>
+          <label>转化线索目标<input name="leadTarget" type="number" min="0" step="1" /></label>
+          <label>转化商机目标<input name="opportunityTarget" type="number" min="0" step="1" /></label>
+          <label>成交客户目标<input name="dealTarget" type="number" min="0" step="1" /></label>
+        </div>
+        <div class="target-list" id="targetList"></div>
+        <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">保存目标</button></div>
       </form>
     </dialog>
 

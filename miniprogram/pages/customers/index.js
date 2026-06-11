@@ -39,7 +39,15 @@ Page({
 
   onShow() {
     if (!app.ensureLogin()) return;
+    this.consumeDashboardDrilldown();
     app.loadRemoteState(() => this.loadData());
+  },
+
+  consumeDashboardDrilldown() {
+    const drilldown = wx.getStorageSync("zhixiao_dashboard_drilldown") || {};
+    if (drilldown.stage) this.setData({ currentStage: drilldown.stage, page: 1 });
+    this.dashboardCustomerIds = Array.isArray(drilldown.customerIds) ? drilldown.customerIds.map(Number) : [];
+    wx.removeStorageSync("zhixiao_dashboard_drilldown");
   },
 
   loadData() {
@@ -74,6 +82,7 @@ Page({
 
   switchStage(event) {
     const currentStage = event.currentTarget.dataset.stage;
+    this.dashboardCustomerIds = [];
     this.setData({ currentStage, stageTimeLabel: this.stageTimeConfig(currentStage).label, page: 1 });
     this.applyFilters();
   },
@@ -137,13 +146,14 @@ Page({
   },
 
   stageTimeConfig(stage) {
+    if (stage === "全部") return { label: "阶段时间", field: "createdAt" };
     if (stage === "名单") return { label: "录入时间", field: "createdAt" };
     if (stage === "成交") return { label: "成交时间", field: "dealAt" };
     return { label: "转化时间", field: stage === "商机" ? "opportunityAt" : "leadAt" };
   },
 
   customerStageTime(customer, stage = this.data.currentStage) {
-    const config = this.stageTimeConfig(stage);
+    const config = this.stageTimeConfig(stage === "全部" ? customer.stage : stage);
     return String(customer[config.field] || "").slice(0, 10);
   },
 
@@ -162,7 +172,8 @@ Page({
     const filtered = this.data.customers.filter((item) => {
       const itemChannel = app.normalizeChannelSource(item.channelSource);
       const source = `${item.name} ${item.phone} ${item.software} ${item.lastNote}`.toLowerCase();
-      if (item.stage !== this.data.currentStage) return false;
+      if (this.data.currentStage !== "全部" && item.stage !== this.data.currentStage) return false;
+      if (this.dashboardCustomerIds?.length && !this.dashboardCustomerIds.includes(Number(item.id))) return false;
       if (keyword && !source.includes(keyword)) return false;
       if (channel !== "全部" && itemChannel !== channel) return false;
       if (owner !== "全部" && item.owner !== owner) return false;
@@ -189,6 +200,7 @@ Page({
   },
 
   resetFilters() {
+    this.dashboardCustomerIds = [];
     this.setData({
       keyword: "",
       channelIndex: 0,
@@ -226,11 +238,13 @@ Page({
   },
 
   goAdd() {
-    wx.navigateTo({ url: `/pages/customer-form/index?stage=${this.data.currentStage}` });
+    const stage = ["名单", "线索", "商机", "成交"].includes(this.data.currentStage) ? this.data.currentStage : "名单";
+    wx.navigateTo({ url: `/pages/customer-form/index?stage=${stage}` });
   },
 
   goBatchImport() {
-    wx.navigateTo({ url: `/pages/batch-import/index?stage=${this.data.currentStage}` });
+    const stage = ["名单", "线索", "商机", "成交"].includes(this.data.currentStage) ? this.data.currentStage : "名单";
+    wx.navigateTo({ url: `/pages/batch-import/index?stage=${stage}` });
   },
 
   editCustomer(event) {
@@ -266,6 +280,16 @@ Page({
       return;
     }
     const nextStage = stages[stageIndex + 1];
+    if (nextStage === "商机" && !customer.demoAt) {
+      wx.showToast({ title: "请先填写有效演示时间", icon: "none" });
+      setTimeout(() => wx.navigateTo({ url: `/pages/customer-form/index?id=${id}` }), 500);
+      return;
+    }
+    if (nextStage === "成交" && Number(customer.contractAmount || 0) <= 0) {
+      wx.showToast({ title: "请先填写合同金额", icon: "none" });
+      setTimeout(() => wx.navigateTo({ url: `/pages/customer-form/index?id=${id}` }), 500);
+      return;
+    }
     const nextCustomer = {
       ...customer,
       stage: nextStage,

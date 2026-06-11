@@ -28,6 +28,7 @@ const DEFAULT_PERMISSIONS = ["dashboard", "customers", "field", "assistant"];
 const ADMIN_PERMISSIONS = [...DEFAULT_PERMISSIONS, "admin"];
 const REASSIGN_DAYS = 30;
 const DEFAULT_ADMIN_PASSWORD = "778899";
+const TARGET_FIELDS = ["revenueTarget", "contractTarget", "listTarget", "leadTarget", "opportunityTarget", "dealTarget"];
 const DEFAULT_ROLES = [
   { id: "role-owner", name: "总负责人", customerScope: "all", permissions: ADMIN_PERMISSIONS },
   { id: "role-region", name: "区域经理", customerScope: "zone", permissions: DEFAULT_PERMISSIONS },
@@ -118,6 +119,29 @@ async function routeApi(req, res, url) {
   const authUser = getAuthUser(req, authState);
   if (!authUser) return sendJson(res, 401, { error: "请先登录" });
 
+  if (req.method === "GET" && url.pathname === "/api/dashboard") {
+    return sendJson(res, 200, buildDashboard(authState, authUser, Object.fromEntries(url.searchParams.entries())));
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/targets") {
+    const month = normalizeMonth(url.searchParams.get("month"));
+    return sendJson(res, 200, buildTargetManagement(authState, authUser, month));
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/targets") {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canManageTargets(state, viewer)) return sendJson(res, 403, { error: "当前角色无目标设置权限" });
+    const target = normalizeTarget({ ...body, month: normalizeMonth(body.month), updatedBy: viewer.name, updatedAt: new Date().toISOString() });
+    if (!canManageTargetScope(state, viewer, target)) return sendJson(res, 403, { error: "不能设置权限范围外的目标" });
+    const index = state.targets.findIndex((item) => item.month === target.month && item.scopeType === target.scopeType && String(item.scopeId) === String(target.scopeId));
+    if (index >= 0) state.targets[index] = { ...state.targets[index], ...target, id: state.targets[index].id };
+    else state.targets.push(target);
+    writeState(state);
+    return sendJson(res, index >= 0 ? 200 : 201, target);
+  }
+
   if (req.method === "GET" && url.pathname === "/api/state") {
     const client = url.searchParams.get("client") || "web";
     const state = authState;
@@ -139,9 +163,29 @@ async function routeApi(req, res, url) {
     const body = await readBody(req);
     const state = readState();
     const viewer = getAuthUser(req, state);
-    const customer = normalizeCustomer({
+    const viewerRole = findRole(state.roles, viewer.roleId, viewer.role);
+    let owner = viewer;
+    if (viewerRole.customerScope !== "self") {
+      const requestedOwner = findUser(state.users, body.ownerId, body.owner || body.followPerson);
+      const visibleOwner = visibleUsers(state, viewer).find((item) => Number(item.id) === Number(requestedOwner.id));
+      if (requestedOwner.id && !visibleOwner) return sendJson(res, 403, { error: "不能将客户录入到权限范围外" });
+      if (visibleOwner.id) owner = visibleOwner;
+    }
+    const candidate = {
       id: Date.now(),
       ...body,
+      ownerId: owner.id,
+      owner: owner.name,
+      followPerson: owner.name,
+      createdBy: viewer.name,
+      unitId: owner.unitId,
+      unit: owner.unit,
+      zone: owner.zone
+    };
+    const validationError = validateCustomerBusinessUpdate({}, candidate, true);
+    if (validationError) return sendJson(res, 400, { error: validationError });
+    const customer = normalizeCustomer({
+      ...candidate,
       followUps: [{
         date: body.lastFollow || body.date || today(),
         createdAt: new Date().toISOString(),
@@ -256,6 +300,8 @@ async function routeApi(req, res, url) {
       }
     }
     const previousStage = previous.stage;
+    const validationError = validateCustomerBusinessUpdate(previous, body, false);
+    if (validationError) return sendJson(res, 400, { error: validationError });
     const next = normalizeCustomer({ ...previous, ...body, id: previous.id }, state);
     const shouldAddFollow =
       body.lastNote !== undefined ||
@@ -489,6 +535,7 @@ function normalizeIncomingState(input) {
     customers: mergeById(current.customers, input.customers),
     activities: mergeById(current.activities, input.activities),
     visits: mergeById(current.visits, input.visits),
+    targets: mergeById(current.targets, input.targets),
     knowledge: input.knowledge || current.knowledge || [],
     resources: input.resources || current.resources || []
   };
@@ -546,6 +593,7 @@ function migrateState(state) {
     customers: (state.customers || []).map((customer) => normalizeCustomer(customer, context)),
     activities,
     visits: (state.visits || []).map((visit) => normalizeVisit(visit, context)),
+    targets: (state.targets || []).map(normalizeTarget),
     knowledge: (state.knowledge || []).map(normalizeKnowledge),
     resources: state.resources || []
   };
@@ -664,6 +712,26 @@ function normalizeKnowledge(item = {}, index = 0) {
   };
 }
 
+function normalizeMoney(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) && number > 0 ? Math.round(number * 100) / 100 : 0;
+}
+
+function normalizeTarget(item = {}) {
+  const scopeType = ["company", "zone", "unit", "user"].includes(item.scopeType) ? item.scopeType : "user";
+  const target = {
+    id: item.id || stableId("target", `${normalizeMonth(item.month)}-${scopeType}-${item.scopeId || "company"}`),
+    month: normalizeMonth(item.month),
+    scopeType,
+    scopeId: scopeType === "company" ? "company" : String(item.scopeId || ""),
+    scopeName: item.scopeName || (scopeType === "company" ? "全公司" : ""),
+    updatedBy: item.updatedBy || "",
+    updatedAt: item.updatedAt || ""
+  };
+  TARGET_FIELDS.forEach((field) => { target[field] = normalizeMoney(item[field]); });
+  return target;
+}
+
 function findRole(roles = DEFAULT_ROLES, roleId, roleName) {
   return (
     roles.find((role) => roleId && role.id === roleId) ||
@@ -728,6 +796,13 @@ function normalizeCustomer(customer, context = {}) {
     zone: customer.zone || ownerUser.zone || unit.zone || normalizeZone(customer.region),
     region: customer.region || ownerUser.zone || unit.zone || "待分区",
     amount: Number(customer.amount || 15),
+    demoAt: customer.demoAt || customer.effectiveDemoAt || "",
+    quoteAmount: normalizeMoney(customer.quoteAmount),
+    expectedDealDate: customer.expectedDealDate || "",
+    contractAmount: normalizeMoney(customer.contractAmount),
+    paymentAmount: normalizeMoney(customer.paymentAmount),
+    paymentDate: customer.paymentDate || "",
+    lossReason: customer.lossReason || "",
     software: customer.software || "待补充",
     photos: normalizePhotos(customer.photos || customer.visitPhotos),
     createdAt,
@@ -948,6 +1023,7 @@ function scopeStateForUser(state, viewer = null) {
     users: visibleUsers(state, user),
     customers: (state.customers || []).filter((customer) => canViewRecord(state, user, customer)),
     visits: (state.visits || []).filter((visit) => canViewRecord(state, user, visit)),
+    targets: (state.targets || []).filter((target) => canViewTarget(state, user, target)),
     activities: (state.activities || []).filter((activity) => {
       if (!activity.customerId) return true;
       const customer = (state.customers || []).find((item) => Number(item.id) === Number(activity.customerId));
@@ -1009,6 +1085,459 @@ function canUseAdmin(state, user) {
   if (!user) return false;
   const role = findRole(state.roles, user.roleId, user.role);
   return (role.permissions || []).includes("admin");
+}
+
+function canManageTargets(state, user) {
+  if (!user) return false;
+  return findRole(state.roles, user.roleId, user.role).customerScope !== "self";
+}
+
+function canViewTarget(state, viewer, target = {}) {
+  if (!viewer) return false;
+  const role = findRole(state.roles, viewer.roleId, viewer.role);
+  if (role.customerScope === "all") return true;
+  if (target.scopeType === "user" && String(target.scopeId) === String(viewer.id)) return true;
+  if (target.scopeType === "unit" && String(target.scopeId) === String(viewer.unitId)) return true;
+  if (target.scopeType === "zone" && target.scopeId === viewer.zone) return role.customerScope === "zone";
+  if (target.scopeType === "user") {
+    const user = findUser(state.users, target.scopeId, target.scopeName);
+    if (role.customerScope === "zone") return user.zone === viewer.zone;
+    if (role.customerScope === "unit") return user.unitId === viewer.unitId;
+  }
+  if (target.scopeType === "unit" && role.customerScope === "zone") {
+    return findUnit(state.units, target.scopeId, target.scopeName).zone === viewer.zone;
+  }
+  return false;
+}
+
+function canManageTargetScope(state, viewer, target = {}) {
+  if (!canManageTargets(state, viewer)) return false;
+  const role = findRole(state.roles, viewer.roleId, viewer.role);
+  if (role.customerScope === "all") return true;
+  if (target.scopeType === "company") return false;
+  if (role.customerScope === "zone") {
+    if (target.scopeType === "zone") return target.scopeId === viewer.zone;
+    if (target.scopeType === "unit") return findUnit(state.units, target.scopeId, target.scopeName).zone === viewer.zone;
+    const user = findUser(state.users, target.scopeId, target.scopeName);
+    return target.scopeType === "user" && user.zone === viewer.zone;
+  }
+  if (role.customerScope === "unit") {
+    if (target.scopeType === "unit") return String(target.scopeId) === String(viewer.unitId);
+    const user = findUser(state.users, target.scopeId, target.scopeName);
+    return target.scopeType === "user" && String(user.unitId) === String(viewer.unitId);
+  }
+  return false;
+}
+
+function normalizeMonth(value) {
+  const text = String(value || "");
+  return /^\d{4}-\d{2}$/.test(text) ? text : today().slice(0, 7);
+}
+
+function monthRange(month) {
+  const normalized = normalizeMonth(month);
+  const [year, monthNumber] = normalized.split("-").map(Number);
+  const end = new Date(Date.UTC(year, monthNumber, 0)).toISOString().slice(0, 10);
+  return { month: normalized, start: `${normalized}-01`, end };
+}
+
+function normalizeDashboardRange(query = {}) {
+  const fallback = monthRange(query.month);
+  const start = /^\d{4}-\d{2}-\d{2}$/.test(query.start || "") ? query.start : fallback.start;
+  const end = /^\d{4}-\d{2}-\d{2}$/.test(query.end || "") ? query.end : fallback.end;
+  return start <= end ? { month: start.slice(0, 7), start, end } : { month: end.slice(0, 7), start: end, end: start };
+}
+
+function inRange(value, start, end) {
+  const date = String(value || "").slice(0, 10);
+  return Boolean(date) && date >= start && date <= end;
+}
+
+function addDays(dateText, days) {
+  const date = new Date(`${dateText}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function daysBetween(start, end) {
+  const startTime = Date.parse(start);
+  const endTime = Date.parse(end);
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) return 0;
+  return Math.max(0, Math.round((endTime - startTime) / (24 * 60 * 60 * 1000)));
+}
+
+function dashboardScopeOptions(state, viewer) {
+  const role = findRole(state.roles, viewer.roleId, viewer.role);
+  const options = [{ type: "user", id: String(viewer.id), name: `${viewer.name}（本人）` }];
+  if (role.customerScope === "self") return options;
+  if (role.customerScope === "unit") options.unshift({ type: "unit", id: String(viewer.unitId || ""), name: viewer.unit || "本单位" });
+  if (role.customerScope === "zone") options.unshift({ type: "zone", id: viewer.zone || "", name: viewer.zone || "本战区" });
+  if (role.customerScope === "all") options.unshift({ type: "company", id: "company", name: "全公司" });
+  const visible = visibleUsers(state, viewer);
+  const units = (state.units || []).filter((unit) => visible.some((user) => String(user.unitId) === String(unit.id)));
+  if (["zone", "all"].includes(role.customerScope)) {
+    units.forEach((unit) => options.push({ type: "unit", id: String(unit.id), name: unit.name }));
+  }
+  if (role.customerScope === "all") {
+    [...new Set(visible.map((user) => user.zone).filter(Boolean))].forEach((zone) => options.push({ type: "zone", id: zone, name: zone }));
+  }
+  visible
+    .filter((user) => findRole(state.roles, user.roleId, user.role).name === "销售")
+    .forEach((user) => options.push({ type: "user", id: String(user.id), name: user.name }));
+  return [...new Map(options.filter((item) => item.id).map((item) => [`${item.type}:${item.id}`, item])).values()];
+}
+
+function resolveDashboardScope(state, viewer, query = {}) {
+  const options = dashboardScopeOptions(state, viewer);
+  const requested = options.find((item) => item.type === query.scopeType && String(item.id) === String(query.scopeId));
+  const role = findRole(state.roles, viewer.roleId, viewer.role);
+  const fallbackType = role.customerScope === "all" ? "company" : role.customerScope === "zone" ? "zone" : role.customerScope === "unit" ? "unit" : "user";
+  return requested || options.find((item) => item.type === fallbackType) || options[0];
+}
+
+function recordMatchesScope(state, record, scope) {
+  const owner = findUser(state.users, record.ownerId, record.owner);
+  const unitId = record.unitId || owner.unitId;
+  const zone = record.zone || owner.zone || normalizeZone(record.region || record.city || record.unit);
+  if (scope.type === "company") return true;
+  if (scope.type === "zone") return zone === scope.id;
+  if (scope.type === "unit") return String(unitId) === String(scope.id);
+  return Number(record.ownerId || owner.id) === Number(scope.id);
+}
+
+function targetScopeName(state, target) {
+  if (target.scopeType === "company") return "全公司";
+  if (target.scopeType === "zone") return target.scopeId;
+  if (target.scopeType === "unit") return findUnit(state.units, target.scopeId, target.scopeName).name;
+  return findUser(state.users, target.scopeId, target.scopeName).name || target.scopeName;
+}
+
+function sumTargets(items = []) {
+  const result = Object.fromEntries(TARGET_FIELDS.map((field) => [field, 0]));
+  items.forEach((item) => TARGET_FIELDS.forEach((field) => { result[field] += Number(item[field] || 0); }));
+  return result;
+}
+
+function effectiveTarget(state, month, scope) {
+  const monthly = (state.targets || []).filter((item) => item.month === month);
+  const direct = monthly.find((item) => item.scopeType === scope.type && String(item.scopeId) === String(scope.id));
+  if (direct && TARGET_FIELDS.some((field) => Number(direct[field] || 0) > 0)) return { ...direct, source: "direct" };
+  let children = [];
+  if (scope.type === "company") children = monthly.filter((item) => item.scopeType === "zone");
+  if (scope.type === "zone") children = monthly.filter((item) => item.scopeType === "unit" && findUnit(state.units, item.scopeId, item.scopeName).zone === scope.id);
+  if (scope.type === "unit") children = monthly.filter((item) => item.scopeType === "user" && String(findUser(state.users, item.scopeId, item.scopeName).unitId) === String(scope.id));
+  if (!children.length && scope.type === "company") children = monthly.filter((item) => item.scopeType === "unit");
+  if (!children.length && ["company", "zone"].includes(scope.type)) {
+    children = monthly.filter((item) => item.scopeType === "user" && (scope.type === "company" || findUser(state.users, item.scopeId, item.scopeName).zone === scope.id));
+  }
+  return { id: "", month, scopeType: scope.type, scopeId: scope.id, scopeName: scope.name, ...sumTargets(children), source: children.length ? "aggregate" : "empty" };
+}
+
+function targetOptionsForManagement(state, viewer) {
+  return dashboardScopeOptions(state, viewer).filter((item) => {
+    if (!canManageTargets(state, viewer)) return false;
+    return canManageTargetScope(state, viewer, { scopeType: item.type, scopeId: item.id, scopeName: item.name });
+  });
+}
+
+function buildTargetManagement(state, viewer, month) {
+  return {
+    month,
+    canManage: canManageTargets(state, viewer),
+    options: targetOptionsForManagement(state, viewer),
+    targets: (state.targets || [])
+      .filter((item) => item.month === month && canViewTarget(state, viewer, item))
+      .map((item) => ({ ...item, scopeName: targetScopeName(state, item) }))
+  };
+}
+
+function validateCustomerBusinessUpdate(previous = {}, body = {}, creating = false) {
+  const nextStage = body.stage || previous.stage || "名单";
+  const stageChanged = creating || nextStage !== previous.stage;
+  const demoAt = body.demoAt !== undefined ? body.demoAt : previous.demoAt;
+  const contractAmount = body.contractAmount !== undefined ? normalizeMoney(body.contractAmount) : normalizeMoney(previous.contractAmount);
+  const paymentAmount = body.paymentAmount !== undefined ? normalizeMoney(body.paymentAmount) : normalizeMoney(previous.paymentAmount);
+  const paymentDate = body.paymentDate !== undefined ? body.paymentDate : previous.paymentDate;
+  if (stageChanged && STAGES.indexOf(nextStage) >= STAGES.indexOf("商机") && !demoAt) return "进入商机前必须填写有效演示时间";
+  if (stageChanged && nextStage === "成交" && contractAmount <= 0) return "进入成交前必须填写合同金额";
+  if (paymentAmount > 0 && !paymentDate) return "填写实际进款后必须选择进款日期";
+  if (paymentDate && paymentAmount <= 0) return "填写进款日期前必须填写实际进款金额";
+  return "";
+}
+
+function percentage(numerator, denominator) {
+  return denominator > 0 ? Math.round((numerator / denominator) * 1000) / 10 : 0;
+}
+
+function average(values = []) {
+  const valid = values.filter((value) => Number.isFinite(value));
+  return valid.length ? Math.round((valid.reduce((sum, value) => sum + value, 0) / valid.length) * 10) / 10 : 0;
+}
+
+function customerFollowStats(customer, referenceDate = today()) {
+  const history = customer.followUps || [];
+  let due = 0;
+  let onTime = 0;
+  history.forEach((item, index) => {
+    if (!item.nextFollow || item.nextFollow > referenceDate) return;
+    due += 1;
+    const next = history[index + 1];
+    if (next && String(next.date || "") <= item.nextFollow) onTime += 1;
+  });
+  return { due, onTime };
+}
+
+function distribution(values = [], limit = 6) {
+  const counts = new Map();
+  values.filter(Boolean).forEach((value) => {
+    const name = String(value).trim();
+    counts.set(name, (counts.get(name) || 0) + 1);
+  });
+  return [...counts.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, limit);
+}
+
+function softwareNames(value) {
+  return String(value || "")
+    .split(/[+、，,\/]/)
+    .map((item) => item.trim())
+    .filter((item) => item && item !== "待补充" && item !== "Excel排产" && item !== "手工报价");
+}
+
+function buildTrend(customers, range) {
+  const days = daysBetween(range.start, range.end) + 1;
+  const buckets = new Map();
+  const keyFor = (date) => days <= 45 ? date : date.slice(0, 7);
+  const labelFor = (key) => days <= 45 ? key.slice(5) : key;
+  if (days <= 45) {
+    for (let date = range.start; date <= range.end; date = addDays(date, 1)) buckets.set(date, { key: date, label: labelFor(date), revenue: 0, contract: 0, deals: 0 });
+  } else {
+    let month = range.start.slice(0, 7);
+    const last = range.end.slice(0, 7);
+    while (month <= last) {
+      buckets.set(month, { key: month, label: month, revenue: 0, contract: 0, deals: 0 });
+      const [year, number] = month.split("-").map(Number);
+      month = new Date(Date.UTC(year, number, 1)).toISOString().slice(0, 7);
+    }
+  }
+  customers.forEach((customer) => {
+    if (inRange(customer.paymentDate, range.start, range.end)) {
+      const bucket = buckets.get(keyFor(customer.paymentDate));
+      if (bucket) bucket.revenue += Number(customer.paymentAmount || 0);
+    }
+    if (inRange(customer.dealAt, range.start, range.end)) {
+      const bucket = buckets.get(keyFor(customer.dealAt));
+      if (bucket) {
+        bucket.contract += Number(customer.contractAmount || 0);
+        bucket.deals += 1;
+      }
+    }
+  });
+  return [...buckets.values()].map((item) => ({ ...item, revenue: normalizeMoney(item.revenue), contract: normalizeMoney(item.contract) }));
+}
+
+function buildFunnel(customers, range) {
+  const rollingStart = addDays(range.end, -89);
+  const fields = ["createdAt", "leadAt", "opportunityAt", "dealAt"];
+  const thresholds = [7, 15, 30, 0];
+  return STAGES.map((stage, index) => {
+    const field = fields[index];
+    const nextField = fields[index + 1];
+    const periodCount = customers.filter((item) => inRange(item[field], range.start, range.end)).length;
+    const cohort = customers.filter((item) => inRange(item[field], rollingStart, range.end));
+    const converted = nextField ? cohort.filter((item) => item[nextField] && item[nextField] <= range.end).length : cohort.length;
+    const stayValues = customers
+      .filter((item) => item[field] && item[field] <= range.end)
+      .map((item) => daysBetween(item[field], item[nextField] && item[nextField] <= range.end ? item[nextField] : range.end));
+    const overdue = thresholds[index]
+      ? customers.filter((item) => item.stage === stage && item[field] && daysBetween(item[field], range.end) > thresholds[index]).length
+      : 0;
+    return {
+      stage,
+      count: periodCount,
+      conversionRate: nextField ? percentage(converted, cohort.length) : 100,
+      averageStayDays: average(stayValues),
+      overdue,
+      thresholdDays: thresholds[index]
+    };
+  });
+}
+
+function buildRanking(state, viewer, selectedScope, range) {
+  const role = findRole(state.roles, viewer.roleId, viewer.role);
+  let users = (state.users || []).filter((user) => findRole(state.roles, user.roleId, user.role).name === "销售");
+  if (role.customerScope === "self") users = users.filter((user) => String(user.unitId) === String(viewer.unitId));
+  else users = users.filter((user) => canViewRecord(state, viewer, { ownerId: user.id, owner: user.name, unitId: user.unitId, zone: user.zone }));
+  if (role.customerScope !== "self" && selectedScope.type !== "company") {
+    users = users.filter((user) => recordMatchesScope(state, { ownerId: user.id, owner: user.name, unitId: user.unitId, zone: user.zone }, selectedScope));
+  }
+  return users.map((user) => {
+    const customers = (state.customers || []).filter((item) => Number(item.ownerId) === Number(user.id) || cleanText(item.owner) === cleanText(user.name));
+    const revenue = customers.filter((item) => inRange(item.paymentDate, range.start, range.end)).reduce((sum, item) => sum + Number(item.paymentAmount || 0), 0);
+    const deals = customers.filter((item) => inRange(item.dealAt, range.start, range.end)).length;
+    const opportunities = customers.filter((item) => inRange(item.opportunityAt, range.start, range.end)).length;
+    const rollingStart = addDays(range.end, -89);
+    const rollingOpportunities = customers.filter((item) => inRange(item.opportunityAt, rollingStart, range.end));
+    const rollingDeals = rollingOpportunities.filter((item) => item.dealAt && item.dealAt <= range.end).length;
+    const follow = customers.map((item) => customerFollowStats(item, range.end)).reduce((acc, item) => ({ due: acc.due + item.due, onTime: acc.onTime + item.onTime }), { due: 0, onTime: 0 });
+    const overdue = customers.filter((item) => item.nextFollow && item.nextFollow < today()).length;
+    const target = effectiveTarget(state, range.month, { type: "user", id: String(user.id), name: user.name });
+    return {
+      userId: user.id,
+      name: user.name,
+      unit: user.unit || "待分配",
+      revenue: normalizeMoney(revenue),
+      target: target.revenueTarget || 0,
+      completionRate: percentage(revenue, target.revenueTarget),
+      deals,
+      opportunities,
+      conversionRate: percentage(rollingDeals, rollingOpportunities.length),
+      onTimeRate: percentage(follow.onTime, follow.due),
+      overdue
+    };
+  }).sort((a, b) => b.revenue - a.revenue || b.deals - a.deals || b.conversionRate - a.conversionRate);
+}
+
+function buildUnitRanking(state, viewer, selectedScope, range, scopedCustomers) {
+  const role = findRole(state.roles, viewer.roleId, viewer.role);
+  if (role.customerScope === "self") return [];
+  const groups = new Map();
+  const visible = visibleUsers(state, viewer)
+    .filter((user) => findRole(state.roles, user.roleId, user.role).name === "销售")
+    .filter((user) => selectedScope.type === "company" || recordMatchesScope(state, { ownerId: user.id, unitId: user.unitId, zone: user.zone }, selectedScope));
+  visible.forEach((user) => {
+    const id = String(user.unitId || stableId("unit", user.unit || "待分配"));
+    if (!groups.has(id)) groups.set(id, { id, name: user.unit || "待分配", zone: user.zone || "待分区", customers: [] });
+  });
+  scopedCustomers.forEach((customer) => {
+    const owner = findUser(state.users, customer.ownerId, customer.owner);
+    const id = String(customer.unitId || owner.unitId || stableId("unit", customer.unit || owner.unit || "待分配"));
+    if (!groups.has(id)) groups.set(id, { id, name: customer.unit || owner.unit || "待分配", zone: customer.zone || owner.zone || "待分区", customers: [] });
+    groups.get(id).customers.push(customer);
+  });
+  const rollingStart = addDays(range.end, -89);
+  return [...groups.values()].map((group) => {
+    const revenue = group.customers.filter((item) => inRange(item.paymentDate, range.start, range.end)).reduce((sum, item) => sum + Number(item.paymentAmount || 0), 0);
+    const deals = group.customers.filter((item) => inRange(item.dealAt, range.start, range.end)).length;
+    const opportunities = group.customers.filter((item) => inRange(item.opportunityAt, range.start, range.end)).length;
+    const rollingOpportunities = group.customers.filter((item) => inRange(item.opportunityAt, rollingStart, range.end));
+    const rollingDeals = rollingOpportunities.filter((item) => item.dealAt && item.dealAt <= range.end).length;
+    const overdue = group.customers.filter((item) => item.nextFollow && item.nextFollow < today()).length;
+    const target = effectiveTarget(state, range.month, { type: "unit", id: group.id, name: group.name });
+    return {
+      unitId: group.id,
+      name: group.name,
+      zone: group.zone,
+      revenue: normalizeMoney(revenue),
+      target: target.revenueTarget || 0,
+      completionRate: percentage(revenue, target.revenueTarget),
+      deals,
+      opportunities,
+      conversionRate: percentage(rollingDeals, rollingOpportunities.length),
+      overdue
+    };
+  }).sort((a, b) => b.revenue - a.revenue || b.deals - a.deals || b.conversionRate - a.conversionRate);
+}
+
+function actionCustomer(item) {
+  return { id: item.id, name: item.name, stage: item.stage, owner: item.owner, nextFollow: item.nextFollow || "", amount: item.quoteAmount || item.amount || 0 };
+}
+
+function buildActions(customers, range) {
+  const groups = [
+    { key: "today", label: "今日待跟进", test: (item) => item.nextFollow === today() },
+    { key: "overdue", label: "逾期跟进", test: (item) => item.nextFollow && item.nextFollow < today() },
+    { key: "highIntent", label: "高意向商机", test: (item) => item.stage === "商机" && Boolean(item.demoAt) },
+    { key: "quotePending", label: "待正式报价", test: (item) => item.stage === "商机" && Number(item.quoteAmount || 0) <= 0 },
+    { key: "paymentPending", label: "成交待进款", test: (item) => item.stage === "成交" && Number(item.paymentAmount || 0) < Number(item.contractAmount || 0) },
+    { key: "stalled", label: "长期未推进", test: (item) => ["线索", "商机"].includes(item.stage) && daysBetween(item.lastFollow || item.createdAt, range.end) > (item.stage === "商机" ? 30 : 15) }
+  ];
+  return groups.map((group) => {
+    const matches = customers.filter(group.test);
+    return { key: group.key, label: group.label, count: matches.length, customerIds: matches.map((item) => item.id), customers: matches.slice(0, 8).map(actionCustomer) };
+  });
+}
+
+function buildInsights(summary, funnel, actions, industry, target) {
+  const insights = [];
+  const weakest = funnel.slice(0, 3).sort((a, b) => a.conversionRate - b.conversionRate)[0];
+  if (weakest) insights.push({ title: `${weakest.stage}环节转化偏弱`, detail: `滚动90天转化率为${weakest.conversionRate}%，建议优先复盘该阶段未推进客户。` });
+  if (target.revenueTarget > 0) {
+    const gap = Math.max(0, target.revenueTarget - summary.revenue);
+    insights.push({ title: gap ? `进款目标还差${normalizeMoney(gap)}万` : "本月进款目标已完成", detail: gap ? `当前完成率${summary.targetCompletionRate}%，优先推进已成交待进款客户。` : `当前完成率${summary.targetCompletionRate}%，继续保障已签客户交付。` });
+  } else {
+    insights.push({ title: "本月尚未设置进款目标", detail: "主管以上可在看板中设置目标，设置后小智会计算差额与完成率。" });
+  }
+  const pendingPayment = actions.find((item) => item.key === "paymentPending")?.count || 0;
+  if (pendingPayment) insights.push({ title: `${pendingPayment}家成交客户尚未足额进款`, detail: "请核对合同金额、实际进款和进款日期，避免成交与现金结果脱节。" });
+  const topLoss = industry.lossReasons[0];
+  if (topLoss) insights.push({ title: `主要未成交原因：${topLoss.name}`, detail: `当前记录${topLoss.count}家，建议将成功案例和标准应对话术补入知识库。` });
+  return insights.slice(0, 4);
+}
+
+function buildDashboard(state, viewer, query = {}) {
+  const range = normalizeDashboardRange(query);
+  const scopeOptions = dashboardScopeOptions(state, viewer);
+  const scope = resolveDashboardScope(state, viewer, query);
+  const customers = (state.customers || []).filter((item) => canViewRecord(state, viewer, item) && recordMatchesScope(state, item, scope));
+  const visits = (state.visits || []).filter((item) => canViewRecord(state, viewer, item) && recordMatchesScope(state, item, scope));
+  const revenue = customers.filter((item) => inRange(item.paymentDate, range.start, range.end)).reduce((sum, item) => sum + Number(item.paymentAmount || 0), 0);
+  const contract = customers.filter((item) => inRange(item.dealAt, range.start, range.end)).reduce((sum, item) => sum + Number(item.contractAmount || 0), 0);
+  const deals = customers.filter((item) => inRange(item.dealAt, range.start, range.end));
+  const lists = customers.filter((item) => inRange(item.createdAt, range.start, range.end));
+  const leads = customers.filter((item) => inRange(item.leadAt, range.start, range.end));
+  const opportunities = customers.filter((item) => inRange(item.opportunityAt, range.start, range.end));
+  const rollingStart = addDays(range.end, -89);
+  const rollingOpportunities = customers.filter((item) => inRange(item.opportunityAt, rollingStart, range.end));
+  const rollingDeals = rollingOpportunities.filter((item) => item.dealAt && item.dealAt <= range.end);
+  const overdueOpportunities = customers.filter((item) => item.stage === "商机" && item.nextFollow && item.nextFollow < today());
+  const target = effectiveTarget(state, range.month, scope);
+  const funnel = buildFunnel(customers, range);
+  const summary = {
+    revenue: normalizeMoney(revenue),
+    contract: normalizeMoney(contract),
+    deals: deals.length,
+    targetCompletionRate: percentage(revenue, target.revenueTarget),
+    lists: lists.length,
+    leads: leads.length,
+    opportunities: opportunities.length,
+    opportunityCloseRate: percentage(rollingDeals.length, rollingOpportunities.length),
+    overdueOpportunities: overdueOpportunities.length,
+    averageDealCycle: average(deals.map((item) => daysBetween(item.createdAt, item.dealAt))),
+    averageContractValue: deals.length ? normalizeMoney(contract / deals.length) : 0
+  };
+  const lossReasons = distribution([...customers.map((item) => item.lossReason), ...visits.map((item) => item.lossReason)]);
+  const industry = {
+    software: distribution(customers.flatMap((item) => softwareNames(item.software))),
+    equipmentBrands: distribution(visits.flatMap((item) => [item.cuttingBrand, item.drillingBrand]).filter(Boolean)),
+    lossReasons,
+    cities: distribution(visits.map((item) => item.city || item.address)),
+    profileCompleteness: percentage(customers.filter((item) => item.phone && item.address && item.software && item.software !== "待补充" && (item.followUps || []).length).length, customers.length)
+  };
+  const actions = buildActions(customers, range);
+  const drilldowns = {
+    revenue: customers.filter((item) => inRange(item.paymentDate, range.start, range.end)).map(actionCustomer),
+    contract: deals.map(actionCustomer),
+    deals: deals.map(actionCustomer),
+    lists: lists.map(actionCustomer),
+    opportunities: opportunities.map(actionCustomer),
+    overdueOpportunities: overdueOpportunities.map(actionCustomer)
+  };
+  return {
+    range,
+    scope,
+    scopeOptions,
+    canManageTargets: canManageTargets(state, viewer),
+    target,
+    summary,
+    funnel,
+    trend: buildTrend(customers, range),
+    ranking: buildRanking(state, viewer, scope, range),
+    unitRanking: buildUnitRanking(state, viewer, scope, range, customers),
+    industry,
+    actions,
+    drilldowns,
+    insights: buildInsights(summary, funnel, actions, industry, target)
+  };
 }
 
 function canAssignCustomers(state, user) {
