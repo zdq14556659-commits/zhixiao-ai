@@ -8,11 +8,13 @@
     <view class="card">
       <view class="form-item">
         <text class="label">客户名称</text>
-        <input name="name" value="{{form.name}}" placeholder="例：佛山柜体门板厂" />
+        <input class="{{identityLocked ? 'locked-input' : ''}}" name="name" value="{{form.name}}" disabled="{{identityLocked}}" placeholder="例：佛山柜体门板厂" />
+        <text wx:if="{{identityLocked}}" class="lock-note">已有客户名称仅管理员可修改</text>
       </view>
       <view class="form-item">
         <text class="label">手机号</text>
-        <input name="phone" type="number" value="{{form.phone}}" placeholder="客户手机号" />
+        <input class="{{identityLocked ? 'locked-input' : ''}}" name="phone" type="number" value="{{form.phone}}" disabled="{{identityLocked}}" placeholder="客户手机号" />
+        <text wx:if="{{identityLocked}}" class="lock-note">已有客户手机号仅管理员可修改</text>
       </view>
       <view class="form-item">
         <text class="label">渠道来源</text>
@@ -54,7 +56,7 @@
       </view>
       <view class="form-item">
         <text class="label">跟进记录</text>
-        <textarea name="note" value="{{form.lastNote}}" placeholder="填写本次沟通内容"></textarea>
+        <textarea name="note" placeholder="填写本次新的沟通内容，历史记录不会被覆盖"></textarea>
       </view>
       <view class="form-item">
         <text class="label">下次跟进</text>

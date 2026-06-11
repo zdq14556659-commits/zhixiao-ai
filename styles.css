@@ -355,6 +355,71 @@ button:disabled {
   color: var(--muted);
   font-size: 12px;
 }
+.history-link {
+  display: block;
+  min-height: 28px;
+  margin: 7px 0 0;
+  padding: 0;
+  border: 0;
+  color: var(--blue);
+  background: transparent;
+  font-size: 12px;
+}
+
+.identity-lock-note {
+  display: block;
+  margin-top: 6px;
+  color: #e6a23c;
+  font-size: 12px;
+}
+
+.locked-input {
+  color: #7a8798;
+  background: #f5f7fa;
+  cursor: not-allowed;
+}
+
+.history-dialog-form {
+  max-height: min(720px, calc(100vh - 48px));
+  overflow: hidden;
+}
+
+.dialog-heading-row,
+.follow-history-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.dialog-heading-row h2,
+.dialog-heading-row p {
+  margin: 0;
+}
+
+.follow-history-list {
+  display: grid;
+  gap: 10px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.follow-history-item {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fafcff;
+}
+
+.follow-history-item p {
+  margin: 10px 0;
+  white-space: pre-wrap;
+}
+
+.follow-history-item span,
+.follow-history-item small {
+  color: var(--muted);
+}
 .customer-pager {
   display: flex;
   align-items: center;

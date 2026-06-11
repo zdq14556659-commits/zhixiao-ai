@@ -20,4 +20,19 @@
       <button class="primary-btn" form-type="submit">保存跟进</button>
     </view>
   </form>
+
+  <view class="card history-card">
+    <view class="section-title">跟进历史（{{history.length}}）</view>
+    <view wx:if="{{history.length}}" class="history-list">
+      <view class="history-item" wx:for="{{history}}" wx:key="index">
+        <view class="history-meta">
+          <text class="history-time">{{item.displayTime}}</text>
+          <text>{{item.author || '历史数据'}}</text>
+        </view>
+        <view class="history-note">{{item.note || '未填写跟进内容'}}</view>
+        <view class="muted">下次跟进：{{item.nextFollow || '未设置'}}</view>
+      </view>
+    </view>
+    <view wx:else class="empty-history">暂无跟进历史</view>
+  </view>
 </view>

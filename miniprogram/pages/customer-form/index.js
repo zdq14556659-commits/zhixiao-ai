@@ -11,6 +11,7 @@ Page({
     channelIndex: 0,
     nextFollow: "",
     editingId: 0,
+    identityLocked: false,
     form: {}
   },
 
@@ -32,6 +33,7 @@ Page({
       channelSources,
       channelIndex,
       editingId: customer ? Number(customer.id) : 0,
+      identityLocked: Boolean(customer) && !app.canAdmin(),
       nextFollow: customer?.nextFollow || app.globalData.today,
       form: customer || {}
     });
@@ -56,17 +58,19 @@ Page({
 
   async submitForm(event) {
     const form = event.detail.value;
-    if (!form.name || !form.phone) {
+    const previous = this.data.form || {};
+    const name = this.data.identityLocked ? previous.name : form.name;
+    const phone = this.data.identityLocked ? previous.phone : form.phone;
+    if (!name || !phone) {
       wx.showToast({ title: "请填写客户和手机号", icon: "none" });
       return;
     }
     const ownerUser = this.data.ownerUsers[this.data.ownerIndex] || {};
-    const previous = this.data.form || {};
     const customer = {
       ...previous,
       id: this.data.editingId || Date.now(),
-      name: form.name,
-      phone: form.phone,
+      name,
+      phone,
       channelSource: this.data.channelSources[this.data.channelIndex] || "其他",
       createdBy: previous.createdBy || app.getCurrentUser().name || "未记录",
       followPerson: ownerUser.name || this.data.owners[this.data.ownerIndex],
@@ -83,7 +87,7 @@ Page({
       createdAt: previous.createdAt || app.globalData.today,
       lastFollow: app.globalData.today,
       nextFollow: this.data.nextFollow,
-      lastNote: form.note || "新增客户。"
+      lastNote: form.note || (this.data.editingId ? undefined : "新增客户。")
     };
     wx.showLoading({ title: "保存中" });
     try {

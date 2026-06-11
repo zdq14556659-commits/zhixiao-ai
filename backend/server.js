@@ -128,6 +128,7 @@ async function routeApi(req, res, url) {
     const state = readState();
     const viewer = getAuthUser(req, state);
     if (!viewer) return sendJson(res, 401, { error: "请先登录" });
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无权批量修改系统数据" });
     const nextState = normalizeIncomingState(body);
     writeState(nextState);
     return sendJson(res, 200, { ok: true, state: publicState(nextState, viewer) });
@@ -136,7 +137,18 @@ async function routeApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/customers") {
     const body = await readBody(req);
     const state = readState();
-    const customer = normalizeCustomer({ id: Date.now(), ...body }, state);
+    const viewer = getAuthUser(req, state);
+    const customer = normalizeCustomer({
+      id: Date.now(),
+      ...body,
+      followUps: [{
+        date: body.lastFollow || body.date || today(),
+        createdAt: new Date().toISOString(),
+        author: viewer?.name || body.createdBy || body.owner || "未记录",
+        note: body.lastNote || body.note || "新增客户。",
+        nextFollow: body.nextFollow || ""
+      }]
+    }, state);
     state.customers.unshift(customer);
     state.activities.push({ date: today(), owner: customer.owner, type: customer.stage, customerId: customer.id });
     writeState(state);
@@ -149,9 +161,13 @@ async function routeApi(req, res, url) {
     const state = readState();
     const customer = state.customers.find((item) => item.id === Number(customerFollow[1]));
     if (!customer) return sendJson(res, 404, { error: "customer not found" });
+    const viewer = getAuthUser(req, state);
+    if (!canViewRecord(state, viewer, customer)) return sendJson(res, 403, { error: "无权跟进该客户" });
     customer.followUps = customer.followUps || [];
     customer.followUps.push({
       date: body.date || today(),
+      createdAt: new Date().toISOString(),
+      author: viewer?.name || "未记录",
       note: body.note || "更新了下次跟进时间。",
       nextFollow: body.nextFollow || ""
     });
@@ -229,6 +245,15 @@ async function routeApi(req, res, url) {
     const index = state.customers.findIndex((item) => item.id === Number(customerPatch[1]));
     if (index < 0) return sendJson(res, 404, { error: "customer not found" });
     const previous = state.customers[index];
+    const viewer = getAuthUser(req, state);
+    if (!canViewRecord(state, viewer, previous)) return sendJson(res, 403, { error: "无权修改该客户" });
+    if (!canUseAdmin(state, viewer)) {
+      const changesName = body.name !== undefined && String(body.name).trim() !== String(previous.name || "").trim();
+      const changesPhone = body.phone !== undefined && cleanAccount(body.phone) !== cleanAccount(previous.phone);
+      if (changesName || changesPhone) {
+        return sendJson(res, 403, { error: "当前角色无权修改已有客户的名称和手机号" });
+      }
+    }
     const previousStage = previous.stage;
     const next = normalizeCustomer({ ...previous, ...body, id: previous.id }, state);
     const shouldAddFollow =
@@ -243,7 +268,13 @@ async function routeApi(req, res, url) {
       const followNext = body.nextFollow !== undefined ? body.nextFollow : ((next.followUps[next.followUps.length - 1] || {}).nextFollow || "");
       const latest = next.followUps[next.followUps.length - 1] || {};
       if (latest.date !== followDate || latest.note !== followNote || latest.nextFollow !== followNext) {
-        next.followUps.push({ date: followDate, note: followNote, nextFollow: followNext });
+        next.followUps.push({
+          date: followDate,
+          createdAt: new Date().toISOString(),
+          author: viewer?.name || "未记录",
+          note: followNote,
+          nextFollow: followNext
+        });
       }
     }
     state.customers[index] = next;
@@ -665,13 +696,14 @@ function normalizeCustomer(customer, context = {}) {
   const ownerUser = findUser(context.users || [], customer.ownerId, customer.owner);
   const unit = findUnit(context.units || [], customer.unitId || ownerUser.unitId, customer.unit || ownerUser.unit || customer.region);
   const followUps = Array.isArray(customer.followUps) && customer.followUps.length
-    ? customer.followUps
+    ? customer.followUps.map((item) => normalizeFollowUp(item, customer))
     : [
-        {
+        normalizeFollowUp({
           date: customer.lastFollow || customer.createdAt || today(),
+          author: customer.createdBy || customer.owner || "历史数据",
           note: customer.lastNote || "新增客户。",
           nextFollow: customer.nextFollow || ""
-        }
+        }, customer)
       ];
   return {
     id: Number(customer.id || Date.now()),
@@ -693,6 +725,16 @@ function normalizeCustomer(customer, context = {}) {
     photos: normalizePhotos(customer.photos || customer.visitPhotos),
     createdAt: customer.createdAt || today(),
     followUps
+  };
+}
+
+function normalizeFollowUp(item = {}, customer = {}) {
+  return {
+    date: item.date || customer.lastFollow || customer.createdAt || today(),
+    createdAt: item.createdAt || "",
+    author: item.author || item.owner || customer.followPerson || customer.owner || "历史数据",
+    note: item.note || item.lastNote || "更新了客户信息。",
+    nextFollow: item.nextFollow || ""
   };
 }
 
@@ -826,6 +868,8 @@ function syncVisitToCustomer(state, visit) {
   const latestFollow = customer.followUps[customer.followUps.length - 1] || {};
   customer.followUps.push({
     date: visit.date || today(),
+    createdAt: new Date().toISOString(),
+    author: visit.owner || owner || "地推拜访",
     note,
     nextFollow: latestFollow.nextFollow || ""
   });
@@ -960,6 +1004,8 @@ function buildAssignedCustomer(state, viewer, customer, target, body = {}) {
   }, state);
   next.followUps.push({
     date: today(),
+    createdAt: new Date().toISOString(),
+    author: viewer.name || "管理员",
     note,
     nextFollow: body.nextFollow || ""
   });
@@ -1005,7 +1051,7 @@ function toMiniCustomer(customer) {
     lastFollow: latest.date || "",
     nextFollow: latest.nextFollow || "",
     lastNote: latest.note || "",
-    followUps: undefined
+    followUps: (customer.followUps || []).map((item) => normalizeFollowUp(item, customer))
   };
 }
 

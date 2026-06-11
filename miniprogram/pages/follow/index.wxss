@@ -1,3 +1,47 @@
 .primary-btn {
   margin-top: 10rpx;
 }
+
+.history-card {
+  margin-top: 20rpx;
+}
+
+.history-list {
+  display: grid;
+  gap: 16rpx;
+}
+
+.history-item {
+  padding: 20rpx;
+  border: 1rpx solid #e4e9f0;
+  border-radius: 8rpx;
+  background: #fafcff;
+}
+
+.history-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  color: #7a8798;
+  font-size: 23rpx;
+}
+
+.history-time {
+  color: #303846;
+  font-weight: 700;
+}
+
+.history-note {
+  margin: 14rpx 0 10rpx;
+  color: #303846;
+  font-size: 27rpx;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.empty-history {
+  padding: 32rpx 0;
+  color: #7a8798;
+  text-align: center;
+}

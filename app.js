@@ -246,6 +246,16 @@ function canAdmin() {
   return hasPermission(currentUser(), "admin");
 }
 
+function formatFollowTime(item = {}) {
+  if (item.createdAt) {
+    const time = new Date(item.createdAt);
+    if (!Number.isNaN(time.getTime())) {
+      return time.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
+    }
+  }
+  return item.date || "时间未记录";
+}
+
 function switchView(view) {
   currentView = view;
   $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
@@ -386,7 +396,7 @@ function customerRow(item) {
       <td>${escapeHtml(normalizeChannelSource(item.channelSource))}</td>
       <td>${escapeHtml(item.createdBy || "未记录")}</td>
       <td>${escapeHtml(item.followPerson || item.owner || "未分配")}</td>
-      <td><small>${escapeHtml(item.lastNote || "暂无跟进记录")}</small>${photoHtml}</td>
+      <td><small>${escapeHtml(item.lastNote || "暂无跟进记录")}</small><button class="history-link" data-action="history" data-id="${item.id}">查看历史(${(item.followUps || []).length})</button>${photoHtml}</td>
       <td>${latestFollow(item) || "-"}</td>
       <td class="${dueClass}">${item.nextFollow || "未设置"}</td>
       <td>${escapeHtml(item.unit || "待分配")}</td>
@@ -460,8 +470,30 @@ function openCustomerDialog(customer = null) {
   form.software.value = customer?.software || "";
   form.note.value = "";
   form.nextFollow.value = customer?.nextFollow || today;
+  const identityLocked = Boolean(customer) && !canAdmin();
+  form.name.readOnly = identityLocked;
+  form.phone.readOnly = identityLocked;
+  form.name.classList.toggle("locked-input", identityLocked);
+  form.phone.classList.toggle("locked-input", identityLocked);
+  $("#customerIdentityLockNote").classList.toggle("hidden", !identityLocked);
   $("#customerDialogTitle").textContent = customer ? "客户跟进" : "新增客户";
   $("#customerDialog").showModal();
+}
+
+function openFollowHistory(customer) {
+  if (!customer) return;
+  const history = [...(customer.followUps || [])].reverse();
+  $("#followHistoryTitle").textContent = `${customer.name} · 跟进历史`;
+  $("#followHistorySummary").textContent = `共 ${history.length} 条记录`;
+  $("#followHistoryList").innerHTML = history.length
+    ? history.map((item) => `
+        <article class="follow-history-item">
+          <div class="follow-history-meta"><b>${escapeHtml(formatFollowTime(item))}</b><span>${escapeHtml(item.author || "历史数据")}</span></div>
+          <p>${escapeHtml(item.note || "未填写跟进内容")}</p>
+          <small>下次跟进：${escapeHtml(item.nextFollow || "未设置")}</small>
+        </article>`).join("")
+    : '<div class="empty">暂无跟进历史</div>';
+  $("#followHistoryDialog").showModal();
 }
 
 async function saveCustomer(event) {
@@ -964,6 +996,10 @@ function wireEvents() {
     const button = event.target.closest("button");
     if (!button) return;
     const id = Number(button.dataset.id);
+    if (button.dataset.action === "history") {
+      openFollowHistory(state.customers.find((item) => Number(item.id) === id));
+      return;
+    }
     if (button.dataset.action === "follow") openCustomerDialog(state.customers.find((item) => item.id === id));
     if (button.dataset.action === "advance") advanceCustomer(id);
     if (button.dataset.action === "assign") {

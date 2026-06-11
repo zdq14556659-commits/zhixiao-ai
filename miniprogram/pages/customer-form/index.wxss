@@ -1,3 +1,14 @@
 .primary-btn {
   margin-top: 10rpx;
 }
+.locked-input {
+  color: #7a8798;
+  background: #f5f7fa;
+}
+
+.lock-note {
+  display: block;
+  margin-top: 8rpx;
+  color: #e6a23c;
+  font-size: 23rpx;
+}
