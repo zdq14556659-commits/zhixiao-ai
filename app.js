@@ -475,7 +475,6 @@ function openCustomerDialog(customer = null) {
   form.phone.readOnly = identityLocked;
   form.name.classList.toggle("locked-input", identityLocked);
   form.phone.classList.toggle("locked-input", identityLocked);
-  $("#customerIdentityLockNote").classList.toggle("hidden", !identityLocked);
   $("#customerDialogTitle").textContent = customer ? "客户跟进" : "新增客户";
   $("#customerDialog").showModal();
 }

@@ -366,13 +366,6 @@ button:disabled {
   font-size: 12px;
 }
 
-.identity-lock-note {
-  display: block;
-  margin-top: 6px;
-  color: #e6a23c;
-  font-size: 12px;
-}
-
 .locked-input {
   color: #7a8798;
   background: #f5f7fa;
