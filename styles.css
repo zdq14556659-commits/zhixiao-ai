@@ -355,6 +355,35 @@ button:disabled {
   color: var(--muted);
   font-size: 12px;
 }
+.customer-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 0 0;
+  color: var(--muted);
+}
+
+.customer-pager label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.customer-pager select,
+.customer-pager button {
+  width: auto;
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+.kb-file-link {
+  display: inline-block;
+  margin: 6px 0 0 12px;
+  color: var(--blue);
+  font-size: 13px;
+}
 .empty { color: var(--muted); text-align: center; }
 
 .field-layout {

@@ -26,6 +26,7 @@ const ADMIN_ROLES = ["总负责人", "运营", "管理员"];
 const DEFAULT_PERMISSIONS = ["dashboard", "customers", "field", "assistant"];
 const ADMIN_PERMISSIONS = [...DEFAULT_PERMISSIONS, "admin"];
 const REASSIGN_DAYS = 30;
+const DEFAULT_ADMIN_PASSWORD = "778899";
 const DEFAULT_ROLES = [
   { id: "role-owner", name: "总负责人", customerScope: "all", permissions: ADMIN_PERMISSIONS },
   { id: "role-region", name: "区域经理", customerScope: "zone", permissions: DEFAULT_PERMISSIONS },
@@ -70,6 +71,8 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`智销AI backend running: http://localhost:${PORT}`);
 });
+
+module.exports = server;
 
 async function routeApi(req, res, url) {
   if (req.method === "OPTIONS") return sendNoContent(res);
@@ -396,12 +399,25 @@ async function routeApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/knowledge") {
-    const body = await readBody(req);
+    const contentType = req.headers["content-type"] || "";
+    const multipart = contentType.includes("multipart/form-data") ? await parseMultipart(req) : null;
+    const body = multipart ? multipart.fields : await readBody(req);
+    const file = multipart?.files?.[0] || null;
+    const fileKnowledge = file ? saveKnowledgeFile(file) : null;
+    const question = String(body.question || fileKnowledge?.title || "").trim();
+    const answer = String(body.answer || "").trim();
+    const content = [answer, fileKnowledge?.content || ""].filter(Boolean).join("\n\n").trim();
+    if (!question && !content) return sendJson(res, 400, { error: "请填写知识内容或上传文件" });
     const state = readState();
     const item = {
       id: Date.now(),
-      question: body.question || "",
-      answer: body.answer || "",
+      question: question || "未命名知识",
+      answer,
+      content,
+      type: fileKnowledge ? "file" : "text",
+      fileName: fileKnowledge?.fileName || "",
+      fileUrl: fileKnowledge?.fileUrl || "",
+      summary: content.replace(/\s+/g, " ").slice(0, 180),
       createdAt: today()
     };
     state.knowledge.unshift(item);
@@ -481,10 +497,10 @@ function mergeUsers(incomingUsers, existingUsers) {
 function migrateState(state) {
   const roles = normalizeRoles(state.roles || []);
   const units = normalizeUnits(state.units || [], state);
-  const users = normalizeUsers(state.users || [], { roles, units });
+  const users = normalizeUsers(state.users || [], { roles, units, resetAdminPassword: state.version !== "backend-v3" });
   const context = { roles, units, users };
   return {
-    version: state.version || "backend-v2",
+    version: "backend-v3",
     currentUserId: Number(state.currentUserId || users[0]?.id || 0),
     stages: Array.isArray(state.stages) && state.stages.length ? state.stages : STAGES,
     zones: Array.isArray(state.zones) && state.zones.length ? state.zones : ZONES,
@@ -494,7 +510,7 @@ function migrateState(state) {
     customers: (state.customers || []).map((customer) => normalizeCustomer(customer, context)),
     activities: state.activities || [],
     visits: (state.visits || []).map((visit) => normalizeVisit(visit, context)),
-    knowledge: state.knowledge || [],
+    knowledge: (state.knowledge || []).map(normalizeKnowledge),
     resources: state.resources || []
   };
 }
@@ -574,13 +590,16 @@ function normalizeUser(user = {}, index = 0, context = {}) {
   const unit = findUnit(units, rawUnitId, rawUnitName);
   const fallbackAccount = DEMO_ACCOUNTS[name] || (ADMIN_ROLES.includes(roleDef.name) ? "admin" : `user${id}`);
   const account = cleanAccount(user.account || user.username || user.login || user.phone || fallbackAccount);
+  const defaultPassword = account === "admin" || ADMIN_ROLES.includes(roleDef.name) ? DEFAULT_ADMIN_PASSWORD : "123456";
+  const storedPassword = String(user.password || user.initialPassword || defaultPassword);
+  const password = account === "admin" && context.resetAdminPassword ? DEFAULT_ADMIN_PASSWORD : storedPassword;
   return {
     id,
     name,
     phone: user.phone || "",
     account,
     username: account,
-    password: String(user.password || user.initialPassword || "123456"),
+    password,
     role: roleDef.name,
     roleId: roleDef.id,
     unitId: unit.id,
@@ -589,6 +608,23 @@ function normalizeUser(user = {}, index = 0, context = {}) {
     region: user.region || unit.zone || unit.name || "待分区",
     status: user.status || "启用",
     createdAt: user.createdAt || today()
+  };
+}
+
+function normalizeKnowledge(item = {}, index = 0) {
+  const answer = String(item.answer || "").trim();
+  const content = String(item.content || answer).trim();
+  return {
+    ...item,
+    id: Number(item.id || Date.now() + index),
+    question: String(item.question || item.title || item.fileName || `知识${index + 1}`).trim(),
+    answer,
+    content,
+    summary: String(item.summary || content || answer).replace(/\s+/g, " ").slice(0, 180),
+    type: item.type || (item.fileName ? "file" : "text"),
+    fileName: item.fileName || "",
+    fileUrl: item.fileUrl || "",
+    createdAt: item.createdAt || today()
   };
 }
 
@@ -1054,7 +1090,19 @@ function serveStatic(req, res, url) {
       return;
     }
     const ext = path.extname(uploadPath).toLowerCase();
-    const contentType = ext === ".png" ? "image/png" : ext === ".webp" ? "image/webp" : "image/jpeg";
+    const contentType = {
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".png": "image/png",
+      ".webp": "image/webp",
+      ".txt": "text/plain; charset=utf-8",
+      ".md": "text/markdown; charset=utf-8",
+      ".csv": "text/csv; charset=utf-8",
+      ".json": "application/json; charset=utf-8",
+      ".pdf": "application/pdf",
+      ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    }[ext] || "application/octet-stream";
     res.writeHead(200, { "Content-Type": contentType });
     fs.createReadStream(uploadPath).pipe(res);
     return;
@@ -1097,6 +1145,117 @@ async function saveMultipartUpload(req) {
   const filePath = path.join(UPLOAD_DIR, fileName);
   fs.writeFileSync(filePath, file.buffer);
   return { url: `/uploads/${fileName}`, size: file.buffer.length };
+}
+
+function saveKnowledgeFile(file) {
+  if (!file || !file.buffer?.length) throw new Error("上传文件为空");
+  const ext = path.extname(file.filename || "").toLowerCase();
+  const allowed = new Set([".txt", ".md", ".csv", ".json", ".pdf", ".docx", ".xlsx"]);
+  if (!allowed.has(ext)) throw new Error("知识库仅支持 TXT、MD、CSV、JSON、PDF、DOCX、XLSX 文件");
+  if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  const originalName = path.basename(file.filename || `knowledge${ext}`).replace(/[<>:"/\\|?*\x00-\x1f]/g, "-");
+  const storedName = `${Date.now()}-${crypto.randomBytes(5).toString("hex")}${ext}`;
+  fs.writeFileSync(path.join(UPLOAD_DIR, storedName), file.buffer);
+  const extracted = extractKnowledgeText(file.buffer, ext);
+  const content = normalizeExtractedText(extracted || "文件已上传，但暂未提取到可检索文字。扫描版 PDF 请先转为可复制文字的 PDF。", 120000);
+  return {
+    title: path.basename(originalName, ext),
+    fileName: originalName,
+    fileUrl: `/uploads/${storedName}`,
+    content
+  };
+}
+
+function extractKnowledgeText(buffer, ext) {
+  if ([".txt", ".md", ".csv"].includes(ext)) return buffer.toString("utf8");
+  if (ext === ".json") {
+    const text = buffer.toString("utf8");
+    try {
+      return JSON.stringify(JSON.parse(text), null, 2);
+    } catch {
+      return text;
+    }
+  }
+  if (ext === ".xlsx") {
+    return parseXlsxFirstSheet(buffer)
+      .map((row) => row.filter((cell) => String(cell || "").trim()).join(" | "))
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (ext === ".docx") return extractDocxText(buffer);
+  if (ext === ".pdf") return extractPdfText(buffer);
+  return "";
+}
+
+function extractDocxText(buffer) {
+  const entries = unzipXlsxEntries(buffer);
+  const xml = entries["word/document.xml"]?.toString("utf8") || "";
+  return decodeXml(
+    xml
+      .replace(/<w:tab\b[^>]*\/>/g, "\t")
+      .replace(/<\/w:p>/g, "\n")
+      .replace(/<w:br\b[^>]*\/>/g, "\n")
+      .replace(/<[^>]+>/g, "")
+  );
+}
+
+function extractPdfText(buffer) {
+  const source = buffer.toString("latin1");
+  const streams = [];
+  const streamPattern = /([\s\S]{0,240}?)stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  let match;
+  while ((match = streamPattern.exec(source))) {
+    const raw = Buffer.from(match[2], "latin1");
+    if (/\/FlateDecode/.test(match[1])) {
+      try {
+        streams.push(zlib.inflateSync(raw).toString("latin1"));
+      } catch {}
+    } else {
+      streams.push(match[2]);
+    }
+  }
+  const text = streams.length ? streams.join("\n") : source;
+  const fragments = [];
+  for (const item of text.matchAll(/\((?:\\.|[^\\)])*\)\s*Tj/g)) fragments.push(decodePdfLiteral(item[0].replace(/\)\s*Tj$/, ")")));
+  for (const item of text.matchAll(/\[((?:.|\r|\n)*?)\]\s*TJ/g)) {
+    const parts = [...item[1].matchAll(/\((?:\\.|[^\\)])*\)|<([0-9A-Fa-f\s]+)>/g)];
+    fragments.push(parts.map((part) => part[0].startsWith("(") ? decodePdfLiteral(part[0]) : decodePdfHex(part[1])).join(""));
+  }
+  for (const item of text.matchAll(/<([0-9A-Fa-f\s]+)>\s*Tj/g)) fragments.push(decodePdfHex(item[1]));
+  return fragments.join("\n");
+}
+
+function decodePdfLiteral(value) {
+  const body = String(value || "").replace(/^\(|\)$/g, "");
+  return body
+    .replace(/\\([0-7]{1,3})/g, (_, octal) => String.fromCharCode(parseInt(octal, 8)))
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\r")
+    .replace(/\\t/g, "\t")
+    .replace(/\\b/g, "\b")
+    .replace(/\\f/g, "\f")
+    .replace(/\\([()\\])/g, "$1");
+}
+
+function decodePdfHex(value) {
+  const hex = String(value || "").replace(/\s/g, "");
+  if (!hex) return "";
+  const bytes = Buffer.from(hex.length % 2 ? `${hex}0` : hex, "hex");
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+    let text = "";
+    for (let index = 2; index + 1 < bytes.length; index += 2) text += String.fromCharCode(bytes.readUInt16BE(index));
+    return text;
+  }
+  return bytes.toString("utf8");
+}
+
+function normalizeExtractedText(value, maxLength = 120000) {
+  return String(value || "")
+    .replace(/\u0000/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+    .slice(0, maxLength);
 }
 
 async function importCustomers(req) {
@@ -1427,6 +1586,10 @@ function parseMultipart(req) {
 
 async function generateXiaozhiStrategy(question, knowledge, customer) {
   const matched = rankKnowledge(question, knowledge).slice(0, 4);
+  const matchedForResponse = matched.map((item) => ({
+    ...item,
+    content: String(item.content || item.answer || "").slice(0, 600)
+  }));
   if (!DEEPSEEK_API_KEY) {
     return fallbackXiaozhi(question, matched, customer, "未配置 DEEPSEEK_API_KEY，当前使用知识库本地策略。");
   }
@@ -1435,14 +1598,16 @@ async function generateXiaozhiStrategy(question, knowledge, customer) {
     "你必须结合知识库给出销售可执行的话术和跟进策略。",
     "输出结构：客户意图、推荐话术、成交策略、下一步动作、风险提醒。语言简洁，适合销售马上照着用。"
   ].join("\n");
-  const context = matched.map((item, index) => `${index + 1}. 问题：${item.question}\n答案：${item.answer}`).join("\n\n");
+  const context = matched
+    .map((item, index) => `${index + 1}. 标题：${item.question}\n内容：${String(item.content || item.answer || "").slice(0, 6000)}`)
+    .join("\n\n");
   const user = `客户问题：${question}\n\n客户信息：${customer ? JSON.stringify(customer) : "暂无"}\n\n知识库：\n${context || "暂无匹配知识库"}`;
   try {
     const data = await deepseekChat(system, user);
     return {
       source: "deepseek",
       name: "小智",
-      matched,
+      matched: matchedForResponse,
       answer: data.choices?.[0]?.message?.content || "",
       model: data.model || DEEPSEEK_MODEL
     };
@@ -1498,16 +1663,17 @@ function rankKnowledge(question, knowledge) {
   return [...knowledge]
     .map((item) => ({
       ...item,
-      score: words.filter((word) => `${item.question}${item.answer}`.includes(word)).length
+      score: words.filter((word) => `${item.question || ""} ${item.answer || ""} ${item.content || ""} ${item.fileName || ""}`.includes(word)).length
     }))
     .sort((a, b) => b.score - a.score);
 }
 
 function fallbackXiaozhi(question, matched, customer, note) {
   const best = matched[0];
+  const bestAnswer = best ? String(best.answer || best.content || "").slice(0, 900) : "";
   const answer = [
     "客户意图：客户正在确认软件能否解决真实生产痛点，重点关注落地风险和投入回报。",
-    `推荐话术：${best ? best.answer : "先让客户提供一套真实订单，现场演示从设计、报价、拆单、开料标签到车间看板的完整流程。"}`,
+    `推荐话术：${bestAnswer || "先让客户提供一套真实订单，现场演示从设计、报价、拆单、开料标签到车间看板的完整流程。"}`,
     "成交策略：不要先讲功能清单，先围绕错单返工、板材浪费、交期延误和算账效率，再给两周样板产线试点。",
     "下一步动作：今天发送试点方案，约老板、设计主管、生产主管一起看演示，并确认设备品牌和现用软件。",
     `风险提醒：${note}`

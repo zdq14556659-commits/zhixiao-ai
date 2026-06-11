@@ -111,21 +111,30 @@
     <view class="card">
       <view class="section-title">小智知识库</view>
       <view class="form-item">
-        <text class="label">常见问题</text>
-        <input name="question" placeholder="例如：价格太高怎么办？" />
+        <text class="label">知识标题</text>
+        <input name="question" placeholder="例如：价格异议处理" />
       </view>
       <view class="form-item">
-        <text class="label">标准话术</text>
-        <textarea name="answer" placeholder="填写给销售使用的标准应答"></textarea>
+        <text class="label">知识内容</text>
+        <textarea name="answer" placeholder="可填写标准话术，也可以只上传文件"></textarea>
       </view>
-      <button class="plain-btn" form-type="submit">添加知识</button>
+      <view class="knowledge-file-box">
+        <button class="plain-btn" type="button" bindtap="chooseKnowledgeFile">选择文件</button>
+        <view wx:if="{{knowledgeFile}}" class="selected-file">
+          <text>{{knowledgeFile.name}}</text>
+          <text class="remove-file" bindtap="clearKnowledgeFile">移除</text>
+        </view>
+        <text wx:else class="muted">支持 TXT、MD、CSV、JSON、PDF、DOCX、XLSX</text>
+      </view>
+      <button class="primary-btn" form-type="submit">添加到知识库</button>
     </view>
   </form>
   <view class="card">
     <view class="section-title">知识库列表</view>
     <view class="knowledge-row" wx:for="{{knowledge}}" wx:key="id">
       <view class="kb-q">{{item.question}}</view>
-      <view class="muted">{{item.answer}}</view>
+      <view wx:if="{{item.fileName}}" class="kb-file">文件：{{item.fileName}}</view>
+      <view class="muted">{{item.summary || item.answer || '文件已上传'}}</view>
     </view>
   </view>
   </view>

@@ -6,7 +6,7 @@ const API_BASE = getApiBase();
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const CHANNEL_SOURCES = ["自媒体", "官网留言", "自主注册", "渠道介绍", "企查查", "客源汇", "公众号", "地推", "其他"];
 const LOCAL_DEMO_PASSWORDS = {
-  admin: "123456",
+  admin: "778899",
   linchen: "123456",
   zhouyang: "123456",
   chen: "123456",

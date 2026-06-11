@@ -22,6 +22,8 @@ Page({
     paged: [],
     page: 1,
     pageSize: 10,
+    pageSizes: [10, 20],
+    pageSizeIndex: 0,
     totalPages: 1,
     canAssign: false
   },
@@ -163,6 +165,13 @@ Page({
   nextPage() {
     if (this.data.page >= this.data.totalPages) return;
     this.setData({ page: this.data.page + 1 });
+    this.applyFilters();
+  },
+
+  onPageSize(event) {
+    const pageSizeIndex = Number(event.detail.value);
+    const pageSize = this.data.pageSizes[pageSizeIndex] || 10;
+    this.setData({ pageSizeIndex, pageSize, page: 1 });
     this.applyFilters();
   },
 

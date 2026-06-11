@@ -21,7 +21,6 @@
         <label>登录账号<input name="account" autocomplete="username" placeholder="请输入后台分配的账号" /></label>
         <label>登录密码<input name="password" type="password" autocomplete="current-password" placeholder="请输入密码" /></label>
         <button class="primary full" type="submit">登录</button>
-        <p class="login-tip">初始管理员账号：admin / 123456</p>
       </form>
     </section>
 
@@ -99,6 +98,17 @@
                 <tbody id="customerRows"></tbody>
               </table>
             </div>
+            <div class="customer-pager" id="customerPager">
+              <label>每页
+                <select id="customerPageSize">
+                  <option value="10">10条</option>
+                  <option value="20">20条</option>
+                </select>
+              </label>
+              <span id="customerPageSummary">第 1 / 1 页</span>
+              <button id="customerPrevPage" type="button">上一页</button>
+              <button id="customerNextPage" type="button">下一页</button>
+            </div>
           </section>
         </section>
 
@@ -134,11 +144,13 @@
             <button data-settings-tab="knowledge">知识库</button>
           </div>
           <section class="settings-pane panel" id="settingsKnowledgePane">
-            <div class="panel-title"><h2>知识库</h2><span>小智会优先检索这里的标准话术</span></div>
+            <div class="panel-title"><h2>知识库</h2><span>支持手工录入或上传文件，小智会检索文件内容</span></div>
             <form class="form-stack" id="knowledgeForm">
-              <label>常见问题<input name="question" required placeholder="例如：价格太高" /></label>
-              <label>标准话术<textarea name="answer" rows="4" required></textarea></label>
-              <button class="primary" type="submit">添加知识</button>
+              <label>知识标题<input name="question" placeholder="例如：价格异议处理" /></label>
+              <label>知识内容<textarea name="answer" rows="4" placeholder="可直接填写标准话术，也可以只上传文件"></textarea></label>
+              <label>上传文件<input name="file" type="file" accept=".txt,.md,.csv,.json,.pdf,.docx,.xlsx" /></label>
+              <small class="muted">支持 TXT、Markdown、CSV、JSON、文本型 PDF、DOCX、XLSX；扫描版 PDF 需后续接入 OCR。</small>
+              <button class="primary" type="submit">添加到知识库</button>
             </form>
             <div class="kb-list compact-list" id="knowledgeList"></div>
           </section>

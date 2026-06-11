@@ -11,7 +11,8 @@
       latitude="{{latitude}}"
       longitude="{{longitude}}"
       markers="{{markers}}"
-      scale="5"
+      scale="{{scale}}"
+      show-location
       enable-zoom
       enable-scroll
     ></map>

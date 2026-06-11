@@ -229,6 +229,24 @@
   border: 0;
 }
 
+.page-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 22rpx 0 10rpx;
+  color: #7a8798;
+  font-size: 24rpx;
+}
+
+.page-size {
+  min-width: 180rpx;
+  padding: 12rpx 18rpx;
+  border: 1rpx solid #dcdfe6;
+  border-radius: 8rpx;
+  color: #4b5563;
+  background: #fff;
+}
+
 .pager {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 110rpx minmax(0, 1fr);

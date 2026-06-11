@@ -24,8 +24,14 @@ let currentSettingsTab = "accounts";
 let fieldMap = null;
 let fieldLayer = null;
 let fieldInfoWindow = null;
+let fieldUserMarker = null;
+let fieldUserLocated = false;
+let fieldLocationRequested = false;
 let currentCustomerRows = [];
+let currentFilteredCustomerRows = [];
 let selectedCustomerIds = new Set();
+let customerPage = 1;
+let customerPageSize = 10;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -331,7 +337,7 @@ function renderCustomers() {
   const lastEnd = $("#lastFollowEnd").value;
   const nextStart = $("#nextFollowStart").value;
   const nextEnd = $("#nextFollowEnd").value;
-  const rows = customers.filter((item) => {
+  const filteredRows = customers.filter((item) => {
     const source = `${item.name} ${item.phone}`.toLowerCase();
     if (item.stage !== currentStage) return false;
     if (keyword && !source.includes(keyword)) return false;
@@ -343,13 +349,23 @@ function renderCustomers() {
     if (!inDateRange(item.nextFollow || "", nextStart, nextEnd)) return false;
     return true;
   });
+  currentFilteredCustomerRows = filteredRows;
+  const totalPages = Math.max(Math.ceil(filteredRows.length / customerPageSize), 1);
+  customerPage = Math.min(Math.max(customerPage, 1), totalPages);
+  const start = (customerPage - 1) * customerPageSize;
+  const rows = filteredRows.slice(start, start + customerPageSize);
   currentCustomerRows = rows;
-  const selectableIds = new Set(rows.filter((item) => canAssignCustomers() && isCustomerAssignable(item)).map((item) => Number(item.id)));
+  const selectableIds = new Set(filteredRows.filter((item) => canAssignCustomers() && isCustomerAssignable(item)).map((item) => Number(item.id)));
   selectedCustomerIds = new Set([...selectedCustomerIds].filter((id) => selectableIds.has(Number(id))));
   $("#customerRows").innerHTML = rows.length
     ? rows.map(customerRow).join("")
     : `<tr><td colspan="12" class="empty">暂无客户</td></tr>`;
   updateCustomerSelectionUI();
+  const sizeSelect = $("#customerPageSize");
+  if (sizeSelect) sizeSelect.value = String(customerPageSize);
+  $("#customerPageSummary").textContent = `共 ${filteredRows.length} 条 · 第 ${customerPage} / ${totalPages} 页`;
+  $("#customerPrevPage").disabled = customerPage <= 1;
+  $("#customerNextPage").disabled = customerPage >= totalPages;
 }
 
 function customerRow(item) {
@@ -381,12 +397,13 @@ function customerRow(item) {
 
 function updateCustomerSelectionUI() {
   const selectableRows = currentCustomerRows.filter((item) => canAssignCustomers() && isCustomerAssignable(item));
-  const selectedCount = selectableRows.filter((item) => selectedCustomerIds.has(Number(item.id))).length;
+  const pageSelectedCount = selectableRows.filter((item) => selectedCustomerIds.has(Number(item.id))).length;
+  const selectedCount = currentFilteredCustomerRows.filter((item) => canAssignCustomers() && isCustomerAssignable(item) && selectedCustomerIds.has(Number(item.id))).length;
   const selectAll = $("#selectAllCustomers");
   if (selectAll) {
     selectAll.disabled = selectableRows.length === 0;
-    selectAll.checked = selectableRows.length > 0 && selectedCount === selectableRows.length;
-    selectAll.indeterminate = selectedCount > 0 && selectedCount < selectableRows.length;
+    selectAll.checked = selectableRows.length > 0 && pageSelectedCount === selectableRows.length;
+    selectAll.indeterminate = pageSelectedCount > 0 && pageSelectedCount < selectableRows.length;
   }
   const batchButton = $("#batchAssignBtn");
   if (batchButton) {
@@ -423,7 +440,7 @@ function openBatchAssignDialog() {
 }
 
 function selectedCustomerIdsForAssign() {
-  const selectableIds = new Set(currentCustomerRows.filter((item) => canAssignCustomers() && isCustomerAssignable(item)).map((item) => Number(item.id)));
+  const selectableIds = new Set(currentFilteredCustomerRows.filter((item) => canAssignCustomers() && isCustomerAssignable(item)).map((item) => Number(item.id)));
   return [...selectedCustomerIds].map(Number).filter((id) => selectableIds.has(id));
 }
 
@@ -615,7 +632,33 @@ function initFieldMap() {
     offset: { x: 0, y: -14 }
   });
   fieldInfoWindow.close();
+  locateWebUser();
   return true;
+}
+
+function locateWebUser() {
+  if (fieldLocationRequested || !fieldMap || !navigator.geolocation) return;
+  fieldLocationRequested = true;
+  navigator.geolocation.getCurrentPosition(
+    (result) => {
+      const position = new TMap.LatLng(result.coords.latitude, result.coords.longitude);
+      fieldUserLocated = true;
+      fieldMap.setCenter(position);
+      fieldMap.setZoom(13);
+      if (fieldUserMarker) fieldUserMarker.setMap(null);
+      fieldUserMarker = new TMap.MultiMarker({
+        map: fieldMap,
+        styles: {
+          current: new TMap.MarkerStyle({ width: 30, height: 30, anchor: { x: 15, y: 15 }, src: mapDotIcon("#409eff") })
+        },
+        geometries: [{ id: "current-user", styleId: "current", position }]
+      });
+    },
+    () => {
+      fieldLocationRequested = false;
+    },
+    { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+  );
 }
 
 function mapDotIcon(color) {
@@ -700,12 +743,12 @@ function renderFieldMap(visits) {
     `);
     fieldInfoWindow.open();
   });
-  if (geometries.length) {
+  if (geometries.length && !fieldUserLocated) {
     const bounds = new TMap.LatLngBounds();
     geometries.forEach((geometry) => bounds.extend(geometry.position));
     fieldMap.fitBounds(bounds, { padding: 60 });
     if (geometries.length === 1) fieldMap.setZoom(12);
-  } else {
+  } else if (!geometries.length && !fieldUserLocated) {
     fieldMap.setCenter(new TMap.LatLng(35.86166, 104.195397));
     fieldMap.setZoom(5);
   }
@@ -749,7 +792,11 @@ async function recommend() {
 async function addKnowledge(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
-  await api("/knowledge", { method: "POST", body: { question: form.get("question"), answer: form.get("answer") } });
+  const file = form.get("file");
+  if (!String(form.get("question") || "").trim() && !String(form.get("answer") || "").trim() && !(file instanceof File && file.size)) {
+    return toast("请填写知识内容或上传文件");
+  }
+  await api("/knowledge", { method: "POST", body: form });
   event.currentTarget.reset();
   await loadState();
   toast("知识库已添加");
@@ -760,7 +807,11 @@ function renderAdmin() {
   $("#settingsKnowledgePane").classList.toggle("active", currentSettingsTab === "knowledge");
   $$("#settingsTabs button").forEach((button) => button.classList.toggle("active", button.dataset.settingsTab === currentSettingsTab));
   $("#knowledgeList").innerHTML = (state.knowledge || [])
-    .map((item) => `<article><b>${escapeHtml(item.question)}</b><p>${escapeHtml(item.answer)}</p></article>`)
+    .map((item) => {
+      const fileUrl = item.fileUrl ? (item.fileUrl.startsWith("http") ? item.fileUrl : `${window.location.origin}${item.fileUrl}`) : "";
+      const summary = item.summary || item.answer || item.content || "暂无摘要";
+      return `<article><b>${escapeHtml(item.question)}</b>${fileUrl ? `<a class="kb-file-link" href="${escapeHtml(fileUrl)}" target="_blank" rel="noopener">${escapeHtml(item.fileName || "查看文件")}</a>` : ""}<p>${escapeHtml(summary)}</p></article>`;
+    })
     .join("");
   const roleSelect = $("#userRoleSelect");
   const unitSelect = $("#userUnitSelect");
@@ -872,11 +923,32 @@ function wireEvents() {
     const button = event.target.closest("button");
     if (!button) return;
     currentStage = button.dataset.stage;
+    customerPage = 1;
     renderCustomers();
   });
   ["customerKeyword", "channelFilter", "createdByFilter", "followPersonFilter", "unitFilter", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
-    $(`#${id}`).addEventListener("input", renderCustomers);
-    $(`#${id}`).addEventListener("change", renderCustomers);
+    const resetAndRender = () => {
+      customerPage = 1;
+      renderCustomers();
+    };
+    $(`#${id}`).addEventListener("input", resetAndRender);
+    $(`#${id}`).addEventListener("change", resetAndRender);
+  });
+  $("#customerPageSize").addEventListener("change", (event) => {
+    customerPageSize = Number(event.currentTarget.value) || 10;
+    customerPage = 1;
+    renderCustomers();
+  });
+  $("#customerPrevPage").addEventListener("click", () => {
+    if (customerPage <= 1) return;
+    customerPage -= 1;
+    renderCustomers();
+  });
+  $("#customerNextPage").addEventListener("click", () => {
+    const totalPages = Math.max(Math.ceil(currentFilteredCustomerRows.length / customerPageSize), 1);
+    if (customerPage >= totalPages) return;
+    customerPage += 1;
+    renderCustomers();
   });
   $("#addCustomerBtn").addEventListener("click", () => openCustomerDialog());
   $("#batchImportBtn").addEventListener("click", () => $("#batchDialog").showModal());

@@ -1,0 +1,18 @@
+[Unit]
+Description=Zhixiao AI CRM
+After=network.target
+
+[Service]
+Type=simple
+User=zhixiao
+Group=zhixiao
+WorkingDirectory=/opt/zhixiao-ai/current
+EnvironmentFile=/etc/zhixiao-ai.env
+ExecStart=/usr/bin/node /opt/zhixiao-ai/current/backend/server.js
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

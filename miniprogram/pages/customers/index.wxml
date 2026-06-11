@@ -103,6 +103,12 @@
   </view>
 
   <view class="empty" wx:if="{{filtered.length === 0}}">暂无符合条件的客户</view>
+  <view class="page-tools" wx:if="{{filtered.length}}">
+    <picker range="{{pageSizes}}" value="{{pageSizeIndex}}" bindchange="onPageSize">
+      <view class="page-size">每页 {{pageSize}} 条⌄</view>
+    </picker>
+    <text>共 {{filtered.length}} 条</text>
+  </view>
   <view class="pager" wx:if="{{filtered.length > pageSize}}">
     <button class="plain-btn" bindtap="prevPage" disabled="{{page <= 1}}">上一页</button>
     <text>{{page}} / {{totalPages}}</text>

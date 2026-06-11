@@ -4,6 +4,7 @@ Page({
   data: {
     latitude: 35.86166,
     longitude: 104.195397,
+    scale: 5,
     currentCity: "",
     currentAddress: "",
     locationReady: false,
@@ -23,6 +24,26 @@ Page({
     app.loadRemoteState(() => {
       this.setData({ currentUser: app.getCurrentUser() });
       this.loadVisits();
+      this.centerOnSelf();
+    });
+  },
+
+  centerOnSelf() {
+    if (this.hasCenteredSelf || this.data.editingVisitId) return;
+    this.hasCenteredSelf = true;
+    wx.getLocation({
+      type: "gcj02",
+      isHighAccuracy: true,
+      success: (result) => {
+        this.setData({
+          latitude: Number(result.latitude.toFixed(6)),
+          longitude: Number(result.longitude.toFixed(6)),
+          scale: 14
+        });
+      },
+      fail: () => {
+        this.hasCenteredSelf = false;
+      }
     });
   },
 
@@ -94,6 +115,7 @@ Page({
         this.setData({
           latitude,
           longitude,
+          scale: 15,
           locationReady: true,
           currentCity: this.extractCity(address) || res.name || "已选位置",
           currentAddress: address || res.name || "已选择地图位置"
@@ -135,6 +157,7 @@ Page({
       photos: visit.photos || [],
       latitude: Number(visit.latitude || this.data.latitude),
       longitude: Number(visit.longitude || this.data.longitude),
+      scale: 15,
       currentCity: visit.city || "",
       currentAddress: visit.address || "",
       locationReady: Boolean(visit.latitude && visit.longitude),

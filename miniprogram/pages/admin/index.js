@@ -13,6 +13,7 @@ Page({
     scopeIndex: 1,
     users: [],
     knowledge: [],
+    knowledgeFile: null,
     unitPickerText: "请先添加单位",
     activeTab: "accounts",
     deletingUserId: 0,
@@ -164,19 +165,61 @@ Page({
   submitKnowledge(event) {
     const question = String(event.detail.value.question || "").trim();
     const answer = String(event.detail.value.answer || "").trim();
-    if (!question || !answer) {
-      wx.showToast({ title: "问题和话术必填", icon: "none" });
+    if (!question && !answer && !this.data.knowledgeFile) {
+      wx.showToast({ title: "请填写知识或上传文件", icon: "none" });
       return;
     }
-    app
-      .requestApi("/knowledge", {
-        method: "POST",
-        data: { question, answer }
-      })
+    const request = this.data.knowledgeFile
+      ? this.uploadKnowledgeFile(this.data.knowledgeFile, { question, answer })
+      : app.requestApi("/knowledge", { method: "POST", data: { question, answer } });
+    request
       .then(() => {
+        this.setData({ knowledgeFile: null });
         this.reload(() => this.flashSuccess("知识添加成功"));
       })
       .catch((error) => wx.showToast({ title: error.message || "添加失败", icon: "none" }));
+  },
+
+  chooseKnowledgeFile() {
+    wx.chooseMessageFile({
+      count: 1,
+      type: "file",
+      extension: ["txt", "md", "csv", "json", "pdf", "docx", "xlsx"],
+      success: (result) => {
+        const file = result.tempFiles && result.tempFiles[0];
+        if (file) this.setData({ knowledgeFile: file });
+      }
+    });
+  },
+
+  clearKnowledgeFile() {
+    this.setData({ knowledgeFile: null });
+  },
+
+  uploadKnowledgeFile(file, formData) {
+    const session = app.getSession();
+    const header = session && session.token ? { Authorization: `Bearer ${session.token}` } : {};
+    return new Promise((resolve, reject) => {
+      wx.uploadFile({
+        url: `${app.globalData.apiBase}/knowledge`,
+        filePath: file.path,
+        name: "file",
+        header,
+        formData,
+        success: (result) => {
+          let data = {};
+          try {
+            data = JSON.parse(result.data || "{}");
+          } catch {}
+          if (result.statusCode < 200 || result.statusCode >= 300) {
+            reject(new Error(data.error || `上传失败 ${result.statusCode}`));
+            return;
+          }
+          resolve(data);
+        },
+        fail: (error) => reject(new Error(error.errMsg || "文件上传失败"))
+      });
+    });
   },
 
   deleteUser(event) {

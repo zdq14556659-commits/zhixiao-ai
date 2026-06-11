@@ -89,6 +89,45 @@
   font-weight: 800;
 }
 
+.knowledge-file-box {
+  margin-bottom: 20rpx;
+  padding: 18rpx;
+  border: 1rpx dashed #c7d2df;
+  border-radius: 8rpx;
+  background: #f8fbff;
+}
+
+.knowledge-file-box button {
+  margin-bottom: 12rpx;
+}
+
+.selected-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  color: #4b5563;
+  font-size: 24rpx;
+}
+
+.selected-file text:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remove-file {
+  flex: 0 0 auto;
+  color: #f56c6c;
+}
+
+.kb-file {
+  margin-bottom: 6rpx;
+  color: #409eff;
+  font-size: 24rpx;
+}
+
 .success-pop {
   position: fixed;
   top: 132rpx;
