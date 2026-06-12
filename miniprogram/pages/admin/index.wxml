@@ -5,7 +5,14 @@
     <view class="subtitle">维护员工账号、角色权限、单位和小智知识库</view>
   </view>
 
-  <view wx:if="{{successMessage}}" class="success-pop">{{successMessage}}</view>
+  <view wx:if="{{successVisible}}" class="success-mask" bindtap="closeSuccess">
+    <view class="success-card" catchtap="noop">
+      <view class="success-icon">✓</view>
+      <view class="success-title">{{successTitle}}</view>
+      <view class="success-detail">{{successDetail}}</view>
+      <button class="primary-btn success-close" bindtap="closeSuccess">知道了</button>
+    </view>
+  </view>
 
   <view class="setting-tabs">
     <view class="setting-tab {{activeTab === 'accounts' ? 'active' : ''}}" data-tab="accounts" bindtap="switchTab">账号管理</view>
@@ -18,16 +25,16 @@
       <view class="section-title">新建员工</view>
       <view class="form-item">
         <text class="label">员工姓名</text>
-        <input name="name" placeholder="例如：李销售" />
+        <input name="name" value="{{userName}}" bindinput="onUserName" placeholder="例如：李销售" />
       </view>
       <view class="grid-2">
         <view class="form-item">
           <text class="label">登录账号（手机号）</text>
-          <input name="account" type="number" placeholder="员工手机号" />
+          <input name="account" type="number" value="{{userAccount}}" bindinput="onUserAccount" placeholder="员工手机号" />
         </view>
         <view class="form-item">
           <text class="label">初始密码</text>
-          <input name="password" password placeholder="例如：123456" />
+          <input name="password" password value="{{userPassword}}" bindinput="onUserPassword" placeholder="例如：123456" />
         </view>
       </view>
       <view class="grid-2">
@@ -44,7 +51,7 @@
           </picker>
         </view>
       </view>
-      <button class="primary-btn" form-type="submit" loading="{{saving}}" disabled="{{saving}}">开通账号</button>
+      <button class="primary-btn" form-type="submit" loading="{{savingUser}}" disabled="{{savingUser}}">{{savingUser ? '开通中' : '开通账号'}}</button>
     </view>
   </form>
 
@@ -70,7 +77,7 @@
       <view class="section-title">单位管理</view>
       <view class="form-item">
         <text class="label">单位名称</text>
-        <input name="name" placeholder="例如：东部战区杭州一部" />
+        <input name="name" value="{{unitName}}" bindinput="onUnitName" placeholder="例如：东部战区杭州一部" />
       </view>
       <view class="form-item">
         <text class="label">所属战区</text>
@@ -78,7 +85,7 @@
           <view class="picker-box">{{zones[zoneIndex]}}</view>
         </picker>
       </view>
-      <button class="plain-btn" form-type="submit">添加单位</button>
+      <button class="plain-btn" form-type="submit" loading="{{savingUnit}}" disabled="{{savingUnit}}">{{savingUnit ? '添加中' : '添加单位'}}</button>
     </view>
   </form>
 

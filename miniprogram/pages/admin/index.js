@@ -18,8 +18,15 @@ Page({
     activeTab: "accounts",
     deletingUserId: 0,
     deletingUnitId: "",
-    successMessage: "",
-    saving: false
+    successTitle: "",
+    successDetail: "",
+    successVisible: false,
+    savingUser: false,
+    savingUnit: false,
+    userName: "",
+    userAccount: "",
+    userPassword: "",
+    unitName: ""
   },
 
   onShow() {
@@ -30,6 +37,10 @@ Page({
       return;
     }
     this.reload();
+  },
+
+  onUnload() {
+    clearTimeout(this.successTimer);
   },
 
   reload(callback) {
@@ -72,10 +83,33 @@ Page({
     return unit ? `${unit.name} · ${unit.zone}` : "请先添加单位";
   },
 
-  flashSuccess(title) {
-    this.setData({ successMessage: title });
-    wx.showToast({ title, icon: "success" });
-    setTimeout(() => this.setData({ successMessage: "" }), 1200);
+  flashSuccess(title, detail) {
+    clearTimeout(this.successTimer);
+    this.setData({ successTitle: title, successDetail: detail || "列表已自动更新。", successVisible: true });
+    this.successTimer = setTimeout(() => this.setData({ successVisible: false }), 2600);
+  },
+
+  closeSuccess() {
+    clearTimeout(this.successTimer);
+    this.setData({ successVisible: false });
+  },
+
+  noop() {},
+
+  onUserName(event) {
+    this.setData({ userName: event.detail.value });
+  },
+
+  onUserAccount(event) {
+    this.setData({ userAccount: event.detail.value });
+  },
+
+  onUserPassword(event) {
+    this.setData({ userPassword: event.detail.value });
+  },
+
+  onUnitName(event) {
+    this.setData({ unitName: event.detail.value });
   },
 
   submitUser(event) {
@@ -98,7 +132,7 @@ Page({
       wx.showToast({ title: "姓名、账号、密码必填", icon: "none" });
       return;
     }
-    this.setData({ saving: true });
+    this.setData({ savingUser: true });
     app
       .requestApi("/users", {
         method: "POST",
@@ -106,36 +140,39 @@ Page({
       })
       .then(() => {
         this.reload(() => {
-          this.setData({ roleIndex: 0, unitIndex: 0 });
-          this.flashSuccess("员工添加成功");
+          this.setData({ roleIndex: 0, unitIndex: 0, userName: "", userAccount: "", userPassword: "" });
+          this.flashSuccess("员工添加成功", `${payload.name}的账号已开通，员工列表已自动更新。`);
         });
       })
       .catch((error) => {
         wx.showToast({ title: error.message || "开通失败", icon: "none" });
       })
       .finally(() => {
-        this.setData({ saving: false });
+        this.setData({ savingUser: false });
       });
   },
 
   submitUnit(event) {
     const name = String(event.detail.value.name || "").trim();
+    const zone = this.data.zones[this.data.zoneIndex];
     if (!name) {
       wx.showToast({ title: "请填写单位名称", icon: "none" });
       return;
     }
+    this.setData({ savingUnit: true });
     app
       .requestApi("/units", {
         method: "POST",
-        data: { name, zone: this.data.zones[this.data.zoneIndex] }
+        data: { name, zone }
       })
       .then(() => {
         this.reload(() => {
-          this.setData({ zoneIndex: 0 });
-          this.flashSuccess("单位添加成功");
+          this.setData({ zoneIndex: 0, unitName: "" });
+          this.flashSuccess("单位添加成功", `${name}已归入${zone}，单位列表和员工单位选项已自动更新。`);
         });
       })
-      .catch((error) => wx.showToast({ title: error.message || "添加失败", icon: "none" }));
+      .catch((error) => wx.showToast({ title: error.message || "添加失败", icon: "none" }))
+      .finally(() => this.setData({ savingUnit: false }));
   },
 
   submitRole(event) {

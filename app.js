@@ -208,6 +208,21 @@ function toast(message) {
   setTimeout(() => node.classList.remove("show"), 2400);
 }
 
+function setFormSubmitting(form, submitting, loadingText) {
+  const button = form.querySelector("button[type='submit']");
+  if (!button) return;
+  if (!button.dataset.label) button.dataset.label = button.textContent;
+  button.disabled = submitting;
+  button.textContent = submitting ? loadingText : button.dataset.label;
+}
+
+function showSuccessFeedback(title, detail) {
+  $("#successDialogTitle").textContent = title;
+  $("#successDialogDetail").textContent = detail;
+  const dialog = $("#successDialog");
+  if (!dialog.open) dialog.showModal();
+}
+
 async function loadState() {
   state = await api("/state?client=mini");
   render();
@@ -988,26 +1003,35 @@ function renderAdmin() {
 
 async function addUser(event) {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
+  const formNode = event.currentTarget;
+  const form = new FormData(formNode);
   const role = roles().find((item) => item.id === form.get("roleId")) || roles()[0];
   const unit = (state.units || []).find((item) => item.id === form.get("unitId")) || {};
-  await api("/users", {
-    method: "POST",
-    body: {
-      name: form.get("name"),
-      account: form.get("account"),
-      password: form.get("password"),
-      phone: form.get("account"),
-      roleId: role.id,
-      role: role.name,
-      unitId: unit.id,
-      unit: unit.name || "待分配",
-      region: unit.zone || "待分区"
-    }
-  });
-  event.currentTarget.reset();
-  await loadState();
-  toast("员工添加成功");
+  const name = String(form.get("name") || "").trim();
+  setFormSubmitting(formNode, true, "开通中...");
+  try {
+    await api("/users", {
+      method: "POST",
+      body: {
+        name,
+        account: form.get("account"),
+        password: form.get("password"),
+        phone: form.get("account"),
+        roleId: role.id,
+        role: role.name,
+        unitId: unit.id,
+        unit: unit.name || "待分配",
+        region: unit.zone || "待分区"
+      }
+    });
+    formNode.reset();
+    await loadState();
+    showSuccessFeedback("员工添加成功", `${name}的账号已开通，员工列表和单位选择项已自动更新。`);
+  } catch (error) {
+    toast(error.message || "员工添加失败");
+  } finally {
+    setFormSubmitting(formNode, false, "开通中...");
+  }
 }
 
 async function addRole(event) {
@@ -1029,17 +1053,21 @@ async function addRole(event) {
 
 async function addUnit(event) {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
-  await api("/units", {
-    method: "POST",
-    body: {
-      name: String(form.get("name") || "").trim(),
-      zone: form.get("zone")
-    }
-  });
-  event.currentTarget.reset();
-  await loadState();
-  toast("单位添加成功");
+  const formNode = event.currentTarget;
+  const form = new FormData(formNode);
+  const name = String(form.get("name") || "").trim();
+  const zone = String(form.get("zone") || "");
+  setFormSubmitting(formNode, true, "添加中...");
+  try {
+    await api("/units", { method: "POST", body: { name, zone } });
+    formNode.reset();
+    await loadState();
+    showSuccessFeedback("单位添加成功", `${name}已归入${zone}，单位列表和员工单位选项已自动更新。`);
+  } catch (error) {
+    toast(error.message || "单位添加失败");
+  } finally {
+    setFormSubmitting(formNode, false, "添加中...");
+  }
 }
 
 async function deleteUser(id) {
