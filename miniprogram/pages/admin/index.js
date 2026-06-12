@@ -23,6 +23,12 @@ Page({
     successVisible: false,
     savingUser: false,
     savingUnit: false,
+    currentUserId: 0,
+    resetUserId: 0,
+    resetUserName: "",
+    resetPassword: "",
+    resetPasswordConfirm: "",
+    resettingPassword: false,
     userName: "",
     userAccount: "",
     userPassword: "",
@@ -48,6 +54,7 @@ Page({
       const state = app.getState();
       this.setData({
         users: app.visibleUsers(),
+        currentUserId: Number(app.getCurrentUser()?.id || 0),
         roles: app.getRoles(),
         units: app.getUnits(),
         knowledge: state.knowledge || [],
@@ -112,6 +119,43 @@ Page({
     this.setData({ unitName: event.detail.value });
   },
 
+  openResetPassword(event) {
+    const id = Number(event.currentTarget.dataset.id);
+    const user = this.data.users.find((item) => Number(item.id) === id);
+    if (!user) return;
+    this.setData({ resetUserId: id, resetUserName: user.name, resetPassword: "", resetPasswordConfirm: "" });
+  },
+
+  closeResetPassword() {
+    if (this.data.resettingPassword) return;
+    this.setData({ resetUserId: 0, resetUserName: "", resetPassword: "", resetPasswordConfirm: "" });
+  },
+
+  onResetPassword(event) {
+    this.setData({ resetPassword: event.detail.value });
+  },
+
+  onResetPasswordConfirm(event) {
+    this.setData({ resetPasswordConfirm: event.detail.value });
+  },
+
+  submitResetPassword() {
+    const newPassword = String(this.data.resetPassword || "");
+    if (newPassword.length < 6) return wx.showToast({ title: "新密码至少6位", icon: "none" });
+    if (newPassword !== this.data.resetPasswordConfirm) return wx.showToast({ title: "两次新密码不一致", icon: "none" });
+    this.setData({ resettingPassword: true });
+    app
+      .requestApi(`/users/${this.data.resetUserId}/password`, { method: "PUT", data: { newPassword } })
+      .then(() => {
+        const name = this.data.resetUserName;
+        this.setData({ resettingPassword: false });
+        this.closeResetPassword();
+        this.reload(() => this.flashSuccess("密码已重置", `${name}需要使用新密码重新登录，并会收到修改密码提醒。`));
+      })
+      .catch((error) => wx.showToast({ title: error.message || "重置失败", icon: "none" }))
+      .finally(() => this.setData({ resettingPassword: false }));
+  },
+
   submitUser(event) {
     const form = event.detail.value;
     const account = String(form.account || "").trim();
@@ -130,6 +174,10 @@ Page({
     };
     if (!payload.name || !payload.account || !payload.password) {
       wx.showToast({ title: "姓名、账号、密码必填", icon: "none" });
+      return;
+    }
+    if (payload.password.length < 6) {
+      wx.showToast({ title: "初始密码至少6位", icon: "none" });
       return;
     }
     this.setData({ savingUser: true });

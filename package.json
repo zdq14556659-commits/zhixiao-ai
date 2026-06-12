@@ -5,7 +5,8 @@
   "description": "智销AI Web 与小程序共享后端",
   "scripts": {
     "start": "node backend/server.js",
-    "check": "node --check backend/server.js"
+    "check": "node --check backend/server.js",
+    "test:password": "node backend/password-security.test.js"
   },
   "engines": {
     "node": ">=20"

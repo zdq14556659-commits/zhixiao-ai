@@ -132,6 +132,12 @@ function latestFollow(customer = {}) {
   return customer.lastFollow || customer.createdAt || "";
 }
 
+function ownershipLabel(customer = {}) {
+  if (customer.ownershipStatus === "claimable") return "可认领";
+  if (customer.ownershipStatus === "pending_followup") return `待有效跟进 · ${customer.claimDaysRemaining || 0}天`;
+  return "";
+}
+
 function stageTimeConfig(stage = currentStage) {
   if (stage === "全部") return { label: "阶段时间", field: "createdAt" };
   if (stage === "名单") return { label: "录入时间", field: "createdAt" };
@@ -197,7 +203,13 @@ async function api(path, options = {}) {
     localStorage.removeItem(AUTH_KEY);
     requireLogin();
   }
-  if (!response.ok) throw new Error(data.error || `请求失败 ${response.status}`);
+  if (!response.ok) {
+    const error = new Error(data.error || `请求失败 ${response.status}`);
+    error.code = data.code || "";
+    error.status = response.status;
+    error.data = data;
+    throw error;
+  }
   return data;
 }
 
@@ -219,8 +231,25 @@ function setFormSubmitting(form, submitting, loadingText) {
 function showSuccessFeedback(title, detail) {
   $("#successDialogTitle").textContent = title;
   $("#successDialogDetail").textContent = detail;
+  const link = $("#successDialogLink");
+  if (link) {
+    link.hidden = true;
+    link.removeAttribute("href");
+  }
   const dialog = $("#successDialog");
   if (!dialog.open) dialog.showModal();
+}
+
+function showImportFeedback(result) {
+  showSuccessFeedback(
+    "导入完成",
+    `共 ${result.total || 0} 行，成功 ${result.imported || 0} 行，重复 ${result.duplicates || 0} 行，失败 ${result.failed || 0} 行。`
+  );
+  const link = $("#successDialogLink");
+  if (link && result.reportUrl) {
+    link.href = result.reportUrl.startsWith("http") ? result.reportUrl : `${window.location.origin}${result.reportUrl}`;
+    link.hidden = false;
+  }
 }
 
 async function loadState() {
@@ -252,6 +281,9 @@ async function login(event) {
     requireLogin();
     await loadState();
     toast("登录成功");
+    if (data.user?.passwordChangeRecommended) {
+      $("#passwordReminderDialog").showModal();
+    }
   } catch (error) {
     toast(error.message || "登录失败");
   }
@@ -261,6 +293,68 @@ function logout() {
   sessionStorage.removeItem(AUTH_KEY);
   localStorage.removeItem(AUTH_KEY);
   requireLogin();
+}
+
+function openChangePasswordDialog() {
+  const form = $("#changePasswordForm");
+  form.reset();
+  $("#changePasswordDialog").showModal();
+}
+
+async function changePassword(event) {
+  event.preventDefault();
+  const formNode = event.currentTarget;
+  const form = new FormData(formNode);
+  const currentPassword = String(form.get("currentPassword") || "");
+  const newPassword = String(form.get("newPassword") || "");
+  const confirmPassword = String(form.get("confirmPassword") || "");
+  if (newPassword.length < 6) return toast("新密码至少6位");
+  if (newPassword !== confirmPassword) return toast("两次输入的新密码不一致");
+  setFormSubmitting(formNode, true, "修改中...");
+  try {
+    await api("/auth/change-password", { method: "POST", body: { currentPassword, newPassword } });
+    $("#changePasswordDialog").close();
+    sessionStorage.removeItem(AUTH_KEY);
+    localStorage.removeItem(AUTH_KEY);
+    requireLogin();
+    showSuccessFeedback("密码修改成功", "请使用新密码重新登录，其他设备上的旧登录也已失效。");
+  } catch (error) {
+    toast(error.message || "密码修改失败");
+  } finally {
+    setFormSubmitting(formNode, false, "修改中...");
+  }
+}
+
+function openResetPasswordDialog(id) {
+  const user = state.users.find((item) => Number(item.id) === Number(id));
+  if (!user) return;
+  const form = $("#resetPasswordForm");
+  form.reset();
+  form.elements.userId.value = user.id;
+  $("#resetPasswordSummary").textContent = `为 ${user.name} 设置新密码。重置后该员工需要重新登录。`;
+  $("#resetPasswordDialog").showModal();
+}
+
+async function resetPassword(event) {
+  event.preventDefault();
+  const formNode = event.currentTarget;
+  const form = new FormData(formNode);
+  const userId = Number(form.get("userId"));
+  const newPassword = String(form.get("newPassword") || "");
+  const confirmPassword = String(form.get("confirmPassword") || "");
+  if (newPassword.length < 6) return toast("新密码至少6位");
+  if (newPassword !== confirmPassword) return toast("两次输入的新密码不一致");
+  setFormSubmitting(formNode, true, "重置中...");
+  try {
+    await api(`/users/${userId}/password`, { method: "PUT", body: { newPassword } });
+    $("#resetPasswordDialog").close();
+    await loadState();
+    showSuccessFeedback("密码已重置", "该员工需要使用新密码重新登录，并会收到修改密码提醒。");
+  } catch (error) {
+    toast(error.message || "密码重置失败");
+  } finally {
+    setFormSubmitting(formNode, false, "重置中...");
+  }
 }
 
 function scopeCustomers() {
@@ -436,6 +530,8 @@ function renderCustomers() {
   $("#followPersonFilter").value = currentFilters.followPerson;
   $("#unitFilter").value = currentFilters.unit;
   $("#customerOwnerSelect").innerHTML = ownerOptions.map((user) => `<option>${user.name}</option>`).join("");
+  const paymentOwners = roleForUser(currentUser()).customerScope === "self" ? [currentUser()] : visibleUsers();
+  $("#paymentOwnerSelect").innerHTML = paymentOwners.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
   $("#batchOwnerSelect").innerHTML = ownerOptions.map((user) => `<option>${user.name}</option>`).join("");
   $("#assignOwnerSelect").innerHTML = ownerOptions.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
   $("#customerStageSelect").innerHTML = stages.map((stage) => `<option>${stage}</option>`).join("");
@@ -499,10 +595,11 @@ function customerRow(item) {
   const checked = selectedCustomerIds.has(Number(item.id)) ? "checked" : "";
   const disabled = assignable ? "" : "disabled";
   const title = assignable ? "选择客户" : "当前客户暂不满足分配条件";
+  const ownership = ownershipLabel(item);
   return `
     <tr>
       <td class="select-cell"><input type="checkbox" class="customer-select" data-id="${item.id}" ${checked} ${disabled} title="${title}" /></td>
-      <td><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.stage || "")}</small></td>
+      <td><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.stage || "")}${ownership ? ` · <span class="ownership-state ${item.ownershipStatus}">${escapeHtml(ownership)}</span>` : ""}</small></td>
       <td><a href="tel:${item.phone}">${item.phone}</a></td>
       <td>${escapeHtml(normalizeChannelSource(item.channelSource))}</td>
       <td>${escapeHtml(item.createdBy || "未记录")}</td>
@@ -585,6 +682,7 @@ function openCustomerDialog(customer = null) {
   form.contractAmount.value = customer?.contractAmount || "";
   form.paymentAmount.value = customer?.paymentAmount || "";
   form.paymentDate.value = customer?.paymentDate || "";
+  form.paymentOwnerId.value = customer?.paymentOwnerId || currentUser().id || "";
   form.lossReason.value = customer?.lossReason || "";
   form.software.value = customer?.software || "";
   form.note.value = "";
@@ -621,6 +719,7 @@ async function saveCustomer(event) {
   const id = Number(form.get("id"));
   const ownerUser = userByName(String(form.get("owner")));
   const ownerUnit = unitForId(ownerUser.unitId);
+  const note = String(form.get("note") || "").trim();
   const customer = {
     id: id || Date.now(),
     name: String(form.get("name")).trim(),
@@ -643,17 +742,39 @@ async function saveCustomer(event) {
     contractAmount: Number(form.get("contractAmount") || 0),
     paymentAmount: Number(form.get("paymentAmount") || 0),
     paymentDate: String(form.get("paymentDate") || ""),
+    paymentOwnerId: Number(form.get("paymentOwnerId") || currentUser().id),
     lossReason: String(form.get("lossReason") || ""),
     software: String(form.get("software") || "待补充"),
     createdAt: id ? undefined : today,
     lastFollow: today,
     nextFollow: String(form.get("nextFollow") || ""),
-    lastNote: String(form.get("note") || "更新了客户跟进。")
+    lastNote: note || (id ? undefined : "新增客户。")
   };
-  if (id) {
-    await api(`/customers/${id}`, { method: "PUT", body: customer });
-  } else {
-    await api("/customers", { method: "POST", body: customer });
+  try {
+    if (id) {
+      await api(`/customers/${id}`, { method: "PUT", body: customer });
+    } else {
+      await api("/customers", { method: "POST", body: customer });
+    }
+  } catch (error) {
+    if (error.code === "SIMILAR_CUSTOMER_WARNING") {
+      if (!window.confirm(`${error.message}\n\n确认仍要继续保存吗？`)) return;
+      customer.confirmSimilar = true;
+      try {
+        if (id) await api(`/customers/${id}`, { method: "PUT", body: customer });
+        else await api("/customers", { method: "POST", body: customer });
+      } catch (retryError) {
+        return toast(retryError.message || "保存失败");
+      }
+    } else if (!id && error.code === "CUSTOMER_CLAIMABLE") {
+      if (!window.confirm("该客户已释放，是否认领并接手原客户资料？")) return;
+      await api("/customers/claim", { method: "POST", body: { phone: customer.phone } });
+      $("#customerDialog").close();
+      await loadState();
+      return toast("客户认领成功，请在3天内完成有效跟进");
+    } else {
+      return toast(error.code === "DUPLICATE_CUSTOMER" ? "该客户已存在" : error.message);
+    }
   }
   $("#customerDialog").close();
   await loadState();
@@ -745,7 +866,7 @@ async function batchImport(event) {
   $("#batchDialog").close();
   event.currentTarget.reset();
   await loadState();
-  toast(`已导入 ${result.imported || 0} 个客户`);
+  showImportFeedback(result);
 }
 
 function isSoldStatus(status) {
@@ -991,7 +1112,7 @@ function renderAdmin() {
     zoneSelect.innerHTML = zones.map((zone) => `<option>${zone}</option>`).join("");
   }
   $("#userList").innerHTML = visibleUsers()
-    .map((user) => `<article><b>${escapeHtml(user.name)}</b><span>${user.status || "启用"}</span><p>${escapeHtml(user.role)} · ${escapeHtml(user.unit || "待分配")} · ${escapeHtml(user.zone || "未分战区")} · 账号：${escapeHtml(user.account || user.username || user.phone || "-")}</p><button data-action="delete-user" data-id="${user.id}">删除员工</button></article>`)
+    .map((user) => `<article><b>${escapeHtml(user.name)}</b><span>${user.status || "启用"}</span><p>${escapeHtml(user.role)} · ${escapeHtml(user.unit || "待分配")} · ${escapeHtml(user.zone || "未分战区")} · 账号：${escapeHtml(user.account || user.username || user.phone || "-")}</p><div class="user-actions">${Number(user.id) === Number(currentUser().id) ? "" : `<button data-action="reset-password" data-id="${user.id}">重置密码</button><button data-action="delete-user" data-id="${user.id}">删除员工</button>`}</div></article>`)
     .join("");
   $("#roleList").innerHTML = roles()
     .map((role) => `<article><b>${role.name}</b><span>${scopeLabels[role.customerScope] || role.customerScope}</span><p>${(role.permissions || []).map((permission) => permissionLabels[permission] || permission).join(" · ")}</p></article>`)
@@ -1008,6 +1129,8 @@ async function addUser(event) {
   const role = roles().find((item) => item.id === form.get("roleId")) || roles()[0];
   const unit = (state.units || []).find((item) => item.id === form.get("unitId")) || {};
   const name = String(form.get("name") || "").trim();
+  const password = String(form.get("password") || "");
+  if (password.length < 6) return toast("初始密码至少6位");
   setFormSubmitting(formNode, true, "开通中...");
   try {
     await api("/users", {
@@ -1015,7 +1138,7 @@ async function addUser(event) {
       body: {
         name,
         account: form.get("account"),
-        password: form.get("password"),
+        password,
         phone: form.get("account"),
         roleId: role.id,
         role: role.name,
@@ -1180,7 +1303,16 @@ function wireEvents() {
   $("#dashboardEnd").value = initialRange.end;
   $("#downloadTemplateLink").href = `${API_BASE}/import/customers/template`;
   $("#loginForm").addEventListener("submit", login);
+  $("#changePasswordBtn").addEventListener("click", openChangePasswordDialog);
   $("#logoutBtn").addEventListener("click", logout);
+  $("#changePasswordForm").addEventListener("submit", changePassword);
+  $("#resetPasswordForm").addEventListener("submit", resetPassword);
+  $("#changePasswordNowBtn").addEventListener("click", () => {
+    $("#passwordReminderDialog").close();
+    openChangePasswordDialog();
+  });
+  $("#skipPasswordChangeBtn").addEventListener("click", () => $("#passwordReminderDialog").close());
+  $$("[data-close-dialog]").forEach((button) => button.addEventListener("click", () => $(`#${button.dataset.closeDialog}`).close()));
   $$(".nav-item").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
   $("#settingsTabs").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-settings-tab]");
@@ -1276,8 +1408,10 @@ function wireEvents() {
   $("#roleForm").addEventListener("submit", addRole);
   $("#unitForm").addEventListener("submit", addUnit);
   $("#userList").addEventListener("click", (event) => {
-    const button = event.target.closest("button[data-action='delete-user']");
-    if (button) deleteUser(button.dataset.id);
+    const button = event.target.closest("button[data-action]");
+    if (!button) return;
+    if (button.dataset.action === "delete-user") deleteUser(button.dataset.id);
+    if (button.dataset.action === "reset-password") openResetPasswordDialog(button.dataset.id);
   });
   $("#unitList").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-action='delete-unit']");

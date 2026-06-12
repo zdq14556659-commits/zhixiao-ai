@@ -112,7 +112,10 @@
     <view class="strip-main">
       <view class="strip-top">
         <view class="customer-name ellipsis">{{item.name}}</view>
-        <text class="tag">{{item.stage}}</text>
+        <view class="strip-tags">
+          <text wx:if="{{item.ownershipLabel}}" class="ownership-tag {{item.ownershipStatus}}">{{item.ownershipLabel}}</text>
+          <text class="tag">{{item.stage}}</text>
+        </view>
       </view>
       <view class="strip-line ellipsis">{{item.phone}} · {{item.channelLabel}} · {{item.followPerson || item.owner}}</view>
       <view class="strip-line ellipsis">{{stageTimeLabel}}：{{item.stageDate || '未记录'}}</view>

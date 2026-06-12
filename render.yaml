@@ -14,6 +14,8 @@ services:
       mountPath: /var/data/zhixiao-ai
       sizeGB: 1
     envVars:
+      - key: AUTH_TOKEN_SECRET
+        sync: false
       - key: AMAP_KEY
         sync: false
       - key: DEEPSEEK_API_KEY

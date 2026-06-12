@@ -7,6 +7,9 @@ Page({
     owners: [],
     ownerUsers: [],
     ownerIndex: 0,
+    paymentOwners: [],
+    paymentOwnerNames: [],
+    paymentOwnerIndex: 0,
     channelSources: [],
     channelIndex: 0,
     nextFollow: "",
@@ -23,16 +26,23 @@ Page({
     const state = app.getState();
     const ownerUsers = app.visibleSales();
     const owners = ownerUsers.map((user) => user.name);
+    const currentUser = app.getCurrentUser();
+    const currentRole = app.getRole(currentUser);
+    const paymentOwners = currentRole.customerScope === "self" ? [currentUser] : app.visibleUsers();
     const customer = options.id ? (state.customers || []).find((item) => Number(item.id) === Number(options.id)) : null;
     const stageIndex = Math.max(0, this.data.stages.indexOf(customer?.stage || options.stage || "名单"));
     const ownerIndex = Math.max(0, owners.indexOf(customer?.owner || customer?.followPerson || owners[0]));
     const channelSources = app.globalData.channelSources;
     const channelIndex = Math.max(0, channelSources.indexOf(app.normalizeChannelSource(customer?.channelSource || "其他")));
+    const paymentOwnerIndex = Math.max(0, paymentOwners.findIndex((user) => Number(user.id) === Number(customer?.paymentOwnerId || currentUser.id)));
     this.setData({
       owners,
       ownerUsers,
       stageIndex,
       ownerIndex,
+      paymentOwners,
+      paymentOwnerNames: paymentOwners.map((user) => user.name),
+      paymentOwnerIndex,
       channelSources,
       channelIndex,
       editingId: customer ? Number(customer.id) : 0,
@@ -56,6 +66,10 @@ Page({
 
   onChannel(event) {
     this.setData({ channelIndex: Number(event.detail.value) });
+  },
+
+  onPaymentOwner(event) {
+    this.setData({ paymentOwnerIndex: Number(event.detail.value) });
   },
 
   onNextFollow(event) {
@@ -127,20 +141,17 @@ Page({
       contractAmount,
       paymentAmount,
       paymentDate: this.data.paymentDate,
+      paymentOwnerId: (this.data.paymentOwners[this.data.paymentOwnerIndex] || app.getCurrentUser()).id,
       lossReason: form.lossReason || "",
       software: form.software || "待补充",
       createdAt: previous.createdAt || app.globalData.today,
       lastFollow: app.globalData.today,
       nextFollow: this.data.nextFollow,
-      lastNote: form.note || (this.data.editingId ? undefined : "新增客户。")
+      lastNote: String(form.note || "").trim() || (this.data.editingId ? undefined : "新增客户。")
     };
     wx.showLoading({ title: "保存中" });
     try {
-      if (this.data.editingId) {
-        await app.requestApi(`/customers/${this.data.editingId}`, { method: "PUT", data: customer });
-      } else {
-        await app.requestApi("/customers", { method: "POST", data: customer });
-      }
+      await this.saveCustomerRequest(customer);
       app.loadRemoteState(() => {
         wx.hideLoading();
         wx.showToast({ title: this.data.editingId ? "已更新" : "已保存", icon: "success" });
@@ -148,7 +159,52 @@ Page({
       });
     } catch (error) {
       wx.hideLoading();
-      wx.showToast({ title: error.message || "保存失败", icon: "none" });
+      if (error.code === "SIMILAR_CUSTOMER_WARNING") {
+        const confirmed = await this.confirm("疑似重复客户", `${error.message}\n确认仍要继续保存吗？`);
+        if (!confirmed) return;
+        customer.confirmSimilar = true;
+        wx.showLoading({ title: "保存中" });
+        try {
+          await this.saveCustomerRequest(customer);
+          await new Promise((resolve) => app.loadRemoteState(resolve));
+          wx.showToast({ title: "已保存", icon: "success" });
+          setTimeout(() => wx.navigateBack(), 500);
+        } catch (retryError) {
+          wx.showToast({ title: retryError.message || "保存失败", icon: "none" });
+        } finally {
+          wx.hideLoading();
+        }
+        return;
+      }
+      if (!this.data.editingId && error.code === "CUSTOMER_CLAIMABLE") {
+        const confirmed = await this.confirm("客户可认领", "该客户已释放，是否认领并接手原客户资料？");
+        if (!confirmed) return;
+        wx.showLoading({ title: "认领中" });
+        try {
+          await app.requestApi("/customers/claim", { method: "POST", data: { phone } });
+          await new Promise((resolve) => app.loadRemoteState(resolve));
+          wx.showToast({ title: "认领成功", icon: "success" });
+          setTimeout(() => wx.navigateBack(), 600);
+        } catch (claimError) {
+          wx.showToast({ title: claimError.message || "认领失败", icon: "none" });
+        } finally {
+          wx.hideLoading();
+        }
+        return;
+      }
+      wx.showToast({ title: error.code === "DUPLICATE_CUSTOMER" ? "该客户已存在" : (error.message || "保存失败"), icon: "none" });
     }
+  },
+
+  saveCustomerRequest(customer) {
+    return this.data.editingId
+      ? app.requestApi(`/customers/${this.data.editingId}`, { method: "PUT", data: customer })
+      : app.requestApi("/customers", { method: "POST", data: customer });
+  },
+
+  confirm(title, content) {
+    return new Promise((resolve) => {
+      wx.showModal({ title, content, confirmText: "确认", success: (res) => resolve(Boolean(res.confirm)), fail: () => resolve(false) });
+    });
   }
 });

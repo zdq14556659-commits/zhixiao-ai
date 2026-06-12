@@ -74,6 +74,14 @@
   font-size: 24rpx;
 }
 
+.user-row-actions { display: flex; flex: 0 0 auto; gap: 10rpx; }
+.mini-action,
+.mini-danger { width: auto; min-width: 104rpx; padding: 0 14rpx; }
+.mini-action { height: 56rpx; line-height: 56rpx; border-radius: 8rpx; color: #409eff; background: #ecf5ff; font-size: 24rpx; }
+.reset-password-card { width: 100%; max-width: 600rpx; padding: 38rpx; border-radius: 16rpx; background: #fff; box-shadow: 0 24rpx 60rpx rgba(31, 45, 61, 0.22); }
+.reset-summary { margin: 12rpx 0 24rpx; line-height: 1.6; }
+.reset-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 14rpx; }
+
 .knowledge-row {
   padding: 18rpx 0;
   border-top: 1rpx solid #e4e9f0;

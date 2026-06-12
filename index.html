@@ -50,6 +50,7 @@
           </div>
           <div class="user-chip">
             <span id="currentUserText">未登录</span>
+            <button id="changePasswordBtn" type="button">修改密码</button>
             <button id="logoutBtn">退出</button>
           </div>
         </header>
@@ -215,7 +216,7 @@
               <form class="form-stack" id="userForm">
                 <label>员工姓名<input name="name" required placeholder="李销售" /></label>
                 <label>登录账号（手机号）<input name="account" required placeholder="员工手机号" /></label>
-                <label>初始密码<input name="password" type="password" required placeholder="建议至少6位" /></label>
+                <label>初始密码<input name="password" type="password" minlength="6" required placeholder="至少6位" /></label>
                 <label>角色<select name="roleId" id="userRoleSelect"></select></label>
                 <label>单位<select name="unitId" id="userUnitSelect"></select></label>
                 <button class="primary" type="submit">开通账号</button>
@@ -282,6 +283,7 @@
         <label>合同金额（万）<input name="contractAmount" type="number" min="0" step="0.1" /></label>
         <label>实际进款（万）<input name="paymentAmount" type="number" min="0" step="0.1" /></label>
         <label>进款日期<input name="paymentDate" type="date" /></label>
+        <label>进款业绩归属人<select name="paymentOwnerId" id="paymentOwnerSelect"></select></label>
         <label>未成交原因<textarea name="lossReason" rows="2" placeholder="价格、竞品、暂时无预算等"></textarea></label>
         <label>现用软件<input name="software" /></label>
         <label>跟进记录<textarea name="note" rows="4"></textarea></label>
@@ -348,8 +350,40 @@
         <div class="success-dialog-icon" aria-hidden="true">✓</div>
         <h2 id="successDialogTitle">添加成功</h2>
         <p id="successDialogDetail">列表和选择项已自动更新。</p>
+        <a id="successDialogLink" class="template-link" hidden target="_blank" rel="noopener">下载未导入明细</a>
         <button class="primary" value="close">知道了</button>
       </form>
+    </dialog>
+
+    <dialog id="changePasswordDialog">
+      <form class="dialog-form" id="changePasswordForm">
+        <h2>修改密码</h2>
+        <p class="muted">修改成功后，当前账号在所有设备上的旧登录都会失效。</p>
+        <label>原密码<input name="currentPassword" type="password" autocomplete="current-password" required /></label>
+        <label>新密码<input name="newPassword" type="password" autocomplete="new-password" minlength="6" required placeholder="至少6位" /></label>
+        <label>确认新密码<input name="confirmPassword" type="password" autocomplete="new-password" minlength="6" required /></label>
+        <div class="button-row"><button type="button" data-close-dialog="changePasswordDialog">取消</button><button class="primary" type="submit">确认修改</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="resetPasswordDialog">
+      <form class="dialog-form" id="resetPasswordForm">
+        <h2>重置员工密码</h2>
+        <p class="muted" id="resetPasswordSummary"></p>
+        <input name="userId" type="hidden" />
+        <label>新密码<input name="newPassword" type="password" autocomplete="new-password" minlength="6" required placeholder="至少6位" /></label>
+        <label>确认新密码<input name="confirmPassword" type="password" autocomplete="new-password" minlength="6" required /></label>
+        <div class="button-row"><button type="button" data-close-dialog="resetPasswordDialog">取消</button><button class="primary" type="submit">确认重置</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="passwordReminderDialog" class="success-dialog">
+      <div class="success-dialog-content">
+        <div class="security-dialog-icon" aria-hidden="true">锁</div>
+        <h2>建议修改密码</h2>
+        <p>当前账号仍在使用初始或管理员重置的密码。为保护客户数据，建议现在修改。</p>
+        <div class="button-row reminder-actions"><button id="skipPasswordChangeBtn" type="button">本次跳过</button><button class="primary" id="changePasswordNowBtn" type="button">现在修改</button></div>
+      </div>
     </dialog>
 
     <div class="toast" id="toast"></div>

@@ -33,56 +33,39 @@ Page({
     this.setData({ channelIndex: Number(event.detail.value) });
   },
 
-  submitImport(event) {
-    const rows = String(event.detail.value.rows || "")
-      .split(/\n+/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    if (!rows.length) {
+  async submitImport(event) {
+    const rows = String(event.detail.value.rows || "").trim();
+    if (!rows) {
       wx.showToast({ title: "请粘贴客户数据", icon: "none" });
       return;
     }
-    const state = app.getState();
     const stage = this.data.stages[this.data.stageIndex];
     const owner = this.data.owners[this.data.ownerIndex];
     const ownerUser = this.data.ownerUsers[this.data.ownerIndex] || {};
-    const defaultChannel = this.data.channelSources[this.data.channelIndex] || "其他";
-    rows.forEach((line, index) => {
-      const parts = line.split(/,|，|\t/).map((item) => item.trim());
-      const [name, phone = "待补充"] = parts;
-      const third = parts[2] || "";
-      const usesNewTemplate = app.globalData.channelSources.includes(third) || parts.length >= 6;
-      const channelSource = usesNewTemplate ? app.normalizeChannelSource(third) : defaultChannel;
-      const address = usesNewTemplate ? parts[3] || "" : "";
-      const region = usesNewTemplate ? address || "待分区" : third || "待分区";
-      const amount = usesNewTemplate ? parts[5] || "15" : parts[3] || "15";
-      const software = usesNewTemplate ? parts[4] || "待补充" : parts[4] || "待补充";
-      state.customers.unshift({
-        id: Date.now() + index,
-        name,
-        phone,
-        channelSource,
-        createdBy: app.getCurrentUser().name || "未记录",
-        followPerson: owner,
-        address,
-        stage,
-        owner,
-        ownerId: ownerUser.id || "",
-        unitId: ownerUser.unitId || "",
-        unit: ownerUser.unit || "",
-        zone: ownerUser.zone || "",
-        region,
-        amount: Number(amount) || 15,
-        software,
-        createdAt: app.globalData.today,
-        lastFollow: app.globalData.today,
-        nextFollow: app.globalData.today,
-        lastNote: "批量导入客户。"
+    wx.showLoading({ title: "导入中" });
+    try {
+      const result = await app.requestApi("/import/customers", {
+        method: "POST",
+        data: {
+          rows,
+          stage,
+          owner,
+          ownerId: ownerUser.id || "",
+          unitId: ownerUser.unitId || "",
+          unit: ownerUser.unit || "",
+          zone: ownerUser.zone || "",
+          createdBy: app.getCurrentUser().name || "未记录",
+          followPerson: owner,
+          channelSource: this.data.channelSources[this.data.channelIndex] || "其他"
+        }
       });
-    });
-    app.setState(state);
-    wx.showToast({ title: `已导入${rows.length}个` });
-    setTimeout(() => wx.navigateBack(), 600);
+      await new Promise((resolve) => app.loadRemoteState(resolve));
+      this.showImportResult(result);
+    } catch (error) {
+      wx.showToast({ title: error.message || "导入失败", icon: "none" });
+    } finally {
+      wx.hideLoading();
+    }
   },
 
   chooseFile() {
@@ -121,17 +104,35 @@ Page({
         wx.hideLoading();
         try {
           const data = JSON.parse(res.data);
+          if (res.statusCode < 200 || res.statusCode >= 300) throw new Error(data.error || `导入失败 ${res.statusCode}`);
           app.loadRemoteState(() => {
-            wx.showToast({ title: `导入${data.imported}个` });
-            setTimeout(() => wx.navigateBack(), 700);
+            this.showImportResult(data);
           });
-        } catch {
-          wx.showToast({ title: "导入失败", icon: "none" });
+        } catch (error) {
+          wx.showToast({ title: error.message || "导入失败", icon: "none" });
         }
       },
       fail: () => {
         wx.hideLoading();
         wx.showToast({ title: "上传失败", icon: "none" });
+      }
+    });
+  },
+
+  showImportResult(result) {
+    const content = `共${result.total || 0}行，成功${result.imported || 0}行，重复${result.duplicates || 0}行，失败${result.failed || 0}行。`;
+    const reportUrl = result.reportUrl
+      ? `${app.globalData.apiBase.replace(/\/api$/, "")}${result.reportUrl}`
+      : "";
+    wx.showModal({
+      title: "导入完成",
+      content: reportUrl ? `${content}\n点击“复制报告”可在浏览器下载未导入明细。` : content,
+      confirmText: reportUrl ? "复制报告" : "知道了",
+      cancelText: "返回客户",
+      showCancel: true,
+      success: (res) => {
+        if (res.confirm && reportUrl) wx.setClipboardData({ data: reportUrl });
+        if (res.cancel || (!reportUrl && res.confirm)) wx.navigateBack();
       }
     });
   }

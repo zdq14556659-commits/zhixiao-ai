@@ -161,6 +161,7 @@ textarea { resize: vertical; }
 h1, h2 { margin: 0; }
 .topbar h1 { font-size: 24px; }
 .user-chip { display: flex; align-items: center; gap: 12px; color: var(--muted); }
+.user-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
 .view {
   display: none;
@@ -541,6 +542,22 @@ button:disabled {
   font-size: 12px;
 }
 
+.ownership-state {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #2879b8;
+  background: #eaf5ff;
+}
+
+.ownership-state.claimable {
+  color: #ad6800;
+  background: #fff7e6;
+}
+
 .locked-input {
   color: #7a8798;
   background: #f5f7fa;
@@ -832,6 +849,21 @@ dialog::backdrop { background: rgba(31, 45, 61, 0.38); }
   font-weight: 800;
   box-shadow: 0 10px 24px rgba(103, 194, 58, 0.25);
 }
+
+.security-dialog-icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--blue);
+  font-size: 20px;
+  font-weight: 800;
+  box-shadow: 0 10px 24px rgba(64, 158, 255, 0.24);
+}
+
+.reminder-actions { width: 100%; justify-content: center; }
 
 .success-dialog-content h2 { margin-top: 4px; }
 .success-dialog-content p { margin: 0 0 6px; color: var(--muted); line-height: 1.6; }

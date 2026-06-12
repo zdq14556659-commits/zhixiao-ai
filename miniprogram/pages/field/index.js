@@ -196,6 +196,10 @@ Page({
       wx.showToast({ title: "请填写工厂名称", icon: "none" });
       return;
     }
+    if (!String(form.phone || "").trim()) {
+      wx.showToast({ title: "请填写客户电话", icon: "none" });
+      return;
+    }
     if (!this.data.photos.length) {
       wx.showToast({ title: "请至少上传1张现场图片", icon: "none" });
       return;
@@ -236,16 +240,22 @@ Page({
         photos: photoUrls,
         date: app.globalData.today
       };
-      if (isEditing) {
-        await app.requestApi(`/visits/${this.data.editingVisitId}`, {
-          method: "PUT",
-          data: visit
-        });
-      } else {
-        await app.requestApi("/visits", {
-          method: "POST",
-          data: visit
-        });
+      try {
+        await this.saveVisitRequest(visit, isEditing);
+      } catch (error) {
+        if (error.code === "SIMILAR_CUSTOMER_WARNING") {
+          const confirmed = await this.confirm("疑似重复客户", `${error.message}\n确认仍要继续上传吗？`);
+          if (!confirmed) return;
+          visit.confirmSimilar = true;
+          await this.saveVisitRequest(visit, isEditing);
+        } else if (!isEditing && error.code === "CUSTOMER_CLAIMABLE") {
+          const confirmed = await this.confirm("客户可认领", "该客户已释放，是否先认领客户并继续上传打卡？");
+          if (!confirmed) return;
+          await app.requestApi("/customers/claim", { method: "POST", data: { phone: visit.phone } });
+          await this.saveVisitRequest(visit, false);
+        } else {
+          throw error;
+        }
       }
       app.loadRemoteState(() => {
         this.resetVisitForm();
@@ -261,6 +271,18 @@ Page({
     } finally {
       wx.hideLoading();
     }
+  },
+
+  saveVisitRequest(visit, isEditing) {
+    return isEditing
+      ? app.requestApi(`/visits/${this.data.editingVisitId}`, { method: "PUT", data: visit })
+      : app.requestApi("/visits", { method: "POST", data: visit });
+  },
+
+  confirm(title, content) {
+    return new Promise((resolve) => {
+      wx.showModal({ title, content, confirmText: "确认", success: (res) => resolve(Boolean(res.confirm)), fail: () => resolve(false) });
+    });
   },
 
   uploadPhotos(paths) {

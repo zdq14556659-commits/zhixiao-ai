@@ -86,6 +86,12 @@
         </view>
       </view>
       <view class="form-item">
+        <text class="label">进款业绩归属人</text>
+        <picker range="{{paymentOwnerNames}}" value="{{paymentOwnerIndex}}" bindchange="onPaymentOwner">
+          <view class="picker-box">{{paymentOwnerNames[paymentOwnerIndex] || '请选择'}}</view>
+        </picker>
+      </view>
+      <view class="form-item">
         <text class="label">未成交原因</text>
         <input name="lossReason" value="{{form.lossReason}}" placeholder="如：预算、决策、竞品、暂缓上线" />
       </view>

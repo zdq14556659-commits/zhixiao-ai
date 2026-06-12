@@ -189,6 +189,9 @@ Page({
       ...item,
       channelLabel: app.normalizeChannelSource(item.channelSource),
       stageDate: this.customerStageTime(item),
+      ownershipLabel: item.ownershipStatus === "claimable"
+        ? "可认领"
+        : item.ownershipStatus === "pending_followup" ? `待有效跟进·${item.claimDaysRemaining || 0}天` : "",
       canAssign: this.data.canAssign && this.isCustomerAssignable(item),
       photoCount: Array.isArray(item.photos) ? item.photos.length : 0,
       firstPhoto: Array.isArray(item.photos) && item.photos.length ? item.photos[0] : ""

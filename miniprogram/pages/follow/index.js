@@ -35,7 +35,11 @@ Page({
   },
 
   submitFollow(event) {
-    const note = event.detail.value.note || "更新了下次跟进时间。";
+    const note = String(event.detail.value.note || "").trim();
+    if (!note) {
+      wx.showToast({ title: "请填写跟进内容", icon: "none" });
+      return;
+    }
     wx.showLoading({ title: "保存中" });
     app
       .requestApi(`/customers/${this.data.id}/follow`, {

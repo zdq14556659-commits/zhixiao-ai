@@ -14,6 +14,16 @@
     </view>
   </view>
 
+  <view wx:if="{{resetUserId}}" class="success-mask" bindtap="closeResetPassword">
+    <view class="reset-password-card" catchtap="noop">
+      <view class="section-title">重置员工密码</view>
+      <view class="muted reset-summary">为 {{resetUserName}} 设置新密码，重置后该员工需要重新登录。</view>
+      <view class="form-item"><text class="label">新密码</text><input password value="{{resetPassword}}" bindinput="onResetPassword" placeholder="至少6位" /></view>
+      <view class="form-item"><text class="label">确认新密码</text><input password value="{{resetPasswordConfirm}}" bindinput="onResetPasswordConfirm" /></view>
+      <view class="reset-actions"><button class="plain-btn" bindtap="closeResetPassword">取消</button><button class="primary-btn" loading="{{resettingPassword}}" disabled="{{resettingPassword}}" bindtap="submitResetPassword">确认重置</button></view>
+    </view>
+  </view>
+
   <view class="setting-tabs">
     <view class="setting-tab {{activeTab === 'accounts' ? 'active' : ''}}" data-tab="accounts" bindtap="switchTab">账号管理</view>
     <view class="setting-tab {{activeTab === 'knowledge' ? 'active' : ''}}" data-tab="knowledge" bindtap="switchTab">知识库</view>
@@ -97,7 +107,10 @@
         <view class="muted">{{item.role}} · {{item.unit || '未填单位'}} · {{item.zone || item.region || '未分战区'}}</view>
         <view class="muted">账号：{{item.account || item.username}}</view>
       </view>
-      <button class="mini-danger" data-id="{{item.id}}" bindtap="deleteUser">删除</button>
+      <view wx:if="{{currentUserId !== item.id}}" class="user-row-actions">
+        <button class="mini-action" data-id="{{item.id}}" bindtap="openResetPassword">重置密码</button>
+        <button class="mini-danger" data-id="{{item.id}}" bindtap="deleteUser">删除</button>
+      </view>
     </view>
   </view>
 

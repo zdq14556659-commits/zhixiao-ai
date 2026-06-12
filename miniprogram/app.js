@@ -5,13 +5,6 @@ const PROD_API_BASE = "https://zhixiaoai1.onrender.com/api";
 const API_BASE = getApiBase();
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const CHANNEL_SOURCES = ["自媒体", "官网留言", "自主注册", "渠道介绍", "企查查", "客源汇", "公众号", "地推", "其他"];
-const LOCAL_DEMO_PASSWORDS = {
-  admin: "778899",
-  linchen: "123456",
-  zhouyang: "123456",
-  chen: "123456",
-  wang: "123456"
-};
 const ZONES = ["东部战区", "南部战区", "西部战区", "北部战区", "中部战区"];
 const DEFAULT_ROLES = [
   { id: "role-owner", name: "总负责人", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] },
@@ -294,7 +287,11 @@ App({
               wx.removeStorageSync(AUTH_KEY);
               wx.reLaunch({ url: "/pages/login/index" });
             }
-            reject(new Error(res.data?.error || `请求失败 ${res.statusCode}`));
+            const error = new Error(res.data?.error || `请求失败 ${res.statusCode}`);
+            error.code = res.data?.code || "";
+            error.status = res.statusCode;
+            error.data = res.data || {};
+            reject(error);
           }
         },
         fail: (error) => {
@@ -305,8 +302,6 @@ App({
   },
 
   login(account, password) {
-    const local = this.localLogin(account, password);
-    if (local) return Promise.resolve(local);
     return this.requestApi("/auth/login", {
       method: "POST",
       data: { account, password }
@@ -317,24 +312,6 @@ App({
       wx.setStorageSync(STORAGE_KEY, remoteState);
       return data;
     });
-  },
-
-  localLogin(account, password) {
-    if (API_BASE !== LOCAL_API_BASE) return null;
-    const loginAccount = String(account || "").trim().toLowerCase();
-    if (LOCAL_DEMO_PASSWORDS[loginAccount] !== String(password || "")) return null;
-    const state = this.getState();
-    const user = state.users.find((item) => {
-      return [item.account, item.username, item.phone].filter(Boolean).map((value) => String(value).toLowerCase()).includes(loginAccount);
-    });
-    if (!user) return null;
-    const safeUser = { ...user };
-    delete safeUser.password;
-    const token = `local-${safeUser.id}-${Date.now()}`;
-    state.currentUserId = safeUser.id;
-    wx.setStorageSync(AUTH_KEY, { token, user: safeUser, mode: "local", loginAt: Date.now() });
-    wx.setStorageSync(STORAGE_KEY, state);
-    return { token, user: safeUser, state };
   },
 
   logout() {

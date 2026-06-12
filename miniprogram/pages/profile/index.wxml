@@ -25,7 +25,14 @@
 
   <view class="card">
     <view class="section-title">账号安全</view>
-    <view class="muted line">离开共用设备前请退出登录，避免员工误用其他账号。</view>
+    <view class="muted line">密码修改后，当前账号在其他设备上的旧登录会立即失效。</view>
+    <button class="plain-btn password-toggle" bindtap="togglePasswordForm">{{showPasswordForm ? '收起修改密码' : '修改密码'}}</button>
+    <view wx:if="{{showPasswordForm}}" class="password-form">
+      <view class="form-item"><text class="label">原密码</text><input password value="{{currentPassword}}" bindinput="onCurrentPassword" /></view>
+      <view class="form-item"><text class="label">新密码</text><input password value="{{newPassword}}" bindinput="onNewPassword" placeholder="至少6位" /></view>
+      <view class="form-item"><text class="label">确认新密码</text><input password value="{{confirmPassword}}" bindinput="onConfirmPassword" /></view>
+      <button class="primary-btn" loading="{{changingPassword}}" disabled="{{changingPassword}}" bindtap="changePassword">确认修改</button>
+    </view>
     <button class="danger-btn logout-btn" bindtap="logout">退出登录</button>
   </view>
 </view>

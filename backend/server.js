@@ -23,10 +23,22 @@ const STAGE_TIME_FIELDS = { 线索: "leadAt", 商机: "opportunityAt", 成交: "
 const CHANNEL_SOURCES = ["自媒体", "官网留言", "自主注册", "渠道介绍", "企查查", "客源汇", "公众号", "地推", "其他"];
 const ZONES = ["东部战区", "南部战区", "西部战区", "北部战区", "中部战区"];
 const TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
+const PASSWORD_MIN_LENGTH = 6;
+const PASSWORD_KEY_LENGTH = 64;
+const LOGIN_FAILURE_WINDOW_MS = 10 * 60 * 1000;
+const LOGIN_LOCK_MS = 10 * 60 * 1000;
+const LOGIN_FAILURE_LIMIT = 5;
+const AUTH_TOKEN_SECRET = process.env.AUTH_TOKEN_SECRET || "zhixiao-ai-development-token-secret-change-in-production";
+const loginFailuresByAccount = new Map();
+const loginFailuresByIp = new Map();
 const ADMIN_ROLES = ["总负责人", "运营", "管理员"];
 const DEFAULT_PERMISSIONS = ["dashboard", "customers", "field", "assistant"];
 const ADMIN_PERMISSIONS = [...DEFAULT_PERMISSIONS, "admin"];
 const REASSIGN_DAYS = 30;
+const CUSTOMER_CLAIM_DAYS = 3;
+const OWNERSHIP_PENDING = "pending_followup";
+const OWNERSHIP_LOCKED = "locked";
+const OWNERSHIP_CLAIMABLE = "claimable";
 const DEFAULT_ADMIN_PASSWORD = "778899";
 const TARGET_FIELDS = ["revenueTarget", "contractTarget", "listTarget", "leadTarget", "opportunityTarget", "dealTarget"];
 const DEFAULT_ROLES = [
@@ -66,12 +78,16 @@ const server = http.createServer(async (req, res) => {
     }
     serveStatic(req, res, url);
   } catch (error) {
+    console.error(error);
     sendJson(res, 500, { error: error.message || "server error" });
   }
 });
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`智销AI backend running: http://localhost:${PORT}`);
+  if (!process.env.AUTH_TOKEN_SECRET) {
+    console.warn("AUTH_TOKEN_SECRET 未配置，当前使用开发环境密钥；正式环境必须配置高强度随机字符串。");
+  }
 });
 
 module.exports = server;
@@ -88,16 +104,26 @@ async function routeApi(req, res, url) {
     const state = readState();
     const account = cleanAccount(body.account || body.username || body.phone || "");
     const password = String(body.password || "");
+    const sourceIp = getRequestIp(req);
+    const lockedUntil = Math.max(getLoginLockedUntil(loginFailuresByAccount, account), getLoginLockedUntil(loginFailuresByIp, sourceIp));
+    if (lockedUntil > Date.now()) {
+      return sendJson(res, 429, { error: "登录尝试过多，请10分钟后再试" });
+    }
     const user = state.users.find((item) => {
       const keys = [item.account, item.username, item.phone].map(cleanAccount).filter(Boolean);
       return keys.includes(account);
     });
-    if (!user || String(user.password || "") !== password) {
-      return sendJson(res, 401, { error: "账号或密码错误" });
+    const passwordValid = verifyPassword(user || dummyPasswordUser(), password);
+    if (!user || !passwordValid) {
+      const accountLocked = recordLoginFailure(loginFailuresByAccount, account);
+      const ipLocked = recordLoginFailure(loginFailuresByIp, sourceIp);
+      return sendJson(res, accountLocked || ipLocked ? 429 : 401, {
+        error: accountLocked || ipLocked ? "登录尝试过多，请10分钟后再试" : "账号或密码错误"
+      });
     }
-    if (user.status === "停用") {
-      return sendJson(res, 403, { error: "账号已停用，请联系管理员" });
-    }
+    if (user.status === "停用") return sendJson(res, 401, { error: "账号或密码错误" });
+    clearLoginFailures(loginFailuresByAccount, account);
+    clearLoginFailures(loginFailuresByIp, sourceIp);
     state.currentUserId = user.id;
     writeState(state);
     return sendJson(res, 200, {
@@ -118,6 +144,31 @@ async function routeApi(req, res, url) {
   const authState = readState();
   const authUser = getAuthUser(req, authState);
   if (!authUser) return sendJson(res, 401, { error: "请先登录" });
+
+  if (req.method === "POST" && url.pathname === "/api/auth/change-password") {
+    const body = await readBody(req);
+    const currentPassword = String(body.currentPassword || "");
+    const newPassword = String(body.newPassword || "");
+    if (!verifyPassword(authUser, currentPassword)) {
+      return sendJson(res, 400, { error: "原密码错误" });
+    }
+    const passwordError = validateNewPassword(authUser, newPassword);
+    if (passwordError) return sendJson(res, 400, { error: passwordError });
+    const state = readState();
+    const index = state.users.findIndex((item) => Number(item.id) === Number(authUser.id));
+    if (index < 0) return sendJson(res, 404, { error: "账号不存在" });
+    state.users[index] = updateUserPassword(state.users[index], newPassword, false);
+    appendSecurityLog(state, {
+      type: "change_password",
+      actorId: authUser.id,
+      actorName: authUser.name,
+      targetId: authUser.id,
+      targetName: authUser.name,
+      sourceIp: getRequestIp(req)
+    });
+    writeState(state);
+    return sendJson(res, 200, { ok: true, message: "密码修改成功，请重新登录" });
+  }
 
   if (req.method === "GET" && url.pathname === "/api/dashboard") {
     return sendJson(res, 200, buildDashboard(authState, authUser, Object.fromEntries(url.searchParams.entries())));
@@ -169,18 +220,39 @@ async function routeApi(req, res, url) {
       const requestedOwner = findUser(state.users, body.ownerId, body.owner || body.followPerson);
       const visibleOwner = visibleUsers(state, viewer).find((item) => Number(item.id) === Number(requestedOwner.id));
       if (requestedOwner.id && !visibleOwner) return sendJson(res, 403, { error: "不能将客户录入到权限范围外" });
-      if (visibleOwner.id) owner = visibleOwner;
+      if (visibleOwner?.id) owner = visibleOwner;
     }
+    const normalizedPhone = normalizePhone(body.phone);
+    if (!normalizedPhone) return sendJson(res, 400, { error: "请填写有效的客户手机号", code: "INVALID_CUSTOMER_PHONE" });
+    const duplicate = findCustomerByPhone(state, normalizedPhone);
+    if (duplicate) {
+      const code = isCustomerClaimable(duplicate) ? "CUSTOMER_CLAIMABLE" : "DUPLICATE_CUSTOMER";
+      const error = code === "CUSTOMER_CLAIMABLE" ? "该客户已释放，可以认领" : "该客户已存在";
+      return sendJson(res, 409, { error, code });
+    }
+    if (!body.confirmSimilar && findSimilarCustomer(state, body)) {
+      return sendJson(res, 409, { error: "发现同城名称相似的客户，请确认后继续录入", code: "SIMILAR_CUSTOMER_WARNING" });
+    }
+    const paymentOwner = resolvePaymentOwner(state, viewer, {}, body);
+    if (paymentOwner.error) return sendJson(res, paymentOwner.status || 400, { error: paymentOwner.error });
+    const now = new Date().toISOString();
     const candidate = {
       id: Date.now(),
       ...body,
+      phoneNormalized: normalizedPhone,
       ownerId: owner.id,
       owner: owner.name,
       followPerson: owner.name,
       createdBy: viewer.name,
       unitId: owner.unitId,
       unit: owner.unit,
-      zone: owner.zone
+      zone: owner.zone,
+      ownershipStatus: OWNERSHIP_PENDING,
+      claimUntil: addDaysToIso(now, CUSTOMER_CLAIM_DAYS),
+      effectiveFollowUpAt: "",
+      ownershipHistory: [ownershipEvent("created", null, owner, viewer, "首次录入")],
+      paymentOwnerId: paymentOwner.user?.id || "",
+      paymentOwner: paymentOwner.user?.name || ""
     };
     const validationError = validateCustomerBusinessUpdate({}, candidate, true);
     if (validationError) return sendJson(res, 400, { error: validationError });
@@ -191,13 +263,48 @@ async function routeApi(req, res, url) {
         createdAt: new Date().toISOString(),
         author: viewer?.name || body.createdBy || body.owner || "未记录",
         note: body.lastNote || body.note || "新增客户。",
-        nextFollow: body.nextFollow || ""
+        nextFollow: body.nextFollow || "",
+        isSystem: true
       }]
     }, state);
     state.customers.unshift(customer);
     state.activities.push({ date: today(), owner: customer.owner, type: customer.stage, customerId: customer.id });
     writeState(state);
     return sendJson(res, 201, toMiniCustomer(customer));
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/customers/claim") {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    const normalizedPhone = normalizePhone(body.phone);
+    const index = state.customers.findIndex((item) => normalizePhone(item.phoneNormalized || item.phone) === normalizedPhone);
+    if (!normalizedPhone || index < 0) return sendJson(res, 404, { error: "未找到可认领客户" });
+    const previous = state.customers[index];
+    if (!isCustomerClaimable(previous)) {
+      return sendJson(res, 409, { error: "该客户已存在", code: "DUPLICATE_CUSTOMER" });
+    }
+    const now = new Date().toISOString();
+    const next = normalizeCustomer({
+      ...previous,
+      owner: viewer.name,
+      ownerId: viewer.id,
+      followPerson: viewer.name,
+      unitId: viewer.unitId || "",
+      unit: viewer.unit || "",
+      zone: viewer.zone || "",
+      region: viewer.zone || previous.region,
+      ownershipStatus: OWNERSHIP_PENDING,
+      claimUntil: addDaysToIso(now, CUSTOMER_CLAIM_DAYS),
+      effectiveFollowUpAt: "",
+      ownershipHistory: [
+        ...(previous.ownershipHistory || []),
+        ownershipEvent("claimed", previous, viewer, viewer, "释放客户认领")
+      ]
+    }, state);
+    state.customers[index] = next;
+    writeState(state);
+    return sendJson(res, 200, toMiniCustomer(next));
   }
 
   const customerFollow = url.pathname.match(/^\/api\/customers\/(\d+)\/follow$/);
@@ -208,14 +315,18 @@ async function routeApi(req, res, url) {
     if (!customer) return sendJson(res, 404, { error: "customer not found" });
     const viewer = getAuthUser(req, state);
     if (!canViewRecord(state, viewer, customer)) return sendJson(res, 403, { error: "无权跟进该客户" });
+    const note = String(body.note || "").trim();
+    if (!note) return sendJson(res, 400, { error: "请填写跟进内容" });
     customer.followUps = customer.followUps || [];
     customer.followUps.push({
       date: body.date || today(),
       createdAt: new Date().toISOString(),
       author: viewer?.name || "未记录",
-      note: body.note || "更新了下次跟进时间。",
-      nextFollow: body.nextFollow || ""
+      note,
+      nextFollow: body.nextFollow || "",
+      isSystem: false
     });
+    lockCustomerOwnership(customer, viewer, "提交有效跟进");
     writeState(state);
     return sendJson(res, 200, toMiniCustomer(customer));
   }
@@ -294,10 +405,34 @@ async function routeApi(req, res, url) {
     if (!canViewRecord(state, viewer, previous)) return sendJson(res, 403, { error: "无权修改该客户" });
     if (!canUseAdmin(state, viewer)) {
       const changesName = body.name !== undefined && String(body.name).trim() !== String(previous.name || "").trim();
-      const changesPhone = body.phone !== undefined && cleanAccount(body.phone) !== cleanAccount(previous.phone);
+      const changesPhone = body.phone !== undefined && normalizePhone(body.phone) !== normalizePhone(previous.phone);
       if (changesName || changesPhone) {
         return sendJson(res, 403, { error: "当前角色无权修改已有客户的名称和手机号" });
       }
+    }
+    if (body.phone !== undefined) {
+      const normalizedPhone = normalizePhone(body.phone);
+      if (!normalizedPhone) return sendJson(res, 400, { error: "请填写有效的客户手机号", code: "INVALID_CUSTOMER_PHONE" });
+      const phoneChanged = normalizedPhone !== normalizePhone(previous.phoneNormalized || previous.phone);
+      const duplicate = phoneChanged ? findCustomerByPhone(state, normalizedPhone, previous.id) : null;
+      if (duplicate) return sendJson(res, 409, { error: "该客户已存在", code: "DUPLICATE_CUSTOMER" });
+      body.phoneNormalized = normalizedPhone;
+    }
+    const identityChanged =
+      (body.name !== undefined && cleanText(body.name) !== cleanText(previous.name)) ||
+      (body.address !== undefined && cleanText(body.address) !== cleanText(previous.address)) ||
+      (body.region !== undefined && cleanText(body.region) !== cleanText(previous.region));
+    if (identityChanged && !body.confirmSimilar && findSimilarCustomer(state, { ...previous, ...body }, previous.id)) {
+      return sendJson(res, 409, { error: "发现同城名称相似的客户，请确认后继续保存", code: "SIMILAR_CUSTOMER_WARNING" });
+    }
+    const paymentOwner = resolvePaymentOwner(state, viewer, previous, body);
+    if (paymentOwner.error) return sendJson(res, paymentOwner.status || 400, { error: paymentOwner.error });
+    if (paymentOwner.user) {
+      body.paymentOwnerId = paymentOwner.user.id;
+      body.paymentOwner = paymentOwner.user.name;
+    } else if (body.paymentAmount !== undefined && normalizeMoney(body.paymentAmount) <= 0) {
+      body.paymentOwnerId = "";
+      body.paymentOwner = "";
     }
     const previousStage = previous.stage;
     const validationError = validateCustomerBusinessUpdate(previous, body, false);
@@ -320,8 +455,10 @@ async function routeApi(req, res, url) {
           createdAt: new Date().toISOString(),
           author: viewer?.name || "未记录",
           note: followNote,
-          nextFollow: followNext
+          nextFollow: followNext,
+          isSystem: !String(body.lastNote || body.note || "").trim()
         });
+        if (String(body.lastNote || body.note || "").trim()) lockCustomerOwnership(next, viewer, "提交有效跟进");
       }
     }
     if (body.stage && body.stage !== previousStage) {
@@ -343,6 +480,9 @@ async function routeApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/visits") {
     const body = await readBody(req);
     const state = readState();
+    const viewer = getAuthUser(req, state);
+    const conflict = visitCustomerConflict(state, viewer, body);
+    if (conflict) return sendJson(res, conflict.status, conflict.payload);
     const visit = normalizeVisit({ id: Date.now(), date: today(), photos: [], ...body }, state);
     state.visits.unshift(visit);
     syncVisitToCustomer(state, visit);
@@ -354,8 +494,11 @@ async function routeApi(req, res, url) {
   if ((req.method === "PATCH" || req.method === "PUT") && visitPatch) {
     const body = await readBody(req);
     const state = readState();
+    const viewer = getAuthUser(req, state);
     const index = state.visits.findIndex((item) => Number(item.id) === Number(visitPatch[1]));
     if (index < 0) return sendJson(res, 404, { error: "visit not found" });
+    const conflict = visitCustomerConflict(state, viewer, { ...state.visits[index], ...body });
+    if (conflict) return sendJson(res, conflict.status, conflict.payload);
     const visit = normalizeVisit({
       ...state.visits[index],
       ...body,
@@ -374,7 +517,7 @@ async function routeApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/import/customers") {
-    const result = await importCustomers(req);
+    const result = await importCustomers(req, authUser);
     return sendJson(res, 201, result);
   }
 
@@ -390,6 +533,9 @@ async function routeApi(req, res, url) {
     const account = cleanAccount(body.account || body.username || body.phone || "");
     if (!body.name || !account || !body.password) {
       return sendJson(res, 400, { error: "员工姓名、登录账号、初始密码必填" });
+    }
+    if (String(body.password).length < PASSWORD_MIN_LENGTH) {
+      return sendJson(res, 400, { error: `密码至少${PASSWORD_MIN_LENGTH}位` });
     }
     if (state.users.some((item) => cleanAccount(item.account) === account || cleanAccount(item.phone) === account)) {
       return sendJson(res, 409, { error: "登录账号已存在" });
@@ -410,6 +556,36 @@ async function routeApi(req, res, url) {
     state.users.push(user);
     writeState(state);
     return sendJson(res, 201, publicUser(user));
+  }
+
+  const userPasswordUpdate = url.pathname.match(/^\/api\/users\/(\d+)\/password$/);
+  if (req.method === "PUT" && userPasswordUpdate) {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无密码重置权限" });
+    const id = Number(userPasswordUpdate[1]);
+    if (Number(viewer.id) === id) return sendJson(res, 400, { error: "请使用修改密码功能更改自己的密码" });
+    const index = state.users.findIndex((user) => Number(user.id) === id);
+    if (index < 0) return sendJson(res, 404, { error: "员工不存在" });
+    if (!visibleUsers(state, viewer).some((user) => Number(user.id) === id)) {
+      return sendJson(res, 403, { error: "不能重置权限范围外员工的密码" });
+    }
+    const newPassword = String(body.newPassword || "");
+    const passwordError = validateNewPassword(state.users[index], newPassword);
+    if (passwordError) return sendJson(res, 400, { error: passwordError });
+    const target = state.users[index];
+    state.users[index] = updateUserPassword(target, newPassword, true);
+    appendSecurityLog(state, {
+      type: "reset_password",
+      actorId: viewer.id,
+      actorName: viewer.name,
+      targetId: target.id,
+      targetName: target.name,
+      sourceIp: getRequestIp(req)
+    });
+    writeState(state);
+    return sendJson(res, 200, { ok: true, user: publicUser(state.users[index]) });
   }
 
   const userDelete = url.pathname.match(/^\/api\/users\/(\d+)$/);
@@ -537,7 +713,8 @@ function normalizeIncomingState(input) {
     visits: mergeById(current.visits, input.visits),
     targets: mergeById(current.targets, input.targets),
     knowledge: input.knowledge || current.knowledge || [],
-    resources: input.resources || current.resources || []
+    resources: input.resources || current.resources || [],
+    securityLogs: current.securityLogs || []
   };
   return migrateState(merged);
 }
@@ -567,8 +744,14 @@ function mergeUsers(incomingUsers, existingUsers) {
       ...existing,
       ...user,
       account: user.account || user.username || existing?.account || existing?.username,
-      password: user.password || existing?.password || "123456"
+      passwordHash: existing?.passwordHash,
+      passwordSalt: existing?.passwordSalt,
+      authVersion: existing?.authVersion,
+      passwordChangeRecommended: existing?.passwordChangeRecommended,
+      passwordChangedAt: existing?.passwordChangedAt
     };
+    delete next.password;
+    delete next.initialPassword;
     const index = merged.findIndex((item) => Number(item.id) === Number(next.id) || cleanAccount(item.account) === cleanAccount(next.account));
     if (index >= 0) merged[index] = next;
     else merged.push(next);
@@ -577,13 +760,18 @@ function mergeUsers(incomingUsers, existingUsers) {
 }
 
 function migrateState(state) {
+  const legacyOwnership = !["backend-v4", "backend-v5"].includes(state.version);
   const roles = normalizeRoles(state.roles || []);
   const units = normalizeUnits(state.units || [], state);
-  const users = normalizeUsers(state.users || [], { roles, units, resetAdminPassword: state.version !== "backend-v3" });
+  const users = normalizeUsers(state.users || [], {
+    roles,
+    units,
+    resetAdminPassword: !["backend-v3", "backend-v4", "backend-v5"].includes(state.version)
+  });
   const activities = state.activities || [];
-  const context = { roles, units, users, activities };
+  const context = { roles, units, users, activities, legacyOwnership };
   return {
-    version: "backend-v3",
+    version: "backend-v5",
     currentUserId: Number(state.currentUserId || users[0]?.id || 0),
     stages: Array.isArray(state.stages) && state.stages.length ? state.stages : STAGES,
     zones: Array.isArray(state.zones) && state.zones.length ? state.zones : ZONES,
@@ -595,7 +783,8 @@ function migrateState(state) {
     visits: (state.visits || []).map((visit) => normalizeVisit(visit, context)),
     targets: (state.targets || []).map(normalizeTarget),
     knowledge: (state.knowledge || []).map(normalizeKnowledge),
-    resources: state.resources || []
+    resources: state.resources || [],
+    securityLogs: Array.isArray(state.securityLogs) ? state.securityLogs.slice(-1000) : []
   };
 }
 
@@ -676,14 +865,20 @@ function normalizeUser(user = {}, index = 0, context = {}) {
   const account = cleanAccount(user.account || user.username || user.login || user.phone || fallbackAccount);
   const defaultPassword = account === "admin" || ADMIN_ROLES.includes(roleDef.name) ? DEFAULT_ADMIN_PASSWORD : "123456";
   const storedPassword = String(user.password || user.initialPassword || defaultPassword);
-  const password = account === "admin" && context.resetAdminPassword ? DEFAULT_ADMIN_PASSWORD : storedPassword;
+  const migrationPassword = account === "admin" && context.resetAdminPassword ? DEFAULT_ADMIN_PASSWORD : storedPassword;
+  const credentials = user.passwordHash && user.passwordSalt
+    ? { passwordHash: String(user.passwordHash), passwordSalt: String(user.passwordSalt) }
+    : hashPassword(migrationPassword);
   return {
     id,
     name,
     phone: user.phone || "",
     account,
     username: account,
-    password,
+    ...credentials,
+    authVersion: Math.max(1, Number(user.authVersion || 1)),
+    passwordChangeRecommended: user.passwordChangeRecommended === undefined ? true : Boolean(user.passwordChangeRecommended),
+    passwordChangedAt: user.passwordChangedAt || "",
     role: roleDef.name,
     roleId: roleDef.id,
     unitId: unit.id,
@@ -780,17 +975,23 @@ function normalizeCustomer(customer, context = {}) {
       ];
   const createdAt = customer.createdAt || today();
   const stageTimes = normalizeStageTimes(customer, context.activities || [], createdAt);
+  const owner = customer.owner || ownerUser.name || "林晨";
+  const ownerId = customer.ownerId || ownerUser.id || "";
+  const ownershipStatus = [OWNERSHIP_PENDING, OWNERSHIP_LOCKED].includes(customer.ownershipStatus)
+    ? customer.ownershipStatus
+    : OWNERSHIP_LOCKED;
   return {
     id: Number(customer.id || Date.now()),
     name: customer.name || "",
     phone: customer.phone || "待补充",
+    phoneNormalized: normalizePhone(customer.phoneNormalized || customer.phone),
     channelSource: normalizeChannelSource(customer.channelSource || customer.source || customer.channel),
     createdBy: customer.createdBy || customer.inputBy || customer.creator || customer.owner || ownerUser.name || "未记录",
     followPerson: customer.followPerson || customer.followOwner || customer.owner || ownerUser.name || "未分配",
     address: customer.address || customer.customerAddress || "",
     stage: customer.stage || "名单",
-    owner: customer.owner || ownerUser.name || "林晨",
-    ownerId: customer.ownerId || ownerUser.id || "",
+    owner,
+    ownerId,
     unitId: customer.unitId || ownerUser.unitId || unit.id || "",
     unit: customer.unit || ownerUser.unit || unit.name || "",
     zone: customer.zone || ownerUser.zone || unit.zone || normalizeZone(customer.region),
@@ -802,10 +1003,16 @@ function normalizeCustomer(customer, context = {}) {
     contractAmount: normalizeMoney(customer.contractAmount),
     paymentAmount: normalizeMoney(customer.paymentAmount),
     paymentDate: customer.paymentDate || "",
+    paymentOwnerId: customer.paymentOwnerId || (customer.paymentAmount ? ownerId : ""),
+    paymentOwner: customer.paymentOwner || (customer.paymentAmount ? owner : ""),
     lossReason: customer.lossReason || "",
     software: customer.software || "待补充",
     photos: normalizePhotos(customer.photos || customer.visitPhotos),
     createdAt,
+    ownershipStatus: context.legacyOwnership ? OWNERSHIP_LOCKED : ownershipStatus,
+    claimUntil: context.legacyOwnership ? "" : (customer.claimUntil || ""),
+    effectiveFollowUpAt: context.legacyOwnership ? (customer.effectiveFollowUpAt || createdAt) : (customer.effectiveFollowUpAt || ""),
+    ownershipHistory: Array.isArray(customer.ownershipHistory) ? customer.ownershipHistory : [],
     ...stageTimes,
     followUps
   };
@@ -839,7 +1046,8 @@ function normalizeFollowUp(item = {}, customer = {}) {
     createdAt: item.createdAt || "",
     author: item.author || item.owner || customer.followPerson || customer.owner || "历史数据",
     note: item.note || item.lastNote || "更新了客户信息。",
-    nextFollow: item.nextFollow || ""
+    nextFollow: item.nextFollow || "",
+    isSystem: Boolean(item.isSystem)
   };
 }
 
@@ -929,14 +1137,15 @@ function syncVisitToCustomer(state, visit) {
     visit.lossReason ? `未成交原因：${visit.lossReason}` : ""
   ].filter(Boolean).join("；");
   const sameOwner = (customer) => customer.owner === owner || (ownerId && customer.ownerId === ownerId);
-  const samePhone = (customer) => visit.phone && cleanAccount(customer.phone) === cleanAccount(visit.phone);
-  const index = (state.customers || []).findIndex((customer) => (samePhone(customer) || cleanText(customer.name) === cleanText(factory)) && sameOwner(customer));
+  const samePhone = (customer) => visit.phone && normalizePhone(customer.phoneNormalized || customer.phone) === normalizePhone(visit.phone);
+  const index = (state.customers || []).findIndex((customer) => samePhone(customer) && sameOwner(customer));
 
   if (index < 0) {
     const customer = normalizeCustomer({
       id: Date.now() + 1,
       name: factory,
       phone: visit.phone || "待补充",
+      phoneNormalized: normalizePhone(visit.phone),
       channelSource: normalizeChannelSource("地推"),
       createdBy: owner,
       followPerson: owner,
@@ -949,9 +1158,18 @@ function syncVisitToCustomer(state, visit) {
       software: visit.software || "待补充",
       photos: normalizePhotos(visit.photos),
       createdAt: visit.date || today(),
-      lastFollow: visit.date || today(),
-      nextFollow: "",
-      lastNote: note
+      ownershipStatus: OWNERSHIP_LOCKED,
+      effectiveFollowUpAt: new Date().toISOString(),
+      claimUntil: "",
+      ownershipHistory: [ownershipEvent("created", null, { id: ownerId, name: owner }, { id: ownerId, name: owner }, "地推拜访录入")],
+      followUps: [{
+        date: visit.date || today(),
+        createdAt: new Date().toISOString(),
+        author: visit.owner || owner || "地推拜访",
+        note,
+        nextFollow: "",
+        isSystem: false
+      }]
     }, state);
     state.customers.unshift(customer);
     state.activities.push({ date: visit.date || today(), owner, type: stage, customerId: customer.id });
@@ -977,8 +1195,10 @@ function syncVisitToCustomer(state, visit) {
     createdAt: new Date().toISOString(),
     author: visit.owner || owner || "地推拜访",
     note,
-    nextFollow: latestFollow.nextFollow || ""
+    nextFollow: latestFollow.nextFollow || "",
+    isSystem: false
   });
+  lockCustomerOwnership(customer, { id: ownerId, name: owner }, "地推拜访跟进");
   state.customers[index] = customer;
   if (previousStage !== stage) {
     state.activities.push({ date: visit.date || today(), owner, type: stage, customerId: customer.id });
@@ -989,6 +1209,150 @@ function cleanText(value) {
   return String(value || "").trim().toLowerCase();
 }
 
+function normalizePhone(value) {
+  const text = String(value || "")
+    .trim()
+    .replace(/[０-９]/g, (char) => String(char.charCodeAt(0) - 65248));
+  if (!text || /^(待补充|未知|无|暂无|-)$/.test(text)) return "";
+  let digits = text.replace(/\D/g, "");
+  if (digits.startsWith("0086")) digits = digits.slice(4);
+  else if (digits.startsWith("86") && digits.length === 13) digits = digits.slice(2);
+  return digits.length >= 7 ? digits : "";
+}
+
+function findCustomerByPhone(state, phone, excludeId = null) {
+  const normalized = normalizePhone(phone);
+  if (!normalized) return null;
+  return (state.customers || []).find((customer) => {
+    if (excludeId !== null && Number(customer.id) === Number(excludeId)) return false;
+    return normalizePhone(customer.phoneNormalized || customer.phone) === normalized;
+  }) || null;
+}
+
+function normalizedFactoryName(value) {
+  return cleanText(value)
+    .replace(/[\s·,，.。()（）\-]/g, "")
+    .replace(/(有限责任公司|有限公司|全屋定制工厂|全屋定制厂|定制工厂|家具厂|家居厂|工厂)$/g, "");
+}
+
+function extractCity(value) {
+  const text = String(value || "");
+  const match = text.match(/([\u4e00-\u9fa5]{2,10}市)/);
+  return match ? match[1] : cleanText(text).replace(/\s/g, "");
+}
+
+function stringSimilarity(left, right) {
+  if (!left || !right) return 0;
+  if (left === right) return 1;
+  if (left.includes(right) || right.includes(left)) return Math.min(left.length, right.length) / Math.max(left.length, right.length);
+  const pairs = (value) => {
+    const result = new Set();
+    for (let index = 0; index < value.length - 1; index += 1) result.add(value.slice(index, index + 2));
+    return result;
+  };
+  const a = pairs(left);
+  const b = pairs(right);
+  if (!a.size || !b.size) return 0;
+  let common = 0;
+  a.forEach((pair) => { if (b.has(pair)) common += 1; });
+  return (2 * common) / (a.size + b.size);
+}
+
+function findSimilarCustomer(state, candidate = {}, excludeId = null) {
+  const name = normalizedFactoryName(candidate.name || candidate.factory);
+  const city = extractCity(candidate.city || candidate.address || candidate.region);
+  if (!name || !city) return null;
+  return (state.customers || []).find((customer) => {
+    if (excludeId !== null && Number(customer.id) === Number(excludeId)) return false;
+    const customerCity = extractCity(customer.address || customer.region);
+    if (!customerCity || customerCity !== city) return false;
+    return stringSimilarity(name, normalizedFactoryName(customer.name)) >= 0.85;
+  }) || null;
+}
+
+function addDaysToIso(value, days) {
+  const date = new Date(value || Date.now());
+  date.setUTCDate(date.getUTCDate() + Number(days || 0));
+  return date.toISOString();
+}
+
+function effectiveOwnershipStatus(customer = {}, at = Date.now()) {
+  if (customer.ownershipStatus === OWNERSHIP_PENDING && customer.claimUntil) {
+    const deadline = Date.parse(customer.claimUntil);
+    if (Number.isFinite(deadline) && deadline <= at && !customer.effectiveFollowUpAt) return OWNERSHIP_CLAIMABLE;
+  }
+  return customer.ownershipStatus || OWNERSHIP_LOCKED;
+}
+
+function isCustomerClaimable(customer = {}) {
+  return effectiveOwnershipStatus(customer) === OWNERSHIP_CLAIMABLE;
+}
+
+function claimDaysRemaining(claimUntil) {
+  const remaining = Date.parse(claimUntil) - Date.now();
+  return Number.isFinite(remaining) ? Math.max(0, Math.ceil(remaining / (24 * 60 * 60 * 1000))) : 0;
+}
+
+function ownershipEvent(type, previous, nextOwner, operator, reason) {
+  return {
+    id: `${Date.now()}-${crypto.randomBytes(3).toString("hex")}`,
+    type,
+    fromOwnerId: previous?.ownerId || "",
+    fromOwner: previous?.owner || "",
+    toOwnerId: nextOwner?.id || nextOwner?.ownerId || "",
+    toOwner: nextOwner?.name || nextOwner?.owner || "",
+    operatorId: operator?.id || "",
+    operator: operator?.name || "",
+    reason: reason || "",
+    createdAt: new Date().toISOString()
+  };
+}
+
+function lockCustomerOwnership(customer, operator, reason) {
+  if (!String(customer.effectiveFollowUpAt || "").trim()) customer.effectiveFollowUpAt = new Date().toISOString();
+  if (effectiveOwnershipStatus(customer) !== OWNERSHIP_LOCKED) {
+    customer.ownershipHistory = customer.ownershipHistory || [];
+    customer.ownershipHistory.push(ownershipEvent("locked", customer, customer, operator, reason));
+  }
+  customer.ownershipStatus = OWNERSHIP_LOCKED;
+}
+
+function resolvePaymentOwner(state, viewer, previous = {}, body = {}) {
+  const amount = body.paymentAmount !== undefined ? normalizeMoney(body.paymentAmount) : normalizeMoney(previous.paymentAmount);
+  if (amount <= 0) return { user: null };
+  const role = findRole(state.roles, viewer.roleId, viewer.role);
+  if (role.customerScope === "self") {
+    const existing = findUser(state.users, previous.paymentOwnerId, previous.paymentOwner);
+    return { user: existing.id && body.paymentOwnerId === undefined ? existing : viewer };
+  }
+  const requested = findUser(
+    state.users,
+    body.paymentOwnerId || previous.paymentOwnerId || viewer.id,
+    body.paymentOwner || previous.paymentOwner || viewer.name
+  );
+  const allowed = visibleUsers(state, viewer).find((item) => Number(item.id) === Number(requested.id));
+  if (!allowed) return { error: "进款业绩归属人不在当前管理范围内", status: 403 };
+  return { user: allowed };
+}
+
+function visitCustomerConflict(state, viewer, body = {}) {
+  const phone = normalizePhone(body.phone);
+  if (!phone) return { status: 400, payload: { error: "请填写有效的客户电话", code: "INVALID_CUSTOMER_PHONE" } };
+  const duplicate = findCustomerByPhone(state, phone);
+  if (duplicate) {
+    const sameOwner = Number(duplicate.ownerId) === Number(viewer.id) || cleanText(duplicate.owner) === cleanText(viewer.name);
+    if (sameOwner) return null;
+    if (isCustomerClaimable(duplicate)) {
+      return { status: 409, payload: { error: "该客户已释放，可以认领", code: "CUSTOMER_CLAIMABLE" } };
+    }
+    return { status: 409, payload: { error: "该客户已存在", code: "DUPLICATE_CUSTOMER" } };
+  }
+  if (!body.confirmSimilar && findSimilarCustomer(state, { name: body.factory, city: body.city, address: body.address })) {
+    return { status: 409, payload: { error: "发现同城名称相似的客户，请确认后继续上传", code: "SIMILAR_CUSTOMER_WARNING" } };
+  }
+  return null;
+}
+
 function stableId(prefix, value) {
   const hash = crypto.createHash("md5").update(String(value || prefix)).digest("hex").slice(0, 10);
   return `${prefix}-${hash}`;
@@ -996,14 +1360,15 @@ function stableId(prefix, value) {
 
 function publicState(state, viewer = null) {
   const scoped = scopeStateForUser(state, viewer);
+  const { securityLogs, ...safeState } = scoped;
   return {
-    ...scoped,
+    ...safeState,
     users: (scoped.users || []).map(publicUser)
   };
 }
 
 function publicUser(user = {}) {
-  const { password, passwordHash, ...safe } = user;
+  const { password, initialPassword, passwordHash, passwordSalt, ...safe } = user;
   return safe;
 }
 
@@ -1066,16 +1431,14 @@ function getAuthUser(req, state) {
   const token = header.replace(/^Bearer\s+/i, "").trim();
   if (!token) return null;
   try {
-    if (token.startsWith("local-")) {
-      const id = Number(token.split("-")[1]);
-      return state.users.find((user) => Number(user.id) === id) || null;
-    }
-    const decoded = Buffer.from(token, "base64url").toString("utf8");
-    const [idText, timeText] = decoded.split(":");
-    const issuedAt = Number(timeText || 0);
-    if (!issuedAt || Date.now() - issuedAt > TOKEN_TTL_MS) return null;
-    const id = Number(idText);
-    return state.users.find((user) => Number(user.id) === id) || null;
+    const [encodedPayload, signature] = token.split(".");
+    if (!encodedPayload || !signature || !secureTextEqual(signTokenPayload(encodedPayload), signature)) return null;
+    const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
+    const issuedAt = Number(payload.iat || 0);
+    if (!issuedAt || issuedAt > Date.now() + 60 * 1000 || Date.now() - issuedAt > TOKEN_TTL_MS) return null;
+    const user = state.users.find((item) => Number(item.id) === Number(payload.id)) || null;
+    if (!user || Number(payload.authVersion) !== Number(user.authVersion || 1)) return null;
+    return user;
   } catch {
     return null;
   }
@@ -1205,6 +1568,26 @@ function recordMatchesScope(state, record, scope) {
   return Number(record.ownerId || owner.id) === Number(scope.id);
 }
 
+function paymentOwnerFor(state, customer = {}) {
+  return findUser(
+    state.users,
+    customer.paymentOwnerId || customer.ownerId,
+    customer.paymentOwner || customer.owner
+  );
+}
+
+function paymentRecordFor(state, customer = {}) {
+  const owner = paymentOwnerFor(state, customer);
+  return {
+    ownerId: owner.id || customer.paymentOwnerId || customer.ownerId,
+    owner: owner.name || customer.paymentOwner || customer.owner,
+    unitId: owner.unitId || customer.unitId,
+    unit: owner.unit || customer.unit,
+    zone: owner.zone || customer.zone,
+    region: owner.zone || customer.region
+  };
+}
+
 function targetScopeName(state, target) {
   if (target.scopeType === "company") return "全公司";
   if (target.scopeType === "zone") return target.scopeId;
@@ -1303,7 +1686,7 @@ function softwareNames(value) {
     .filter((item) => item && item !== "待补充" && item !== "Excel排产" && item !== "手工报价");
 }
 
-function buildTrend(customers, range) {
+function buildTrend(customers, range, revenueCustomers = customers) {
   const days = daysBetween(range.start, range.end) + 1;
   const buckets = new Map();
   const keyFor = (date) => days <= 45 ? date : date.slice(0, 7);
@@ -1319,11 +1702,13 @@ function buildTrend(customers, range) {
       month = new Date(Date.UTC(year, number, 1)).toISOString().slice(0, 7);
     }
   }
-  customers.forEach((customer) => {
+  revenueCustomers.forEach((customer) => {
     if (inRange(customer.paymentDate, range.start, range.end)) {
       const bucket = buckets.get(keyFor(customer.paymentDate));
       if (bucket) bucket.revenue += Number(customer.paymentAmount || 0);
     }
+  });
+  customers.forEach((customer) => {
     if (inRange(customer.dealAt, range.start, range.end)) {
       const bucket = buckets.get(keyFor(customer.dealAt));
       if (bucket) {
@@ -1372,7 +1757,9 @@ function buildRanking(state, viewer, selectedScope, range) {
   }
   return users.map((user) => {
     const customers = (state.customers || []).filter((item) => Number(item.ownerId) === Number(user.id) || cleanText(item.owner) === cleanText(user.name));
-    const revenue = customers.filter((item) => inRange(item.paymentDate, range.start, range.end)).reduce((sum, item) => sum + Number(item.paymentAmount || 0), 0);
+    const revenue = (state.customers || [])
+      .filter((item) => Number(paymentOwnerFor(state, item).id) === Number(user.id) && inRange(item.paymentDate, range.start, range.end))
+      .reduce((sum, item) => sum + Number(item.paymentAmount || 0), 0);
     const deals = customers.filter((item) => inRange(item.dealAt, range.start, range.end)).length;
     const opportunities = customers.filter((item) => inRange(item.opportunityAt, range.start, range.end)).length;
     const rollingStart = addDays(range.end, -89);
@@ -1416,7 +1803,12 @@ function buildUnitRanking(state, viewer, selectedScope, range, scopedCustomers) 
   });
   const rollingStart = addDays(range.end, -89);
   return [...groups.values()].map((group) => {
-    const revenue = group.customers.filter((item) => inRange(item.paymentDate, range.start, range.end)).reduce((sum, item) => sum + Number(item.paymentAmount || 0), 0);
+    const revenue = (state.customers || [])
+      .filter((item) => {
+        const paymentRecord = paymentRecordFor(state, item);
+        return String(paymentRecord.unitId) === String(group.id) && inRange(item.paymentDate, range.start, range.end);
+      })
+      .reduce((sum, item) => sum + Number(item.paymentAmount || 0), 0);
     const deals = group.customers.filter((item) => inRange(item.dealAt, range.start, range.end)).length;
     const opportunities = group.customers.filter((item) => inRange(item.opportunityAt, range.start, range.end)).length;
     const rollingOpportunities = group.customers.filter((item) => inRange(item.opportunityAt, rollingStart, range.end));
@@ -1480,7 +1872,11 @@ function buildDashboard(state, viewer, query = {}) {
   const scope = resolveDashboardScope(state, viewer, query);
   const customers = (state.customers || []).filter((item) => canViewRecord(state, viewer, item) && recordMatchesScope(state, item, scope));
   const visits = (state.visits || []).filter((item) => canViewRecord(state, viewer, item) && recordMatchesScope(state, item, scope));
-  const revenue = customers.filter((item) => inRange(item.paymentDate, range.start, range.end)).reduce((sum, item) => sum + Number(item.paymentAmount || 0), 0);
+  const revenueCustomers = (state.customers || []).filter((item) => {
+    const paymentRecord = paymentRecordFor(state, item);
+    return canViewRecord(state, viewer, paymentRecord) && recordMatchesScope(state, paymentRecord, scope);
+  });
+  const revenue = revenueCustomers.filter((item) => inRange(item.paymentDate, range.start, range.end)).reduce((sum, item) => sum + Number(item.paymentAmount || 0), 0);
   const contract = customers.filter((item) => inRange(item.dealAt, range.start, range.end)).reduce((sum, item) => sum + Number(item.contractAmount || 0), 0);
   const deals = customers.filter((item) => inRange(item.dealAt, range.start, range.end));
   const lists = customers.filter((item) => inRange(item.createdAt, range.start, range.end));
@@ -1515,7 +1911,7 @@ function buildDashboard(state, viewer, query = {}) {
   };
   const actions = buildActions(customers, range);
   const drilldowns = {
-    revenue: customers.filter((item) => inRange(item.paymentDate, range.start, range.end)).map(actionCustomer),
+    revenue: revenueCustomers.filter((item) => inRange(item.paymentDate, range.start, range.end)).map(actionCustomer),
     contract: deals.map(actionCustomer),
     deals: deals.map(actionCustomer),
     lists: lists.map(actionCustomer),
@@ -1530,7 +1926,7 @@ function buildDashboard(state, viewer, query = {}) {
     target,
     summary,
     funnel,
-    trend: buildTrend(customers, range),
+    trend: buildTrend(customers, range, revenueCustomers),
     ranking: buildRanking(state, viewer, scope, range),
     unitRanking: buildUnitRanking(state, viewer, scope, range, customers),
     industry,
@@ -1558,6 +1954,11 @@ function buildAssignedCustomer(state, viewer, customer, target, body = {}) {
     unit: target.unit || "",
     zone: target.zone || "",
     region: target.zone || customer.region,
+    ownershipStatus: OWNERSHIP_LOCKED,
+    ownershipHistory: [
+      ...(customer.ownershipHistory || []),
+      ownershipEvent("assigned", customer, target, viewer, body.reason || "主管分配")
+    ],
     lastFollow: today(),
     nextFollow: body.nextFollow || customer.nextFollow || "",
     lastNote: note
@@ -1568,7 +1969,8 @@ function buildAssignedCustomer(state, viewer, customer, target, body = {}) {
     createdAt: new Date().toISOString(),
     author: viewer.name || "管理员",
     note,
-    nextFollow: body.nextFollow || ""
+    nextFollow: body.nextFollow || "",
+    isSystem: true
   });
   return { next, previousStage };
 }
@@ -1607,8 +2009,12 @@ function findAssignableSalesUser(state, viewer, ownerId, ownerName) {
 
 function toMiniCustomer(customer) {
   const latest = (customer.followUps || [])[customer.followUps.length - 1] || {};
+  const ownershipStatus = effectiveOwnershipStatus(customer);
   return {
     ...customer,
+    ownershipStatus,
+    claimable: ownershipStatus === OWNERSHIP_CLAIMABLE,
+    claimDaysRemaining: ownershipStatus === OWNERSHIP_PENDING ? claimDaysRemaining(customer.claimUntil) : 0,
     lastFollow: latest.date || "",
     nextFollow: latest.nextFollow || "",
     lastNote: latest.note || "",
@@ -1620,7 +2026,10 @@ function readState() {
   ensureDataFile();
   const raw = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
   const migrated = migrateState(raw);
-  if (JSON.stringify(raw) !== JSON.stringify(migrated)) writeState(migrated);
+  if (JSON.stringify(raw) !== JSON.stringify(migrated)) {
+    writeState(migrated);
+    fs.copyFileSync(DATA_FILE, BACKUP_FILE);
+  }
   return migrated;
 }
 
@@ -1865,58 +2274,118 @@ function normalizeExtractedText(value, maxLength = 120000) {
     .slice(0, maxLength);
 }
 
-async function importCustomers(req) {
-  const multipart = await parseMultipart(req);
+async function importCustomers(req, viewer) {
+  const multipart = String(req.headers["content-type"] || "").includes("application/json")
+    ? { fields: await readBody(req), files: [] }
+    : await parseMultipart(req);
   const stage = multipart.fields.stage || "名单";
-  const owner = multipart.fields.owner || "林晨";
-  const ownerId = multipart.fields.ownerId || "";
-  const unitId = multipart.fields.unitId || "";
-  const unit = multipart.fields.unit || "";
-  const zone = multipart.fields.zone || "";
   const state = readState();
+  const viewerRole = findRole(state.roles, viewer.roleId, viewer.role);
+  let ownerUser = viewer;
+  if (viewerRole.customerScope !== "self") {
+    const requested = findUser(state.users, multipart.fields.ownerId, multipart.fields.owner || multipart.fields.followPerson);
+    const visible = visibleUsers(state, viewer).find((item) => Number(item.id) === Number(requested.id));
+    if (requested.id && !visible) throw new Error("不能将客户导入到权限范围外");
+    if (visible) ownerUser = visible;
+  }
   const file = multipart.files[0];
   const defaults = {
     stage,
-    owner,
-    ownerId,
-    unitId,
-    unit,
-    zone,
-    createdBy: multipart.fields.createdBy || owner,
-    followPerson: multipart.fields.followPerson || owner
+    owner: ownerUser.name,
+    ownerId: ownerUser.id,
+    unitId: ownerUser.unitId || "",
+    unit: ownerUser.unit || "",
+    zone: ownerUser.zone || "",
+    channelSource: multipart.fields.channelSource || "其他",
+    createdBy: viewer.name,
+    followPerson: ownerUser.name
   };
   const rows = file
     ? parseCustomerImportFile(file, defaults)
     : parseCustomerRows(multipart.fields.rows || "", defaults);
-  const customers = rows.map((row, index) => {
+  const customers = [];
+  const skipped = [];
+  const failed = [];
+  rows.forEach((row, index) => {
+    const rowNumber = Number(row.rowNumber || index + 1);
+    const phoneNormalized = normalizePhone(row.phone);
+    if (!phoneNormalized) {
+      failed.push({ rowNumber, name: row.name || "", phone: row.phone || "", reason: "手机号无效" });
+      return;
+    }
+    if (findCustomerByPhone(state, phoneNormalized)) {
+      skipped.push({ rowNumber, name: row.name || "", phone: row.phone || "", reason: "手机号已存在" });
+      return;
+    }
+    if (findSimilarCustomer(state, row)) {
+      failed.push({ rowNumber, name: row.name || "", phone: row.phone || "", reason: "同城存在名称相似客户，请单个添加并确认" });
+      return;
+    }
+    const now = new Date().toISOString();
     const customer = normalizeCustomer({
       id: Date.now() + index,
       name: row.name,
       phone: row.phone,
+      phoneNormalized,
       channelSource: row.channelSource,
-      createdBy: row.createdBy,
-      followPerson: row.followPerson,
+      createdBy: viewer.name,
+      followPerson: ownerUser.name,
       address: row.address,
       stage: row.stage,
-      owner: row.owner,
-      ownerId: row.ownerId,
-      unitId: row.unitId,
-      unit: row.unit,
-      zone: row.zone,
+      owner: ownerUser.name,
+      ownerId: ownerUser.id,
+      unitId: ownerUser.unitId || "",
+      unit: ownerUser.unit || "",
+      zone: ownerUser.zone || "",
       region: row.region,
       amount: row.amount,
       software: row.software,
       createdAt: today(),
-      lastFollow: row.lastFollow || today(),
-      nextFollow: row.nextFollow || today(),
-      lastNote: row.lastNote || "名单文件导入。"
+      ownershipStatus: OWNERSHIP_PENDING,
+      claimUntil: addDaysToIso(now, CUSTOMER_CLAIM_DAYS),
+      effectiveFollowUpAt: "",
+      ownershipHistory: [ownershipEvent("created", null, ownerUser, viewer, "批量导入")],
+      followUps: [{
+        date: row.lastFollow || today(),
+        createdAt: now,
+        author: viewer.name,
+        note: row.lastNote || "名单文件导入。",
+        nextFollow: row.nextFollow || "",
+        isSystem: true
+      }]
     }, state);
     state.activities.push({ date: today(), owner: customer.owner, type: customer.stage, customerId: customer.id });
-    return customer;
+    state.customers.unshift(customer);
+    customers.push(customer);
   });
-  state.customers.unshift(...customers);
-  writeState(state);
-  return { imported: customers.length, customers: customers.map(toMiniCustomer) };
+  if (customers.length) writeState(state);
+  const reportRows = [...skipped, ...failed];
+  const reportUrl = reportRows.length ? writeImportReport(reportRows) : "";
+  return {
+    total: rows.length,
+    imported: customers.length,
+    duplicates: skipped.length,
+    failed: failed.length,
+    reportUrl,
+    skipped,
+    customers: customers.map(toMiniCustomer)
+  };
+}
+
+function writeImportReport(rows) {
+  if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  const fileName = `customer-import-report-${Date.now()}-${crypto.randomBytes(3).toString("hex")}.csv`;
+  const csv = [
+    ["原始行号", "客户名称", "手机号", "跳过原因"],
+    ...rows.map((item) => [item.rowNumber, item.name, item.phone, item.reason])
+  ].map((row) => row.map(csvCell).join(",")).join("\r\n");
+  fs.writeFileSync(path.join(UPLOAD_DIR, fileName), `\ufeff${csv}`, "utf8");
+  return `/uploads/${fileName}`;
+}
+
+function csvCell(value) {
+  const text = String(value ?? "");
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
 function parseCustomerImportFile(file, defaults) {
@@ -1946,7 +2415,8 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
   const dataRows = hasHeader ? rows.slice(1) : rows;
   const stageHeader = rawHeaders.find((header) => STAGES.includes(header));
   return dataRows
-    .map((row) => {
+    .map((row, rowIndex) => {
+      const rowNumber = rowIndex + (hasHeader ? 2 : 1);
       if (!hasHeader) {
         const third = String(row[2] || "").trim();
         const thirdLooksLikeChannel = isKnownChannelText(third) || row.length >= 6;
@@ -1968,7 +2438,8 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
           software: thirdLooksLikeChannel ? row[4] || "待补充" : row[4] || "待补充",
           lastNote: "名单文件导入。",
           lastFollow: "",
-          nextFollow: ""
+          nextFollow: "",
+          rowNumber
         };
       }
       const record = {};
@@ -1996,7 +2467,8 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
         software: record.software || "待补充",
         lastNote: record.lastNote || record.followRecord || "名单文件导入。",
         lastFollow: normalizeDateText(record.lastFollow || ""),
-        nextFollow: normalizeDateText(record.nextFollow || "")
+        nextFollow: normalizeDateText(record.nextFollow || ""),
+        rowNumber
       };
     })
     .filter((row) => row.name);
@@ -2344,8 +2816,105 @@ function cleanAccount(value) {
 }
 
 function makeToken(user) {
-  const random = crypto.randomBytes(12).toString("hex");
-  return Buffer.from(`${user.id}:${Date.now()}:${random}`).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({
+    id: Number(user.id),
+    iat: Date.now(),
+    authVersion: Number(user.authVersion || 1),
+    nonce: crypto.randomBytes(12).toString("hex")
+  })).toString("base64url");
+  return `${payload}.${signTokenPayload(payload)}`;
+}
+
+function signTokenPayload(payload) {
+  return crypto.createHmac("sha256", AUTH_TOKEN_SECRET).update(payload).digest("base64url");
+}
+
+function secureTextEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left || ""));
+  const rightBuffer = Buffer.from(String(right || ""));
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
+  return {
+    passwordSalt: salt,
+    passwordHash: crypto.scryptSync(String(password || ""), salt, PASSWORD_KEY_LENGTH).toString("hex")
+  };
+}
+
+function verifyPassword(user = {}, password = "") {
+  if (!user.passwordHash || !user.passwordSalt) return false;
+  const expected = Buffer.from(String(user.passwordHash), "hex");
+  const actual = crypto.scryptSync(String(password), String(user.passwordSalt), expected.length || PASSWORD_KEY_LENGTH);
+  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+}
+
+let cachedDummyPasswordUser = null;
+function dummyPasswordUser() {
+  if (!cachedDummyPasswordUser) cachedDummyPasswordUser = hashPassword(crypto.randomBytes(24).toString("hex"));
+  return cachedDummyPasswordUser;
+}
+
+function validateNewPassword(user, newPassword) {
+  if (String(newPassword || "").length < PASSWORD_MIN_LENGTH) return `密码至少${PASSWORD_MIN_LENGTH}位`;
+  if (verifyPassword(user, newPassword)) return "新密码不能与当前密码相同";
+  return "";
+}
+
+function updateUserPassword(user, newPassword, passwordChangeRecommended) {
+  return {
+    ...user,
+    ...hashPassword(newPassword),
+    authVersion: Number(user.authVersion || 1) + 1,
+    passwordChangeRecommended,
+    passwordChangedAt: new Date().toISOString()
+  };
+}
+
+function getRequestIp(req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return forwarded || req.socket?.remoteAddress || "unknown";
+}
+
+function getLoginLockedUntil(store, key) {
+  if (!key) return 0;
+  const entry = store.get(key);
+  if (!entry) return 0;
+  if (entry.lockedUntil > Date.now()) return entry.lockedUntil;
+  const failures = (entry.failures || []).filter((time) => Date.now() - time <= LOGIN_FAILURE_WINDOW_MS);
+  if (!failures.length) store.delete(key);
+  else store.set(key, { failures, lockedUntil: 0 });
+  return 0;
+}
+
+function recordLoginFailure(store, key) {
+  if (!key) return false;
+  const now = Date.now();
+  const entry = store.get(key) || { failures: [], lockedUntil: 0 };
+  entry.failures = (entry.failures || []).filter((time) => now - time <= LOGIN_FAILURE_WINDOW_MS);
+  entry.failures.push(now);
+  if (entry.failures.length >= LOGIN_FAILURE_LIMIT) entry.lockedUntil = now + LOGIN_LOCK_MS;
+  store.set(key, entry);
+  return entry.lockedUntil > now;
+}
+
+function clearLoginFailures(store, key) {
+  if (key) store.delete(key);
+}
+
+function appendSecurityLog(state, entry) {
+  const logs = Array.isArray(state.securityLogs) ? state.securityLogs : [];
+  logs.push({
+    id: crypto.randomUUID(),
+    type: entry.type,
+    actorId: Number(entry.actorId || 0),
+    actorName: entry.actorName || "",
+    targetId: Number(entry.targetId || 0),
+    targetName: entry.targetName || "",
+    sourceIp: entry.sourceIp || "unknown",
+    createdAt: new Date().toISOString()
+  });
+  state.securityLogs = logs.slice(-1000);
 }
 
 function today() {
