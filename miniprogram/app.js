@@ -1,6 +1,6 @@
 const STORAGE_KEY = "zhixiao_ai_mini_state_v3";
 const AUTH_KEY = "zhixiao_ai_auth_v1";
-const LOCAL_API_BASE = "http://127.0.0.1:8787/api";
+const API_BASE_OVERRIDE_KEY = "zhixiao_ai_api_base_override";
 const PROD_API_BASE = "https://zhixiaoai1.onrender.com/api";
 const API_BASE = getApiBase();
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -31,9 +31,9 @@ function getChinaToday() {
 
 function formatRequestError(error) {
   const message = error?.errMsg || "";
-  if (message.includes("timeout")) return "后端连接超时，请先运行 .\\start-backend.ps1";
+  if (message.includes("timeout")) return "Render 后端启动较慢，请等待约一分钟后重试";
   if (message.includes("url not in domain list")) return "开发者工具请勾选不校验合法域名，正式版需配置 HTTPS 合法域名";
-  if (message.includes("fail")) return "后端暂不可用，请确认 .\\start-backend.ps1 已启动";
+  if (message.includes("fail")) return `无法连接后端：${PROD_API_BASE}`;
   return message || "后端暂不可用";
 }
 
@@ -59,10 +59,10 @@ function normalizeChannelSource(value) {
 
 function getApiBase() {
   try {
-    const info = wx.getAccountInfoSync();
-    return info.miniProgram.envVersion === "develop" ? LOCAL_API_BASE : PROD_API_BASE;
+    const override = String(wx.getStorageSync(API_BASE_OVERRIDE_KEY) || "").trim().replace(/\/$/, "");
+    return override || PROD_API_BASE;
   } catch {
-    return LOCAL_API_BASE;
+    return PROD_API_BASE;
   }
 }
 
@@ -278,7 +278,7 @@ App({
         method: options.method || "GET",
         data: options.data || {},
         header: headers,
-        timeout: options.timeout || 8000,
+        timeout: options.timeout || 60000,
         success: (res) => {
           if (res.statusCode >= 200 && res.statusCode < 300) {
             resolve(res.data);
@@ -370,7 +370,7 @@ App({
       url: `${API_BASE}/state?client=mini`,
       method: "GET",
       header: session.token ? { Authorization: `Bearer ${session.token}` } : {},
-      timeout: 5000,
+      timeout: 60000,
       success: (res) => {
         if (res.statusCode >= 200 && res.statusCode < 300 && res.data) {
           const nextState = res.data;
