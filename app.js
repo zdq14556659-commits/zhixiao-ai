@@ -241,9 +241,11 @@ function showSuccessFeedback(title, detail) {
 }
 
 function showImportFeedback(result) {
+  const duplicateCount = Number(result.duplicates || 0);
+  const importedCount = Number(result.imported || 0);
   showSuccessFeedback(
-    "导入完成",
-    `共 ${result.total || 0} 行，成功 ${result.imported || 0} 行，重复 ${result.duplicates || 0} 行，失败 ${result.failed || 0} 行。`
+    duplicateCount && !importedCount ? "未导入重复客户" : "导入完成",
+    `共 ${result.total || 0} 行，成功 ${importedCount} 行，重复 ${duplicateCount} 行，失败 ${result.failed || 0} 行。${duplicateCount ? " 重复手机号已自动跳过，未覆盖原客户。" : ""}`
   );
   const link = $("#successDialogLink");
   if (link && result.reportUrl) {

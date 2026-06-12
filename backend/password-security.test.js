@@ -128,6 +128,24 @@ async function run() {
   assert.equal(changedLogin.data.user.passwordChangeRecommended, false);
   assert.equal((await request("/users/1/password", { method: "PUT", token: changedLogin.data.token, body: { newPassword: "abcdef" } })).status, 403);
 
+  const firstImport = await request("/import/customers", {
+    method: "POST",
+    token: changedLogin.data.token,
+    body: { rows: "测试家具厂,13812345678,地推,浙江省杭州市", stage: "名单" }
+  });
+  assert.equal(firstImport.status, 201);
+  assert.equal(firstImport.data.imported, 1);
+  const duplicateImport = await request("/import/customers", {
+    method: "POST",
+    token: changedLogin.data.token,
+    body: { rows: "重复测试家具厂,+86 138-1234-5678,地推,浙江省杭州市", stage: "名单" }
+  });
+  assert.equal(duplicateImport.status, 201);
+  assert.equal(duplicateImport.data.imported, 0);
+  assert.equal(duplicateImport.data.duplicates, 1);
+  assert.equal(duplicateImport.data.skipped[0].reason, "手机号已存在");
+  assert.ok(duplicateImport.data.reportUrl);
+
   const unitAdminLogin = await login("unitadmin", "123456", "10.0.0.12");
   assert.equal(unitAdminLogin.status, 200);
   assert.equal((await request("/users/5/password", { method: "PUT", token: unitAdminLogin.data.token, body: { newPassword: "abcdef" } })).status, 403);

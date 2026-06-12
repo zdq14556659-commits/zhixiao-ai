@@ -2368,6 +2368,10 @@ async function importCustomers(req, viewer) {
     failed: failed.length,
     reportUrl,
     skipped,
+    failures: failed,
+    message: skipped.length
+      ? `导入完成：成功${customers.length}条，发现${skipped.length}条重复客户，已自动跳过。`
+      : `导入完成：成功${customers.length}条，失败${failed.length}条。`,
     customers: customers.map(toMiniCustomer)
   };
 }

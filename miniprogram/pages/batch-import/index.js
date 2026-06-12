@@ -10,7 +10,9 @@ Page({
     channelSources: [],
     channelIndex: 0,
     filePath: "",
-    fileName: ""
+    fileName: "",
+    importing: false,
+    importResult: null
   },
 
   onLoad(options) {
@@ -42,6 +44,7 @@ Page({
     const stage = this.data.stages[this.data.stageIndex];
     const owner = this.data.owners[this.data.ownerIndex];
     const ownerUser = this.data.ownerUsers[this.data.ownerIndex] || {};
+    this.setData({ importing: true, importResult: null });
     wx.showLoading({ title: "导入中" });
     try {
       const result = await app.requestApi("/import/customers", {
@@ -60,11 +63,13 @@ Page({
         }
       });
       await new Promise((resolve) => app.loadRemoteState(resolve));
+      wx.hideLoading();
       this.showImportResult(result);
     } catch (error) {
       wx.showToast({ title: error.message || "导入失败", icon: "none" });
     } finally {
       wx.hideLoading();
+      this.setData({ importing: false });
     }
   },
 
@@ -82,6 +87,7 @@ Page({
   },
 
   uploadImportFile(filePath) {
+    this.setData({ importing: true, importResult: null });
     wx.showLoading({ title: "导入中" });
     const session = app.getSession();
     wx.uploadFile({
@@ -106,26 +112,42 @@ Page({
           const data = JSON.parse(res.data);
           if (res.statusCode < 200 || res.statusCode >= 300) throw new Error(data.error || `导入失败 ${res.statusCode}`);
           app.loadRemoteState(() => {
+            this.setData({ importing: false });
             this.showImportResult(data);
           });
         } catch (error) {
+          this.setData({ importing: false });
           wx.showToast({ title: error.message || "导入失败", icon: "none" });
         }
       },
       fail: () => {
         wx.hideLoading();
+        this.setData({ importing: false });
         wx.showToast({ title: "上传失败", icon: "none" });
       }
     });
   },
 
   showImportResult(result) {
-    const content = `共${result.total || 0}行，成功${result.imported || 0}行，重复${result.duplicates || 0}行，失败${result.failed || 0}行。`;
+    const normalizedResult = {
+      total: Number(result.total || 0),
+      imported: Number(result.imported || 0),
+      duplicates: Number(result.duplicates || 0),
+      failed: Number(result.failed || 0),
+      skipped: Array.isArray(result.skipped) ? result.skipped.slice(0, 10) : [],
+      failures: Array.isArray(result.failures) ? result.failures.slice(0, 10) : []
+    };
+    const content = `共${normalizedResult.total}行，成功${normalizedResult.imported}行，重复${normalizedResult.duplicates}行，失败${normalizedResult.failed}行。`;
     const reportUrl = result.reportUrl
       ? `${app.globalData.apiBase.replace(/\/api$/, "")}${result.reportUrl}`
       : "";
+    normalizedResult.reportUrl = reportUrl;
+    this.setData({ importResult: normalizedResult });
+    if (normalizedResult.duplicates) {
+      wx.showToast({ title: `发现${normalizedResult.duplicates}条重复客户，已跳过`, icon: "none", duration: 2600 });
+    }
     wx.showModal({
-      title: "导入完成",
+      title: normalizedResult.duplicates && !normalizedResult.imported ? "客户已存在" : "导入完成",
       content: reportUrl ? `${content}\n点击“复制报告”可在浏览器下载未导入明细。` : content,
       confirmText: reportUrl ? "复制报告" : "知道了",
       cancelText: "返回客户",
@@ -135,5 +157,10 @@ Page({
         if (res.cancel || (!reportUrl && res.confirm)) wx.navigateBack();
       }
     });
+  },
+
+  copyReport() {
+    const reportUrl = this.data.importResult?.reportUrl;
+    if (reportUrl) wx.setClipboardData({ data: reportUrl });
   }
 });

@@ -33,10 +33,36 @@
       </view>
       <view class="form-hint">也可以上传 CSV/TXT 文件，字段请和 Web 下载样表一致。</view>
       <view class="actions">
-        <button class="plain-btn" type="button" bindtap="chooseFile">上传文件</button>
-        <button class="primary-btn" form-type="submit">粘贴导入</button>
+        <button class="plain-btn" type="button" bindtap="chooseFile" disabled="{{importing}}">上传文件</button>
+        <button class="primary-btn" form-type="submit" loading="{{importing}}" disabled="{{importing}}">粘贴导入</button>
       </view>
       <view wx:if="{{fileName}}" class="file-name">已选择：{{fileName}}</view>
     </view>
   </form>
+
+  <view wx:if="{{importResult}}" class="card import-result-card">
+    <view class="section-title">导入结果</view>
+    <view class="result-grid">
+      <view><text>总行数</text><strong>{{importResult.total}}</strong></view>
+      <view class="success"><text>成功</text><strong>{{importResult.imported}}</strong></view>
+      <view class="warning"><text>重复</text><strong>{{importResult.duplicates}}</strong></view>
+      <view class="danger"><text>失败</text><strong>{{importResult.failed}}</strong></view>
+    </view>
+    <view wx:if="{{importResult.duplicates}}" class="duplicate-notice">重复手机号对应的客户已经存在，本次已自动跳过，不会覆盖原客户。</view>
+    <view wx:if="{{importResult.skipped.length}}" class="result-list">
+      <view class="result-list-title">重复明细</view>
+      <view class="result-row" wx:for="{{importResult.skipped}}" wx:key="rowNumber">
+        <text>第{{item.rowNumber}}行 · {{item.name || '未命名客户'}}</text>
+        <text>{{item.phone}} · {{item.reason}}</text>
+      </view>
+    </view>
+    <view wx:if="{{importResult.failures.length}}" class="result-list">
+      <view class="result-list-title">失败明细</view>
+      <view class="result-row" wx:for="{{importResult.failures}}" wx:key="rowNumber">
+        <text>第{{item.rowNumber}}行 · {{item.name || '未命名客户'}}</text>
+        <text>{{item.reason}}</text>
+      </view>
+    </view>
+    <button wx:if="{{importResult.reportUrl}}" class="plain-btn report-btn" bindtap="copyReport">复制完整明细下载地址</button>
+  </view>
 </view>
