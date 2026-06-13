@@ -100,7 +100,7 @@ function recordOwner(record = {}) {
   return state.users.find((user) => user.id === record.ownerId) || state.users.find((user) => user.name === record.owner) || {};
 }
 
-function canSeeRecord(record = {}, user = currentUser()) {
+function canSeePrivateRecord(record = {}, user = currentUser()) {
   const role = roleForUser(user);
   if (role.customerScope === "all") return true;
   if (ownsRecord(record, user)) return true;
@@ -110,6 +110,10 @@ function canSeeRecord(record = {}, user = currentUser()) {
   if (role.customerScope === "zone") return zone && zone === user.zone;
   if (role.customerScope === "unit") return unitId && unitId === user.unitId;
   return false;
+}
+
+function canSeeRecord(record = {}, user = currentUser()) {
+  return record.ownershipStatus === "public_pool" || canSeePrivateRecord(record, user);
 }
 
 function visibleUsers() {
@@ -133,13 +137,14 @@ function latestFollow(customer = {}) {
 }
 
 function ownershipLabel(customer = {}) {
-  if (customer.ownershipStatus === "claimable") return "可认领";
+  if (customer.ownershipStatus === "public_pool" || customer.ownershipStatus === "claimable") return "公海客户";
   if (customer.ownershipStatus === "pending_followup") return `待有效跟进 · ${customer.claimDaysRemaining || 0}天`;
   return "";
 }
 
 function stageTimeConfig(stage = currentStage) {
   if (stage === "全部") return { label: "阶段时间", field: "createdAt" };
+  if (stage === "公海") return { label: "进入公海", field: "publicPoolAt" };
   if (stage === "名单") return { label: "录入时间", field: "createdAt" };
   if (stage === "成交") return { label: "成交时间", field: "dealAt" };
   return { label: "转化时间", field: stage === "商机" ? "opportunityAt" : "leadAt" };
@@ -180,10 +185,15 @@ function daysSince(value) {
 }
 
 function isCustomerAssignable(customer = {}) {
+  if (customer.ownershipStatus === "public_pool") return customer.stage !== "成交";
   if (customer.stage === "名单") return true;
   if (!["线索", "商机"].includes(customer.stage)) return false;
   const latest = latestFollow(customer);
-  return !latest || daysSince(latest) > 30;
+  return !latest || daysSince(latest) >= 30;
+}
+
+function canSelectCustomerForAssign(customer = {}) {
+  return canAssignCustomers() && canSeePrivateRecord(customer) && isCustomerAssignable(customer);
 }
 
 async function api(path, options = {}) {
@@ -231,27 +241,40 @@ function setFormSubmitting(form, submitting, loadingText) {
 function showSuccessFeedback(title, detail) {
   $("#successDialogTitle").textContent = title;
   $("#successDialogDetail").textContent = detail;
-  const link = $("#successDialogLink");
-  if (link) {
-    link.hidden = true;
-    link.removeAttribute("href");
-  }
   const dialog = $("#successDialog");
   if (!dialog.open) dialog.showModal();
 }
 
 function showImportFeedback(result) {
-  const duplicateCount = Number(result.duplicates || 0);
-  const importedCount = Number(result.imported || 0);
-  showSuccessFeedback(
-    duplicateCount && !importedCount ? "未导入重复客户" : "导入完成",
-    `共 ${result.total || 0} 行，成功 ${importedCount} 行，重复 ${duplicateCount} 行，失败 ${result.failed || 0} 行。${duplicateCount ? " 重复手机号已自动跳过，未覆盖原客户。" : ""}`
-  );
-  const link = $("#successDialogLink");
-  if (link && result.reportUrl) {
-    link.href = result.reportUrl.startsWith("http") ? result.reportUrl : `${window.location.origin}${result.reportUrl}`;
+  const total = Number(result.total || 0);
+  const imported = Number(result.imported || 0);
+  const duplicates = Number(result.duplicates || 0);
+  const failed = Number(result.failed || 0);
+  const details = [
+    ...(Array.isArray(result.skipped) ? result.skipped : []),
+    ...(Array.isArray(result.failures) ? result.failures : [])
+  ];
+  $("#importResultTitle").textContent = duplicates && !imported && !failed ? "重复客户未导入" : "导入完成";
+  $("#importResultStats").innerHTML = [
+    ["总行数", total, ""],
+    ["成功", imported, "success"],
+    ["重复", duplicates, "warning"],
+    ["失败", failed, "danger"]
+  ].map(([label, value, className]) => `<div class="${className}"><span>${label}</span><b>${value}</b></div>`).join("");
+  $("#importResultDetails").innerHTML = details.length
+    ? details.map((item) => `<article><b>第${Number(item.rowNumber || 0)}行 · ${escapeHtml(item.name || "未命名客户")}</b><span>${escapeHtml(item.phone || "手机号未填写")} · ${escapeHtml(item.reason || "未导入")}</span></article>`).join("")
+    : '<div class="empty">本次没有未导入客户</div>';
+  const link = $("#importResultDownload");
+  if (result.reportUrl) {
+    const apiOrigin = API_BASE.replace(/\/api\/?$/, "");
+    link.href = result.reportUrl.startsWith("http") ? result.reportUrl : `${apiOrigin}${result.reportUrl}`;
     link.hidden = false;
+  } else {
+    link.hidden = true;
+    link.removeAttribute("href");
   }
+  const dialog = $("#importResultDialog");
+  if (!dialog.open) dialog.showModal();
 }
 
 async function loadState() {
@@ -512,14 +535,20 @@ function renderDashboardSummary(data) {
 function renderCustomers() {
   const customers = scopeCustomers();
   const stageTime = stageTimeConfig();
+  const customerTabs = [...stages, "公海"];
   const currentFilters = {
     channel: $("#channelFilter")?.value || "",
     createdBy: $("#createdByFilter")?.value || "",
     followPerson: $("#followPersonFilter")?.value || "",
     unit: $("#unitFilter")?.value || ""
   };
-  $("#stageTabs").innerHTML = stages
-    .map((stage) => `<button class="${currentStage === stage ? "active" : ""}" data-stage="${stage}">${stage}<span>${customers.filter((item) => item.stage === stage).length}</span></button>`)
+  $("#stageTabs").innerHTML = customerTabs
+    .map((stage) => {
+      const count = stage === "公海"
+        ? customers.filter((item) => item.ownershipStatus === "public_pool").length
+        : customers.filter((item) => item.stage === stage && item.ownershipStatus !== "public_pool").length;
+      return `<button class="${currentStage === stage ? "active" : ""}" data-stage="${stage}">${stage}<span>${count}</span></button>`;
+    })
     .join("");
 
   const ownerOptions = visibleSales();
@@ -539,6 +568,8 @@ function renderCustomers() {
   $("#customerStageSelect").innerHTML = stages.map((stage) => `<option>${stage}</option>`).join("");
   $("#customerChannelSelect").innerHTML = channelSources.map((source) => `<option>${source}</option>`).join("");
   $("#batchAssignBtn").classList.toggle("hidden", !canAssignCustomers());
+  $("#addCustomerBtn").classList.toggle("hidden", currentStage === "公海");
+  $("#batchImportBtn").classList.toggle("hidden", currentStage === "公海");
   $("#stageTimeHeader").textContent = stageTime.label;
   $("#stageTimeFilterLabel").textContent = stageTime.label;
 
@@ -556,7 +587,8 @@ function renderCustomers() {
   const filteredRows = customers.filter((item) => {
     const source = `${item.name} ${item.phone}`.toLowerCase();
     if (dashboardDrilldownIds && !dashboardDrilldownIds.has(Number(item.id))) return false;
-    if (currentStage !== "全部" && item.stage !== currentStage) return false;
+    const isPublicPool = item.ownershipStatus === "public_pool";
+    if (currentStage === "公海" ? !isPublicPool : (isPublicPool || item.stage !== currentStage)) return false;
     if (keyword && !source.includes(keyword)) return false;
     if (channel && normalizeChannelSource(item.channelSource) !== channel) return false;
     if (createdBy && item.createdBy !== createdBy) return false;
@@ -574,7 +606,7 @@ function renderCustomers() {
   const start = (customerPage - 1) * customerPageSize;
   const rows = filteredRows.slice(start, start + customerPageSize);
   currentCustomerRows = rows;
-  const selectableIds = new Set(filteredRows.filter((item) => canAssignCustomers() && isCustomerAssignable(item)).map((item) => Number(item.id)));
+  const selectableIds = new Set(filteredRows.filter(canSelectCustomerForAssign).map((item) => Number(item.id)));
   selectedCustomerIds = new Set([...selectedCustomerIds].filter((id) => selectableIds.has(Number(id))));
   $("#customerRows").innerHTML = rows.length
     ? rows.map(customerRow).join("")
@@ -593,11 +625,17 @@ function customerRow(item) {
   const photoHtml = photos.length
     ? `<div class="customer-photos">${photos.slice(0, 4).map((url) => `<img src="${escapeHtml(url)}" data-photo="${escapeHtml(url)}" alt="${escapeHtml(item.name || "客户图片")}" />`).join("")}${photos.length > 4 ? `<span>+${photos.length - 4}</span>` : ""}</div>`
     : "";
-  const assignable = canAssignCustomers() && isCustomerAssignable(item);
+  const isPublicPool = item.ownershipStatus === "public_pool";
+  const assignable = canSelectCustomerForAssign(item);
   const checked = selectedCustomerIds.has(Number(item.id)) ? "checked" : "";
   const disabled = assignable ? "" : "disabled";
-  const title = assignable ? "选择客户" : "当前客户暂不满足分配条件";
+  const title = assignable ? "选择客户" : (isPublicPool ? "只能分配权限范围内的公海客户" : "当前客户暂不满足分配条件");
   const ownership = ownershipLabel(item);
+  const actions = isPublicPool
+    ? (roleForUser(currentUser()).customerScope === "self"
+        ? `<button class="primary" data-action="claim" data-id="${item.id}">认领</button>`
+        : `<span class="pool-action-hint">${assignable ? "请勾选后分配" : "不在您的分配范围"}</span>`)
+    : `<button data-action="follow" data-id="${item.id}">跟进</button><button data-action="advance" data-id="${item.id}">${item.stage === "成交" ? "已成交" : "推进"}</button>`;
   return `
     <tr>
       <td class="select-cell"><input type="checkbox" class="customer-select" data-id="${item.id}" ${checked} ${disabled} title="${title}" /></td>
@@ -612,14 +650,14 @@ function customerRow(item) {
       <td class="${dueClass}">${item.nextFollow || "未设置"}</td>
       <td>${escapeHtml(item.unit || "待分配")}</td>
       <td>${escapeHtml(item.address || item.region || "待补充")}</td>
-      <td><button data-action="follow" data-id="${item.id}">跟进</button><button data-action="advance" data-id="${item.id}">${item.stage === "成交" ? "已成交" : "推进"}</button></td>
+      <td>${actions}</td>
     </tr>`;
 }
 
 function updateCustomerSelectionUI() {
-  const selectableRows = currentCustomerRows.filter((item) => canAssignCustomers() && isCustomerAssignable(item));
+  const selectableRows = currentCustomerRows.filter(canSelectCustomerForAssign);
   const pageSelectedCount = selectableRows.filter((item) => selectedCustomerIds.has(Number(item.id))).length;
-  const selectedCount = currentFilteredCustomerRows.filter((item) => canAssignCustomers() && isCustomerAssignable(item) && selectedCustomerIds.has(Number(item.id))).length;
+  const selectedCount = currentFilteredCustomerRows.filter((item) => canSelectCustomerForAssign(item) && selectedCustomerIds.has(Number(item.id))).length;
   const selectAll = $("#selectAllCustomers");
   if (selectAll) {
     selectAll.disabled = selectableRows.length === 0;
@@ -645,7 +683,7 @@ function toggleCustomerSelection(event) {
 function toggleAllCustomers(event) {
   const checked = event.currentTarget.checked;
   currentCustomerRows.forEach((item) => {
-    if (!canAssignCustomers() || !isCustomerAssignable(item)) return;
+    if (!canSelectCustomerForAssign(item)) return;
     const id = Number(item.id);
     if (checked) selectedCustomerIds.add(id);
     else selectedCustomerIds.delete(id);
@@ -661,7 +699,7 @@ function openBatchAssignDialog() {
 }
 
 function selectedCustomerIdsForAssign() {
-  const selectableIds = new Set(currentFilteredCustomerRows.filter((item) => canAssignCustomers() && isCustomerAssignable(item)).map((item) => Number(item.id)));
+  const selectableIds = new Set(currentFilteredCustomerRows.filter(canSelectCustomerForAssign).map((item) => Number(item.id)));
   return [...selectedCustomerIds].map(Number).filter((id) => selectableIds.has(id));
 }
 
@@ -770,17 +808,38 @@ async function saveCustomer(event) {
       }
     } else if (!id && error.code === "CUSTOMER_CLAIMABLE") {
       if (!window.confirm("该客户已释放，是否认领并接手原客户资料？")) return;
-      await api("/customers/claim", { method: "POST", body: { phone: customer.phone } });
+      const claimed = await api("/customers/claim", { method: "POST", body: { phone: customer.phone } });
       $("#customerDialog").close();
+      currentStage = claimed.stage || "名单";
+      customerPage = 1;
       await loadState();
-      return toast("客户认领成功，请在3天内完成有效跟进");
+      const fresh = state.customers.find((item) => Number(item.id) === Number(claimed.id));
+      if (fresh) openCustomerDialog(fresh);
+      return toast("认领成功，请填写首次有效跟进");
     } else {
       return toast(error.code === "DUPLICATE_CUSTOMER" ? "该客户已存在" : error.message);
     }
   }
   $("#customerDialog").close();
+  customerPage = 1;
   await loadState();
   toast("已保存");
+}
+
+async function claimCustomer(id) {
+  if (!window.confirm("认领后将获得3天临时保护，请及时提交有效跟进。确认认领？")) return;
+  try {
+    const claimed = await api(`/customers/${id}/claim`, { method: "POST" });
+    currentStage = claimed.stage || "名单";
+    customerPage = 1;
+    await loadState();
+    const fresh = state.customers.find((item) => Number(item.id) === Number(claimed.id));
+    if (fresh) openCustomerDialog(fresh);
+    toast("认领成功，请填写首次有效跟进");
+  } catch (error) {
+    await loadState();
+    toast(error.message || "认领失败，客户可能已被他人认领");
+  }
 }
 
 async function advanceCustomer(id) {
@@ -867,6 +926,7 @@ async function batchImport(event) {
   const result = await api("/import/customers", { method: "POST", body: importBody });
   $("#batchDialog").close();
   event.currentTarget.reset();
+  customerPage = 1;
   await loadState();
   showImportFeedback(result);
 }
@@ -1395,6 +1455,7 @@ function wireEvents() {
     }
     if (button.dataset.action === "follow") openCustomerDialog(state.customers.find((item) => item.id === id));
     if (button.dataset.action === "advance") advanceCustomer(id);
+    if (button.dataset.action === "claim") claimCustomer(id);
     if (button.dataset.action === "assign") {
       const select = button.parentElement.querySelector(`select[data-role="assign-owner"][data-id="${id}"]`);
       assignCustomer(id, select?.value);
@@ -1423,4 +1484,7 @@ function wireEvents() {
 
 wireEvents();
 if (requireLogin()) loadState().catch((error) => toast(error.message));
+window.addEventListener("focus", () => {
+  if (session() && currentView === "customers") loadState().catch(() => {});
+});
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("./service-worker.js").catch(() => {});

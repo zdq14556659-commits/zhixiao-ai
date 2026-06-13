@@ -451,7 +451,7 @@ App({
     return state.users.find((user) => Number(user.id) === Number(record.ownerId)) || state.users.find((user) => user.name === record.owner) || {};
   },
 
-  canSeeRecord(record, user = this.getCurrentUser()) {
+  canSeePrivateRecord(record, user = this.getCurrentUser()) {
     const role = this.getRole(user);
     if (role.customerScope === "all") return true;
     if (this.ownsRecord(record, user)) return true;
@@ -461,6 +461,10 @@ App({
     if (role.customerScope === "zone") return zone && zone === user.zone;
     if (role.customerScope === "unit") return unitId && unitId === user.unitId;
     return false;
+  },
+
+  canSeeRecord(record, user = this.getCurrentUser()) {
+    return record.ownershipStatus === "public_pool" || this.canSeePrivateRecord(record, user);
   },
 
   visibleUsers() {

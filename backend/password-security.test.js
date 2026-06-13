@@ -143,7 +143,7 @@ async function run() {
   assert.equal(duplicateImport.status, 201);
   assert.equal(duplicateImport.data.imported, 0);
   assert.equal(duplicateImport.data.duplicates, 1);
-  assert.equal(duplicateImport.data.skipped[0].reason, "手机号已存在");
+  assert.equal(duplicateImport.data.skipped[0].reason, "系统已有重复客户");
   assert.ok(duplicateImport.data.reportUrl);
 
   const unitAdminLogin = await login("unitadmin", "123456", "10.0.0.12");

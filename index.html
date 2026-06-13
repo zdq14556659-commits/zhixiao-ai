@@ -350,8 +350,19 @@
         <div class="success-dialog-icon" aria-hidden="true">✓</div>
         <h2 id="successDialogTitle">添加成功</h2>
         <p id="successDialogDetail">列表和选择项已自动更新。</p>
-        <a id="successDialogLink" class="template-link" hidden target="_blank" rel="noopener">下载未导入明细</a>
         <button class="primary" value="close">知道了</button>
+      </form>
+    </dialog>
+
+    <dialog id="importResultDialog" class="import-result-dialog">
+      <form method="dialog" class="dialog-form import-result-content">
+        <div class="panel-title"><h2 id="importResultTitle">导入完成</h2><span>未导入明细不会显示原客户负责人</span></div>
+        <div class="import-result-stats" id="importResultStats"></div>
+        <div class="import-result-details" id="importResultDetails"></div>
+        <div class="button-row import-result-actions">
+          <a id="importResultDownload" class="template-link" hidden target="_blank" rel="noopener">下载完整 CSV 明细</a>
+          <button class="primary" value="close">知道了</button>
+        </div>
       </form>
     </dialog>
 

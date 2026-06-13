@@ -20,6 +20,8 @@ textarea {
 .result-grid .danger strong { color: #f56c6c; }
 .duplicate-notice { margin-top: 18rpx; padding: 18rpx; border-left: 6rpx solid #e6a23c; border-radius: 6rpx; color: #8a5a00; background: #fdf6ec; font-size: 25rpx; line-height: 1.6; }
 .result-list { margin-top: 20rpx; }
+.result-scroll { max-height: 520rpx; margin-top: 16rpx; border: 1rpx solid #e4e9f0; border-radius: 8rpx; }
+.result-scroll .result-list { margin: 0; padding: 0 16rpx; }
 .result-list-title { margin-bottom: 8rpx; color: #1f2d3d; font-weight: 800; }
 .result-row { display: grid; gap: 4rpx; padding: 14rpx 0; border-top: 1rpx solid #e4e9f0; color: #606266; font-size: 24rpx; }
 .result-row text:last-child { color: #7a8798; }

@@ -49,20 +49,23 @@
       <view class="danger"><text>失败</text><strong>{{importResult.failed}}</strong></view>
     </view>
     <view wx:if="{{importResult.duplicates}}" class="duplicate-notice">重复手机号对应的客户已经存在，本次已自动跳过，不会覆盖原客户。</view>
-    <view wx:if="{{importResult.skipped.length}}" class="result-list">
-      <view class="result-list-title">重复明细</view>
-      <view class="result-row" wx:for="{{importResult.skipped}}" wx:key="rowNumber">
-        <text>第{{item.rowNumber}}行 · {{item.name || '未命名客户'}}</text>
-        <text>{{item.phone}} · {{item.reason}}</text>
+    <scroll-view wx:if="{{importResult.skipped.length || importResult.failures.length}}" class="result-scroll" scroll-y>
+      <view wx:if="{{importResult.skipped.length}}" class="result-list">
+        <view class="result-list-title">重复明细</view>
+        <view class="result-row" wx:for="{{importResult.skipped}}" wx:key="rowNumber">
+          <text>第{{item.rowNumber}}行 · {{item.name || '未命名客户'}}</text>
+          <text>{{item.phone || '手机号未填写'}} · {{item.reason}}</text>
+        </view>
       </view>
-    </view>
-    <view wx:if="{{importResult.failures.length}}" class="result-list">
-      <view class="result-list-title">失败明细</view>
-      <view class="result-row" wx:for="{{importResult.failures}}" wx:key="rowNumber">
-        <text>第{{item.rowNumber}}行 · {{item.name || '未命名客户'}}</text>
-        <text>{{item.reason}}</text>
+      <view wx:if="{{importResult.failures.length}}" class="result-list">
+        <view class="result-list-title">失败明细</view>
+        <view class="result-row" wx:for="{{importResult.failures}}" wx:key="rowNumber">
+          <text>第{{item.rowNumber}}行 · {{item.name || '未命名客户'}}</text>
+          <text>{{item.phone || '手机号未填写'}} · {{item.reason}}</text>
+        </view>
       </view>
-    </view>
+    </scroll-view>
     <button wx:if="{{importResult.reportUrl}}" class="plain-btn report-btn" bindtap="copyReport">复制完整明细下载地址</button>
+    <button class="primary-btn report-btn" bindtap="backToCustomers">返回客户列表</button>
   </view>
 </view>

@@ -134,10 +134,9 @@ Page({
       imported: Number(result.imported || 0),
       duplicates: Number(result.duplicates || 0),
       failed: Number(result.failed || 0),
-      skipped: Array.isArray(result.skipped) ? result.skipped.slice(0, 10) : [],
-      failures: Array.isArray(result.failures) ? result.failures.slice(0, 10) : []
+      skipped: Array.isArray(result.skipped) ? result.skipped : [],
+      failures: Array.isArray(result.failures) ? result.failures : []
     };
-    const content = `共${normalizedResult.total}行，成功${normalizedResult.imported}行，重复${normalizedResult.duplicates}行，失败${normalizedResult.failed}行。`;
     const reportUrl = result.reportUrl
       ? `${app.globalData.apiBase.replace(/\/api$/, "")}${result.reportUrl}`
       : "";
@@ -145,22 +144,17 @@ Page({
     this.setData({ importResult: normalizedResult });
     if (normalizedResult.duplicates) {
       wx.showToast({ title: `发现${normalizedResult.duplicates}条重复客户，已跳过`, icon: "none", duration: 2600 });
+    } else {
+      wx.showToast({ title: "导入完成", icon: "success" });
     }
-    wx.showModal({
-      title: normalizedResult.duplicates && !normalizedResult.imported ? "客户已存在" : "导入完成",
-      content: reportUrl ? `${content}\n点击“复制报告”可在浏览器下载未导入明细。` : content,
-      confirmText: reportUrl ? "复制报告" : "知道了",
-      cancelText: "返回客户",
-      showCancel: true,
-      success: (res) => {
-        if (res.confirm && reportUrl) wx.setClipboardData({ data: reportUrl });
-        if (res.cancel || (!reportUrl && res.confirm)) wx.navigateBack();
-      }
-    });
   },
 
   copyReport() {
     const reportUrl = this.data.importResult?.reportUrl;
     if (reportUrl) wx.setClipboardData({ data: reportUrl });
+  },
+
+  backToCustomers() {
+    wx.navigateBack();
   }
 });

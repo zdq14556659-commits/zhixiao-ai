@@ -39,6 +39,8 @@ const CUSTOMER_CLAIM_DAYS = 3;
 const OWNERSHIP_PENDING = "pending_followup";
 const OWNERSHIP_LOCKED = "locked";
 const OWNERSHIP_CLAIMABLE = "claimable";
+const OWNERSHIP_PUBLIC = "public_pool";
+const PUBLIC_POOL_DAYS = 30;
 const DEFAULT_ADMIN_PASSWORD = "778899";
 const TARGET_FIELDS = ["revenueTarget", "contractTarget", "listTarget", "leadTarget", "opportunityTarget", "dealTarget"];
 const DEFAULT_ROLES = [
@@ -280,31 +282,16 @@ async function routeApi(req, res, url) {
     const normalizedPhone = normalizePhone(body.phone);
     const index = state.customers.findIndex((item) => normalizePhone(item.phoneNormalized || item.phone) === normalizedPhone);
     if (!normalizedPhone || index < 0) return sendJson(res, 404, { error: "未找到可认领客户" });
-    const previous = state.customers[index];
-    if (!isCustomerClaimable(previous)) {
-      return sendJson(res, 409, { error: "该客户已存在", code: "DUPLICATE_CUSTOMER" });
-    }
-    const now = new Date().toISOString();
-    const next = normalizeCustomer({
-      ...previous,
-      owner: viewer.name,
-      ownerId: viewer.id,
-      followPerson: viewer.name,
-      unitId: viewer.unitId || "",
-      unit: viewer.unit || "",
-      zone: viewer.zone || "",
-      region: viewer.zone || previous.region,
-      ownershipStatus: OWNERSHIP_PENDING,
-      claimUntil: addDaysToIso(now, CUSTOMER_CLAIM_DAYS),
-      effectiveFollowUpAt: "",
-      ownershipHistory: [
-        ...(previous.ownershipHistory || []),
-        ownershipEvent("claimed", previous, viewer, viewer, "释放客户认领")
-      ]
-    }, state);
-    state.customers[index] = next;
-    writeState(state);
-    return sendJson(res, 200, toMiniCustomer(next));
+    return claimCustomerAtIndex(res, state, viewer, index);
+  }
+
+  const customerClaim = url.pathname.match(/^\/api\/customers\/(\d+)\/claim$/);
+  if (req.method === "POST" && customerClaim) {
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    const index = state.customers.findIndex((item) => Number(item.id) === Number(customerClaim[1]));
+    if (index < 0) return sendJson(res, 404, { error: "未找到可认领客户" });
+    return claimCustomerAtIndex(res, state, viewer, index);
   }
 
   const customerFollow = url.pathname.match(/^\/api\/customers\/(\d+)\/follow$/);
@@ -314,6 +301,9 @@ async function routeApi(req, res, url) {
     const customer = state.customers.find((item) => item.id === Number(customerFollow[1]));
     if (!customer) return sendJson(res, 404, { error: "customer not found" });
     const viewer = getAuthUser(req, state);
+    if (isCustomerPublicPool(customer)) {
+      return sendJson(res, 409, { error: "公海客户需先认领后跟进", code: "CUSTOMER_CLAIM_REQUIRED" });
+    }
     if (!canViewRecord(state, viewer, customer)) return sendJson(res, 403, { error: "无权跟进该客户" });
     const note = String(body.note || "").trim();
     if (!note) return sendJson(res, 400, { error: "请填写跟进内容" });
@@ -346,6 +336,7 @@ async function routeApi(req, res, url) {
     if (!target) return sendJson(res, 400, { error: "请选择当前权限内的销售" });
     const { next, previousStage } = buildAssignedCustomer(state, viewer, customer, target, body);
     state.customers[index] = next;
+    transferCustomerVisits(state, customer, next);
     if (previousStage !== next.stage) {
       state.activities.push({ date: today(), owner: next.owner, type: next.stage, customerId: next.id });
     }
@@ -381,6 +372,7 @@ async function routeApi(req, res, url) {
       }
       const { next, previousStage } = buildAssignedCustomer(state, viewer, customer, target, body);
       state.customers[index] = next;
+      transferCustomerVisits(state, customer, next);
       if (previousStage !== next.stage) {
         state.activities.push({ date: today(), owner: next.owner, type: next.stage, customerId: next.id });
       }
@@ -402,6 +394,9 @@ async function routeApi(req, res, url) {
     if (index < 0) return sendJson(res, 404, { error: "customer not found" });
     const previous = state.customers[index];
     const viewer = getAuthUser(req, state);
+    if (isCustomerPublicPool(previous)) {
+      return sendJson(res, 409, { error: "公海客户需先认领后修改", code: "CUSTOMER_CLAIM_REQUIRED" });
+    }
     if (!canViewRecord(state, viewer, previous)) return sendJson(res, 403, { error: "无权修改该客户" });
     if (!canUseAdmin(state, viewer)) {
       const changesName = body.name !== undefined && String(body.name).trim() !== String(previous.name || "").trim();
@@ -977,7 +972,7 @@ function normalizeCustomer(customer, context = {}) {
   const stageTimes = normalizeStageTimes(customer, context.activities || [], createdAt);
   const owner = customer.owner || ownerUser.name || "林晨";
   const ownerId = customer.ownerId || ownerUser.id || "";
-  const ownershipStatus = [OWNERSHIP_PENDING, OWNERSHIP_LOCKED].includes(customer.ownershipStatus)
+  const ownershipStatus = [OWNERSHIP_PENDING, OWNERSHIP_LOCKED, OWNERSHIP_PUBLIC].includes(customer.ownershipStatus)
     ? customer.ownershipStatus
     : OWNERSHIP_LOCKED;
   return {
@@ -1012,6 +1007,8 @@ function normalizeCustomer(customer, context = {}) {
     ownershipStatus: context.legacyOwnership ? OWNERSHIP_LOCKED : ownershipStatus,
     claimUntil: context.legacyOwnership ? "" : (customer.claimUntil || ""),
     effectiveFollowUpAt: context.legacyOwnership ? (customer.effectiveFollowUpAt || createdAt) : (customer.effectiveFollowUpAt || ""),
+    publicPoolAt: context.legacyOwnership ? "" : (customer.publicPoolAt || ""),
+    publicPoolReason: context.legacyOwnership ? "" : (customer.publicPoolReason || ""),
     ownershipHistory: Array.isArray(customer.ownershipHistory) ? customer.ownershipHistory : [],
     ...stageTimes,
     followUps
@@ -1277,15 +1274,58 @@ function addDaysToIso(value, days) {
 }
 
 function effectiveOwnershipStatus(customer = {}, at = Date.now()) {
-  if (customer.ownershipStatus === OWNERSHIP_PENDING && customer.claimUntil) {
-    const deadline = Date.parse(customer.claimUntil);
-    if (Number.isFinite(deadline) && deadline <= at && !customer.effectiveFollowUpAt) return OWNERSHIP_CLAIMABLE;
-  }
-  return customer.ownershipStatus || OWNERSHIP_LOCKED;
+  return customerPublicPoolInfo(customer, at).isPublic
+    ? OWNERSHIP_PUBLIC
+    : (customer.ownershipStatus || OWNERSHIP_LOCKED);
 }
 
 function isCustomerClaimable(customer = {}) {
-  return effectiveOwnershipStatus(customer) === OWNERSHIP_CLAIMABLE;
+  return customerPublicPoolInfo(customer).isPublic;
+}
+
+function isCustomerPublicPool(customer = {}, at = Date.now()) {
+  return customerPublicPoolInfo(customer, at).isPublic;
+}
+
+function customerPublicPoolInfo(customer = {}, at = Date.now()) {
+  if (customer.stage === "成交") return { isPublic: false, at: "", reason: "" };
+  if (!["名单", "线索", "商机"].includes(customer.stage || "名单")) return { isPublic: false, at: "", reason: "" };
+
+  if ([OWNERSHIP_PUBLIC, OWNERSHIP_CLAIMABLE].includes(customer.ownershipStatus)) {
+    return {
+      isPublic: true,
+      at: customer.publicPoolAt || customer.claimUntil || new Date(at).toISOString(),
+      reason: customer.publicPoolReason || "inactive_30_days"
+    };
+  }
+
+  if (customer.ownershipStatus === OWNERSHIP_PENDING && customer.claimUntil && !customer.effectiveFollowUpAt) {
+    const deadline = Date.parse(customer.claimUntil);
+    if (Number.isFinite(deadline) && deadline <= at) {
+      return { isPublic: true, at: new Date(deadline).toISOString(), reason: "new_customer_timeout" };
+    }
+    return { isPublic: false, at: "", reason: "" };
+  }
+
+  const lastManualAt = latestEffectiveManualFollowAt(customer);
+  const fallbackAt = customer.effectiveFollowUpAt || customer.createdAt || "";
+  const activityAt = Date.parse(lastManualAt || fallbackAt);
+  if (!Number.isFinite(activityAt)) return { isPublic: false, at: "", reason: "" };
+  const publicAt = activityAt + PUBLIC_POOL_DAYS * 24 * 60 * 60 * 1000;
+  if (publicAt <= at) {
+    return { isPublic: true, at: new Date(publicAt).toISOString(), reason: "inactive_30_days" };
+  }
+  return { isPublic: false, at: "", reason: "" };
+}
+
+function latestEffectiveManualFollowAt(customer = {}) {
+  const followUps = Array.isArray(customer.followUps) ? customer.followUps : [];
+  const syntheticNotes = new Set(["新增客户。", "名单文件导入。", "更新了客户信息。"]);
+  return followUps
+    .filter((item) => !item.isSystem && String(item.note || "").trim() && !syntheticNotes.has(String(item.note || "").trim()))
+    .map((item) => item.createdAt || item.date || "")
+    .filter((value) => Number.isFinite(Date.parse(value)))
+    .sort((left, right) => Date.parse(right) - Date.parse(left))[0] || "";
 }
 
 function claimDaysRemaining(claimUntil) {
@@ -1309,12 +1349,65 @@ function ownershipEvent(type, previous, nextOwner, operator, reason) {
 }
 
 function lockCustomerOwnership(customer, operator, reason) {
-  if (!String(customer.effectiveFollowUpAt || "").trim()) customer.effectiveFollowUpAt = new Date().toISOString();
-  if (effectiveOwnershipStatus(customer) !== OWNERSHIP_LOCKED) {
+  const previousStatus = effectiveOwnershipStatus(customer);
+  customer.effectiveFollowUpAt = new Date().toISOString();
+  if (previousStatus !== OWNERSHIP_LOCKED) {
     customer.ownershipHistory = customer.ownershipHistory || [];
     customer.ownershipHistory.push(ownershipEvent("locked", customer, customer, operator, reason));
   }
   customer.ownershipStatus = OWNERSHIP_LOCKED;
+  customer.claimUntil = "";
+  customer.publicPoolAt = "";
+  customer.publicPoolReason = "";
+}
+
+function claimCustomerAtIndex(res, state, viewer, index) {
+  const role = findRole(state.roles, viewer.roleId, viewer.role);
+  if (role.customerScope !== "self" && role.name !== "销售") {
+    return sendJson(res, 403, { error: "主管及以上请使用客户分配功能" });
+  }
+  const previous = state.customers[index];
+  if (!isCustomerClaimable(previous)) {
+    return sendJson(res, 409, { error: "该客户已被认领或不在公海", code: "DUPLICATE_CUSTOMER" });
+  }
+  const now = new Date().toISOString();
+  const next = normalizeCustomer({
+    ...previous,
+    owner: viewer.name,
+    ownerId: viewer.id,
+    followPerson: viewer.name,
+    unitId: viewer.unitId || "",
+    unit: viewer.unit || "",
+    zone: viewer.zone || "",
+    region: viewer.zone || previous.region,
+    ownershipStatus: OWNERSHIP_PENDING,
+    claimUntil: addDaysToIso(now, CUSTOMER_CLAIM_DAYS),
+    effectiveFollowUpAt: "",
+    publicPoolAt: "",
+    publicPoolReason: "",
+    ownershipHistory: [
+      ...(previous.ownershipHistory || []),
+      ownershipEvent("claimed_public_pool", previous, viewer, viewer, "公海客户认领")
+    ]
+  }, state);
+  state.customers[index] = next;
+  transferCustomerVisits(state, previous, next);
+  writeState(state);
+  return sendJson(res, 200, toMiniCustomer(next));
+}
+
+function transferCustomerVisits(state, customer, nextOwner) {
+  const phone = normalizePhone(customer.phoneNormalized || customer.phone);
+  (state.visits || []).forEach((visit) => {
+    const matchesCustomer = Number(visit.customerId) === Number(customer.id);
+    const matchesPhone = phone && normalizePhone(visit.phone) === phone;
+    if (!matchesCustomer && !matchesPhone) return;
+    visit.ownerId = nextOwner.ownerId;
+    visit.owner = nextOwner.owner;
+    visit.unitId = nextOwner.unitId || "";
+    visit.unit = nextOwner.unit || "";
+    visit.zone = nextOwner.zone || "";
+  });
 }
 
 function resolvePaymentOwner(state, viewer, previous = {}, body = {}) {
@@ -1340,11 +1433,11 @@ function visitCustomerConflict(state, viewer, body = {}) {
   if (!phone) return { status: 400, payload: { error: "请填写有效的客户电话", code: "INVALID_CUSTOMER_PHONE" } };
   const duplicate = findCustomerByPhone(state, phone);
   if (duplicate) {
+    if (isCustomerClaimable(duplicate)) {
+      return { status: 409, payload: { error: "该客户已进入公海，请先认领", code: "CUSTOMER_CLAIMABLE" } };
+    }
     const sameOwner = Number(duplicate.ownerId) === Number(viewer.id) || cleanText(duplicate.owner) === cleanText(viewer.name);
     if (sameOwner) return null;
-    if (isCustomerClaimable(duplicate)) {
-      return { status: 409, payload: { error: "该客户已释放，可以认领", code: "CUSTOMER_CLAIMABLE" } };
-    }
     return { status: 409, payload: { error: "该客户已存在", code: "DUPLICATE_CUSTOMER" } };
   }
   if (!body.confirmSimilar && findSimilarCustomer(state, { name: body.factory, city: body.city, address: body.address })) {
@@ -1386,13 +1479,13 @@ function scopeStateForUser(state, viewer = null) {
   return {
     ...state,
     users: visibleUsers(state, user),
-    customers: (state.customers || []).filter((customer) => canViewRecord(state, user, customer)),
+    customers: (state.customers || []).filter((customer) => canViewRecord(state, user, customer) || isCustomerPublicPool(customer)),
     visits: (state.visits || []).filter((visit) => canViewRecord(state, user, visit)),
     targets: (state.targets || []).filter((target) => canViewTarget(state, user, target)),
     activities: (state.activities || []).filter((activity) => {
       if (!activity.customerId) return true;
       const customer = (state.customers || []).find((item) => Number(item.id) === Number(activity.customerId));
-      return !customer || canViewRecord(state, user, customer);
+      return !customer || canViewRecord(state, user, customer) || isCustomerPublicPool(customer);
     })
   };
 }
@@ -1870,11 +1963,14 @@ function buildDashboard(state, viewer, query = {}) {
   const range = normalizeDashboardRange(query);
   const scopeOptions = dashboardScopeOptions(state, viewer);
   const scope = resolveDashboardScope(state, viewer, query);
-  const customers = (state.customers || []).filter((item) => canViewRecord(state, viewer, item) && recordMatchesScope(state, item, scope));
+  const activeCustomers = (state.customers || []).filter((item) => !isCustomerPublicPool(item));
+  const dashboardState = { ...state, customers: activeCustomers };
+  const publicPoolCount = (state.customers || []).filter((item) => isCustomerPublicPool(item) && canViewRecord(state, viewer, item) && recordMatchesScope(state, item, scope)).length;
+  const customers = activeCustomers.filter((item) => canViewRecord(state, viewer, item) && recordMatchesScope(state, item, scope));
   const visits = (state.visits || []).filter((item) => canViewRecord(state, viewer, item) && recordMatchesScope(state, item, scope));
-  const revenueCustomers = (state.customers || []).filter((item) => {
-    const paymentRecord = paymentRecordFor(state, item);
-    return canViewRecord(state, viewer, paymentRecord) && recordMatchesScope(state, paymentRecord, scope);
+  const revenueCustomers = activeCustomers.filter((item) => {
+    const paymentRecord = paymentRecordFor(dashboardState, item);
+    return canViewRecord(dashboardState, viewer, paymentRecord) && recordMatchesScope(dashboardState, paymentRecord, scope);
   });
   const revenue = revenueCustomers.filter((item) => inRange(item.paymentDate, range.start, range.end)).reduce((sum, item) => sum + Number(item.paymentAmount || 0), 0);
   const contract = customers.filter((item) => inRange(item.dealAt, range.start, range.end)).reduce((sum, item) => sum + Number(item.contractAmount || 0), 0);
@@ -1899,7 +1995,8 @@ function buildDashboard(state, viewer, query = {}) {
     opportunityCloseRate: percentage(rollingDeals.length, rollingOpportunities.length),
     overdueOpportunities: overdueOpportunities.length,
     averageDealCycle: average(deals.map((item) => daysBetween(item.createdAt, item.dealAt))),
-    averageContractValue: deals.length ? normalizeMoney(contract / deals.length) : 0
+    averageContractValue: deals.length ? normalizeMoney(contract / deals.length) : 0,
+    publicPool: publicPoolCount
   };
   const lossReasons = distribution([...customers.map((item) => item.lossReason), ...visits.map((item) => item.lossReason)]);
   const industry = {
@@ -1927,8 +2024,8 @@ function buildDashboard(state, viewer, query = {}) {
     summary,
     funnel,
     trend: buildTrend(customers, range, revenueCustomers),
-    ranking: buildRanking(state, viewer, scope, range),
-    unitRanking: buildUnitRanking(state, viewer, scope, range, customers),
+    ranking: buildRanking(dashboardState, viewer, scope, range),
+    unitRanking: buildUnitRanking(dashboardState, viewer, scope, range, customers),
     industry,
     actions,
     drilldowns,
@@ -1944,6 +2041,7 @@ function canAssignCustomers(state, user) {
 
 function buildAssignedCustomer(state, viewer, customer, target, body = {}) {
   const previousStage = customer.stage;
+  const wasPublicPool = isCustomerPublicPool(customer);
   const note = `${viewer.name || "管理员"}已将客户分配给${target.name}。`;
   const next = normalizeCustomer({
     ...customer,
@@ -1954,7 +2052,11 @@ function buildAssignedCustomer(state, viewer, customer, target, body = {}) {
     unit: target.unit || "",
     zone: target.zone || "",
     region: target.zone || customer.region,
-    ownershipStatus: OWNERSHIP_LOCKED,
+    ownershipStatus: wasPublicPool ? OWNERSHIP_PENDING : OWNERSHIP_LOCKED,
+    claimUntil: wasPublicPool ? addDaysToIso(new Date().toISOString(), CUSTOMER_CLAIM_DAYS) : customer.claimUntil,
+    effectiveFollowUpAt: wasPublicPool ? "" : customer.effectiveFollowUpAt,
+    publicPoolAt: "",
+    publicPoolReason: "",
     ownershipHistory: [
       ...(customer.ownershipHistory || []),
       ownershipEvent("assigned", customer, target, viewer, body.reason || "主管分配")
@@ -1976,17 +2078,16 @@ function buildAssignedCustomer(state, viewer, customer, target, body = {}) {
 }
 
 function isCustomerAssignable(customer = {}) {
+  if (isCustomerPublicPool(customer)) return customer.stage !== "成交";
   if (customer.stage === "名单") return true;
   if (!["线索", "商机"].includes(customer.stage)) return false;
   const latest = latestCustomerFollow(customer);
   if (!latest) return true;
-  return daysSince(latest) > REASSIGN_DAYS;
+  return daysSince(latest) >= REASSIGN_DAYS;
 }
 
 function latestCustomerFollow(customer = {}) {
-  const followUps = Array.isArray(customer.followUps) ? customer.followUps : [];
-  const latest = followUps[followUps.length - 1] || {};
-  return latest.date || customer.lastFollow || customer.createdAt || "";
+  return latestEffectiveManualFollowAt(customer) || customer.effectiveFollowUpAt || customer.createdAt || "";
 }
 
 function daysSince(dateText) {
@@ -2009,11 +2110,14 @@ function findAssignableSalesUser(state, viewer, ownerId, ownerName) {
 
 function toMiniCustomer(customer) {
   const latest = (customer.followUps || [])[customer.followUps.length - 1] || {};
+  const publicPool = customerPublicPoolInfo(customer);
   const ownershipStatus = effectiveOwnershipStatus(customer);
   return {
     ...customer,
     ownershipStatus,
-    claimable: ownershipStatus === OWNERSHIP_CLAIMABLE,
+    publicPoolAt: publicPool.at,
+    publicPoolReason: publicPool.reason,
+    claimable: publicPool.isPublic,
     claimDaysRemaining: ownershipStatus === OWNERSHIP_PENDING ? claimDaysRemaining(customer.claimUntil) : 0,
     lastFollow: latest.date || "",
     nextFollow: latest.nextFollow || "",
@@ -2306,6 +2410,8 @@ async function importCustomers(req, viewer) {
   const customers = [];
   const skipped = [];
   const failed = [];
+  const existingPhones = new Set((state.customers || []).map((item) => normalizePhone(item.phoneNormalized || item.phone)).filter(Boolean));
+  const filePhones = new Set();
   rows.forEach((row, index) => {
     const rowNumber = Number(row.rowNumber || index + 1);
     const phoneNormalized = normalizePhone(row.phone);
@@ -2313,8 +2419,13 @@ async function importCustomers(req, viewer) {
       failed.push({ rowNumber, name: row.name || "", phone: row.phone || "", reason: "手机号无效" });
       return;
     }
-    if (findCustomerByPhone(state, phoneNormalized)) {
-      skipped.push({ rowNumber, name: row.name || "", phone: row.phone || "", reason: "手机号已存在" });
+    if (filePhones.has(phoneNormalized)) {
+      skipped.push({ rowNumber, name: row.name || "", phone: row.phone || "", reason: "文件内手机号重复，已按首次出现处理" });
+      return;
+    }
+    filePhones.add(phoneNormalized);
+    if (existingPhones.has(phoneNormalized)) {
+      skipped.push({ rowNumber, name: row.name || "", phone: row.phone || "", reason: "系统已有重复客户" });
       return;
     }
     if (findSimilarCustomer(state, row)) {

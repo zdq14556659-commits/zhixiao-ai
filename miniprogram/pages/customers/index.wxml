@@ -102,7 +102,7 @@
 
   <view class="list-head">
     <text class="muted list-count">共 {{filtered.length}} 个客户</text>
-    <view class="head-actions">
+    <view wx:if="{{currentStage !== '公海'}}" class="head-actions">
       <button class="plain-btn mini-btn" bindtap="goBatchImport">批量导入</button>
       <button class="primary-btn mini-btn" bindtap="goAdd">单个添加</button>
     </view>
@@ -126,11 +126,16 @@
         <text>{{item.photoCount}}张现场图</text>
       </view>
     </view>
-    <view class="strip-actions {{item.canAssign ? 'has-assign' : ''}}">
+    <view wx:if="{{!item.isPublicPool}}" class="strip-actions {{item.canAssign ? 'has-assign' : ''}}">
       <button class="plain-btn" data-phone="{{item.phone}}" catchtap="callCustomer">拨打</button>
       <button class="plain-btn" data-id="{{item.id}}" catchtap="goFollow">跟进</button>
       <button class="primary-btn" data-id="{{item.id}}" catchtap="advanceCustomer">{{item.stage === '成交' ? '查看' : '推进'}}</button>
       <button wx:if="{{item.canAssign}}" class="assign-btn" data-id="{{item.id}}" catchtap="assignCustomer">分配</button>
+    </view>
+    <view wx:else class="strip-actions pool-actions">
+      <button wx:if="{{item.canClaim}}" class="primary-btn" data-id="{{item.id}}" catchtap="claimCustomer">认领后跟进</button>
+      <button wx:elif="{{item.canAssign}}" class="assign-btn" data-id="{{item.id}}" catchtap="assignCustomer">分配给销售</button>
+      <text wx:else class="pool-hint">{{item.poolHint}}</text>
     </view>
   </view>
 
