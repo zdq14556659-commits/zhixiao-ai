@@ -1,13 +1,13 @@
 <view class="page">
   <view class="header">
     <text class="crumb">客户管理 / 批量导入</text>
-    <view class="title">批量导入客户</view>
-    <view class="subtitle">每行一个客户：客户名称,手机号,渠道来源,客户地址,现用软件,预计金额</view>
+    <view class="title">{{targetPublicPool ? '批量导入公海' : '批量导入客户'}}</view>
+    <view class="subtitle">{{targetPublicPool ? '公海导入必须包含工厂名称、有效主联系人手机号和完整地址' : '每行一个客户：客户名称,手机号,渠道来源,客户地址,现用软件,预计金额'}}</view>
   </view>
 
   <form bindsubmit="submitImport">
     <view class="card">
-      <view class="grid-2">
+      <view wx:if="{{!targetPublicPool}}" class="grid-2">
         <view class="form-item">
           <text class="label">导入阶段</text>
           <picker range="{{stages}}" value="{{stageIndex}}" bindchange="onStage">
@@ -47,8 +47,13 @@
       <view class="success"><text>成功</text><strong>{{importResult.imported}}</strong></view>
       <view class="warning"><text>重复</text><strong>{{importResult.duplicates}}</strong></view>
       <view class="danger"><text>失败</text><strong>{{importResult.failed}}</strong></view>
+      <view wx:if="{{importResult.pendingLocation}}" class="warning"><text>待定位</text><strong>{{importResult.pendingLocation}}</strong></view>
     </view>
     <view wx:if="{{importResult.duplicates}}" class="duplicate-notice">重复手机号对应的客户已经存在，本次已自动跳过，不会覆盖原客户。</view>
+    <view wx:if="{{targetPublicPool && geocodeProgressText}}" class="geocode-progress">
+      <text>{{geocodeProgressText}}</text>
+      <button class="plain-btn" bindtap="refreshGeocodeProgress">刷新定位进度</button>
+    </view>
     <scroll-view wx:if="{{importResult.skipped.length || importResult.failures.length}}" class="result-scroll" scroll-y>
       <view wx:if="{{importResult.skipped.length}}" class="result-list">
         <view class="result-list-title">重复明细</view>

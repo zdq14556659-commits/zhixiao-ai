@@ -18,6 +18,9 @@ Page({
     paymentDate: "",
     editingId: 0,
     identityLocked: false,
+    contacts: [],
+    competitorProfiles: [],
+    competitorNames: [],
     form: {}
   },
 
@@ -35,6 +38,12 @@ Page({
     const channelSources = app.globalData.channelSources;
     const channelIndex = Math.max(0, channelSources.indexOf(app.normalizeChannelSource(customer?.channelSource || "其他")));
     const paymentOwnerIndex = Math.max(0, paymentOwners.findIndex((user) => Number(user.id) === Number(customer?.paymentOwnerId || currentUser.id)));
+    const contacts = customer?.contacts?.length
+      ? customer.contacts.map((item) => ({ ...item }))
+      : [{ name: "", phone: customer?.phone || "", position: "", wechat: "", decisionRole: "", note: "", isPrimary: true }];
+    const competitorProfiles = customer?.competitorProfiles?.length
+      ? customer.competitorProfiles.map((item) => ({ ...item }))
+      : [];
     this.setData({
       owners,
       ownerUsers,
@@ -47,6 +56,9 @@ Page({
       channelIndex,
       editingId: customer ? Number(customer.id) : 0,
       identityLocked: Boolean(customer) && !app.canAdmin(),
+      contacts,
+      competitorProfiles,
+      competitorNames: (state.competitors || []).map((item) => item.name),
       nextFollow: customer?.nextFollow || app.globalData.today,
       demoAt: customer?.demoAt || "",
       expectedDealDate: customer?.expectedDealDate || "",
@@ -88,6 +100,93 @@ Page({
     this.setData({ paymentDate: event.detail.value });
   },
 
+  updateContact(event) {
+    const index = Number(event.currentTarget.dataset.index);
+    const field = event.currentTarget.dataset.field;
+    this.setData({ [`contacts[${index}].${field}`]: event.detail.value });
+  },
+
+  addContact() {
+    this.setData({ contacts: [...this.data.contacts, { name: "", phone: "", position: "", wechat: "", decisionRole: "", note: "", isPrimary: false }] });
+  },
+
+  removeContact(event) {
+    const index = Number(event.currentTarget.dataset.index);
+    if (this.data.contacts[index]?.isPrimary) {
+      wx.showToast({ title: "主联系人不能删除", icon: "none" });
+      return;
+    }
+    this.setData({ contacts: this.data.contacts.filter((_, itemIndex) => itemIndex !== index) });
+  },
+
+  callContact(event) {
+    const phone = String(event.currentTarget.dataset.phone || "").trim();
+    if (phone) wx.makePhoneCall({ phoneNumber: phone });
+  },
+
+  setPrimaryContact(event) {
+    if (this.data.identityLocked) {
+      wx.showToast({ title: "当前角色不能修改主联系人", icon: "none" });
+      return;
+    }
+    const index = Number(event.currentTarget.dataset.index);
+    this.setData({ contacts: this.data.contacts.map((item, itemIndex) => ({ ...item, isPrimary: itemIndex === index })) });
+  },
+
+  updateCompetitor(event) {
+    const index = Number(event.currentTarget.dataset.index);
+    const field = event.currentTarget.dataset.field;
+    this.setData({ [`competitorProfiles[${index}].${field}`]: event.detail.value });
+  },
+
+  onCompetitorBrand(event) {
+    const index = Number(event.currentTarget.dataset.index);
+    const competitor = app.getState().competitors?.[Number(event.detail.value)] || {};
+    this.setData({
+      [`competitorProfiles[${index}].competitorId`]: competitor.id || "",
+      [`competitorProfiles[${index}].brand`]: competitor.name || "其他"
+    });
+  },
+
+  addCompetitorProfile() {
+    const first = app.getState().competitors?.[0] || {};
+    this.setData({ competitorProfiles: [...this.data.competitorProfiles, { competitorId: first.id || "", brand: first.name || "其他", version: "", price: "", expiresAt: "", satisfaction: "", switchingBarrier: "", note: "", isPrimary: this.data.competitorProfiles.length === 0 }] });
+  },
+
+  removeCompetitorProfile(event) {
+    const index = Number(event.currentTarget.dataset.index);
+    const next = this.data.competitorProfiles.filter((_, itemIndex) => itemIndex !== index);
+    if (next.length && !next.some((item) => item.isPrimary)) next[0].isPrimary = true;
+    this.setData({ competitorProfiles: next });
+  },
+
+  setPrimaryCompetitor(event) {
+    const index = Number(event.currentTarget.dataset.index);
+    this.setData({ competitorProfiles: this.data.competitorProfiles.map((item, itemIndex) => ({ ...item, isPrimary: itemIndex === index })) });
+  },
+
+  openCustomerAi() {
+    if (!this.data.editingId) return;
+    wx.navigateTo({ url: `/pages/assistant/index?customerId=${this.data.editingId}` });
+  },
+
+  archiveCustomer() {
+    if (!this.data.editingId) return;
+    wx.showActionSheet({
+      itemList: ["标记为无效客户", "标记为工厂倒闭"],
+      success: async (res) => {
+        try {
+          await app.requestApi(`/customers/${this.data.editingId}/archive`, { method: "POST", data: { reason: res.tapIndex === 1 ? "closed" : "invalid" } });
+          await new Promise((resolve) => app.loadRemoteState(resolve));
+          wx.showToast({ title: "客户已归档", icon: "success" });
+          setTimeout(() => wx.navigateBack(), 500);
+        } catch (error) {
+          wx.showToast({ title: error.message || "归档失败", icon: "none" });
+        }
+      }
+    });
+  },
+
   async submitForm(event) {
     const form = event.detail.value;
     const previous = this.data.form || {};
@@ -123,6 +222,8 @@ Page({
       id: this.data.editingId || Date.now(),
       name,
       phone,
+      contacts: this.data.contacts.map((item) => ({ ...item, phone: item.isPrimary ? phone : item.phone })).filter((item) => item.isPrimary || item.name || item.phone),
+      competitorProfiles: this.data.competitorProfiles.filter((item) => item.brand),
       channelSource: this.data.channelSources[this.data.channelIndex] || "其他",
       createdBy: previous.createdBy || app.getCurrentUser().name || "未记录",
       followPerson: ownerUser.name || this.data.owners[this.data.ownerIndex],

@@ -87,7 +87,7 @@ async function run() {
 
   const migratedText = fs.readFileSync(path.join(tempDir, "db.json"), "utf8");
   const migrated = JSON.parse(migratedText);
-  assert.equal(migrated.version, "backend-v5");
+  assert.equal(migrated.version, "backend-v6");
   assert.ok(migrated.users.every((user) => user.passwordHash && user.passwordSalt));
   assert.ok(migrated.users.every((user) => !("password" in user) && !("initialPassword" in user)));
   assert.ok(fs.existsSync(path.join(tempDir, "db.backup.json")));

@@ -30,7 +30,8 @@ Page({
     pageSizes: [10, 20],
     pageSizeIndex: 0,
     totalPages: 1,
-    canAssign: false
+    canAssign: false,
+    canImportPublic: false
   },
 
   onLoad(options) {
@@ -54,7 +55,7 @@ Page({
     const state = app.getState();
     const currentUser = app.getCurrentUser();
     const role = app.getRole(currentUser);
-    const customers = app.scopeCustomers();
+    const customers = app.scopeCustomers().filter((customer) => customer.lifecycleStatus !== "archived");
     const channelSources = ["全部", ...app.globalData.channelSources];
     const owners = role.customerScope === "self" ? [currentUser.name] : ["全部", ...app.visibleSales().map((user) => user.name)];
     const assignOwners = app.visibleSales();
@@ -79,6 +80,7 @@ Page({
       regionIndex,
       stageTimeLabel: this.stageTimeConfig(this.data.currentStage).label,
       canAssign: this.canAssignCustomers(),
+      canImportPublic: app.canAdmin(),
       stageTabs
     }, () => this.applyFilters());
   },
@@ -256,7 +258,8 @@ Page({
 
   goBatchImport() {
     const stage = ["名单", "线索", "商机", "成交"].includes(this.data.currentStage) ? this.data.currentStage : "名单";
-    wx.navigateTo({ url: `/pages/batch-import/index?stage=${stage}` });
+    const target = this.data.currentStage === "公海" ? "&target=public_pool" : "";
+    wx.navigateTo({ url: `/pages/batch-import/index?stage=${stage}${target}` });
   },
 
   editCustomer(event) {

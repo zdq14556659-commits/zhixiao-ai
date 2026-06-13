@@ -7,7 +7,9 @@
     "start": "node backend/server.js",
     "check": "node --check backend/server.js",
     "test:password": "node backend/password-security.test.js",
-    "test:customers": "node backend/customer-public-pool.test.js"
+    "test:customers": "node backend/customer-public-pool.test.js",
+    "test:v6": "node backend/customer-v6.test.js",
+    "test": "npm run test:password && npm run test:customers && npm run test:v6"
   },
   "engines": {
     "node": ">=20"

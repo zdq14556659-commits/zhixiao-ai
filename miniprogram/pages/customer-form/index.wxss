@@ -14,3 +14,44 @@
   font-size: 28rpx;
   font-weight: 800;
 }
+
+.section-add {
+  width: auto;
+  min-height: 58rpx;
+  padding: 0 18rpx;
+  font-size: 24rpx;
+}
+
+.repeat-card {
+  margin-bottom: 16rpx;
+  padding: 18rpx;
+  border: 1rpx solid #e4e9f0;
+  border-radius: 10rpx;
+  background: #fafcff;
+}
+
+.repeat-head {
+  margin-bottom: 14rpx;
+  font-weight: 700;
+}
+
+.repeat-actions {
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+}
+
+.link-btn {
+  width: auto;
+  min-height: 48rpx;
+  padding: 0 10rpx;
+  border: 0;
+  color: #409eff;
+  background: transparent;
+  font-size: 22rpx;
+}
+
+.link-btn::after { border: 0; }
+.danger-text { color: #f56c6c; }
+.ai-customer-btn { width: 100%; margin-bottom: 14rpx; color: #409eff; }
+.archive-customer-btn { width: 100%; margin-bottom: 14rpx; color: #f56c6c; border-color: #f56c6c; }

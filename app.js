@@ -17,7 +17,7 @@ const defaultRoles = [
   { id: "role-admin", name: "管理员", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] }
 ];
 
-let state = { users: [], customers: [], visits: [], knowledge: [], stages, roles: defaultRoles, units: [] };
+let state = { users: [], customers: [], visits: [], knowledge: [], stages, roles: defaultRoles, units: [], competitors: [], routes: [] };
 let currentStage = "名单";
 let currentView = "dashboard";
 let currentSettingsTab = "accounts";
@@ -27,6 +27,11 @@ let fieldInfoWindow = null;
 let fieldUserMarker = null;
 let fieldUserLocated = false;
 let fieldLocationRequested = false;
+let fieldMapMode = "status";
+let fieldPoints = [];
+let fieldMapResult = { points: [], summary: {} };
+let fieldCluster = null;
+let geocodeProgressTimer = null;
 let currentCustomerRows = [];
 let currentFilteredCustomerRows = [];
 let selectedCustomerIds = new Set();
@@ -245,25 +250,27 @@ function showSuccessFeedback(title, detail) {
   if (!dialog.open) dialog.showModal();
 }
 
-function showImportFeedback(result) {
+function showImportFeedback(result, entityLabel = "客户") {
   const total = Number(result.total || 0);
   const imported = Number(result.imported || 0);
   const duplicates = Number(result.duplicates || 0);
   const failed = Number(result.failed || 0);
+  const pendingLocation = Number(result.pendingLocation || 0);
   const details = [
     ...(Array.isArray(result.skipped) ? result.skipped : []),
     ...(Array.isArray(result.failures) ? result.failures : [])
   ];
-  $("#importResultTitle").textContent = duplicates && !imported && !failed ? "重复客户未导入" : "导入完成";
+  $("#importResultTitle").textContent = duplicates && !imported && !failed ? `重复${entityLabel}未导入` : `${entityLabel}导入完成`;
   $("#importResultStats").innerHTML = [
     ["总行数", total, ""],
     ["成功", imported, "success"],
     ["重复", duplicates, "warning"],
-    ["失败", failed, "danger"]
+    ["失败", failed, "danger"],
+    ...(pendingLocation ? [["待定位", pendingLocation, "warning"]] : [])
   ].map(([label, value, className]) => `<div class="${className}"><span>${label}</span><b>${value}</b></div>`).join("");
   $("#importResultDetails").innerHTML = details.length
     ? details.map((item) => `<article><b>第${Number(item.rowNumber || 0)}行 · ${escapeHtml(item.name || "未命名客户")}</b><span>${escapeHtml(item.phone || "手机号未填写")} · ${escapeHtml(item.reason || "未导入")}</span></article>`).join("")
-    : '<div class="empty">本次没有未导入客户</div>';
+    : `<div class="empty">本次没有未导入${entityLabel}</div>`;
   const link = $("#importResultDownload");
   if (result.reportUrl) {
     const apiOrigin = API_BASE.replace(/\/api\/?$/, "");
@@ -275,6 +282,23 @@ function showImportFeedback(result) {
   }
   const dialog = $("#importResultDialog");
   if (!dialog.open) dialog.showModal();
+}
+
+async function trackGeocodeProgress() {
+  if (geocodeProgressTimer) clearTimeout(geocodeProgressTimer);
+  try {
+    const progress = await api("/geocode/status");
+    const counts = progress.counts || {};
+    const title = $("#importResultTitle");
+    if (title) title.textContent = progress.configured
+      ? `地址解析中：剩余${progress.remaining || 0}条，失败${counts.failed || 0}条`
+      : "地址解析待启动：服务器未配置腾讯地图服务Key";
+    if (progress.configured && progress.remaining > 0) geocodeProgressTimer = setTimeout(trackGeocodeProgress, 1800);
+    if (progress.configured && progress.remaining === 0) {
+      if (title) title.textContent = `公海导入完成：已定位${counts.resolved || 0}条，失败${counts.failed || 0}条`;
+      await loadState();
+    }
+  } catch {}
 }
 
 async function loadState() {
@@ -384,7 +408,7 @@ async function resetPassword(event) {
 
 function scopeCustomers() {
   const user = currentUser();
-  return (state.customers || []).filter((item) => canSeeRecord(item, user));
+  return (state.customers || []).filter((item) => item.lifecycleStatus !== "archived" && canSeeRecord(item, user));
 }
 
 function scopeVisits() {
@@ -569,7 +593,8 @@ function renderCustomers() {
   $("#customerChannelSelect").innerHTML = channelSources.map((source) => `<option>${source}</option>`).join("");
   $("#batchAssignBtn").classList.toggle("hidden", !canAssignCustomers());
   $("#addCustomerBtn").classList.toggle("hidden", currentStage === "公海");
-  $("#batchImportBtn").classList.toggle("hidden", currentStage === "公海");
+  $("#batchImportBtn").classList.toggle("hidden", currentStage === "公海" && !canAdmin());
+  $("#batchImportBtn").textContent = currentStage === "公海" ? "导入公海" : "批量导入";
   $("#stageTimeHeader").textContent = stageTime.label;
   $("#stageTimeFilterLabel").textContent = stageTime.label;
 
@@ -631,16 +656,18 @@ function customerRow(item) {
   const disabled = assignable ? "" : "disabled";
   const title = assignable ? "选择客户" : (isPublicPool ? "只能分配权限范围内的公海客户" : "当前客户暂不满足分配条件");
   const ownership = ownershipLabel(item);
+  const primaryContact = (item.contacts || []).find((contact) => contact.isPrimary) || (item.contacts || [])[0] || { phone: item.phone };
+  const contactCount = (item.contacts || []).length;
   const actions = isPublicPool
     ? (roleForUser(currentUser()).customerScope === "self"
         ? `<button class="primary" data-action="claim" data-id="${item.id}">认领</button>`
         : `<span class="pool-action-hint">${assignable ? "请勾选后分配" : "不在您的分配范围"}</span>`)
-    : `<button data-action="follow" data-id="${item.id}">跟进</button><button data-action="advance" data-id="${item.id}">${item.stage === "成交" ? "已成交" : "推进"}</button>`;
+    : `<button data-action="follow" data-id="${item.id}">跟进</button><button data-action="ai" data-id="${item.id}">小智</button><button data-action="advance" data-id="${item.id}">${item.stage === "成交" ? "已成交" : "推进"}</button>`;
   return `
     <tr>
       <td class="select-cell"><input type="checkbox" class="customer-select" data-id="${item.id}" ${checked} ${disabled} title="${title}" /></td>
       <td><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.stage || "")}${ownership ? ` · <span class="ownership-state ${item.ownershipStatus}">${escapeHtml(ownership)}</span>` : ""}</small></td>
-      <td><a href="tel:${item.phone}">${item.phone}</a></td>
+      <td><a href="tel:${escapeHtml(primaryContact.phone || item.phone)}">${escapeHtml(primaryContact.phone || item.phone)}</a>${contactCount > 1 ? `<small>另有${contactCount - 1}位联系人</small>` : ""}</td>
       <td>${escapeHtml(normalizeChannelSource(item.channelSource))}</td>
       <td>${escapeHtml(item.createdBy || "未记录")}</td>
       <td>${escapeHtml(item.followPerson || item.owner || "未分配")}</td>
@@ -703,6 +730,55 @@ function selectedCustomerIdsForAssign() {
   return [...selectedCustomerIds].map(Number).filter((id) => selectableIds.has(id));
 }
 
+function renderContactsEditor(contacts = []) {
+  const list = contacts.length ? contacts : [{ name: "主联系人", phone: $("#customerForm [name=phone]")?.value || "", isPrimary: true }];
+  const canChangePrimary = canAdmin() || !$("#customerForm [name=id]")?.value;
+  $("#customerContactsEditor").innerHTML = list.map((contact, index) => `
+    <article class="repeat-row contact-row" data-index="${index}">
+      <div class="repeat-row-head"><b>${contact.isPrimary ? "主联系人" : `联系人${index + 1}`}</b><div>${contact.isPrimary ? '<span class="tag">主联系人</span>' : `${canChangePrimary ? '<button type="button" data-set-primary-contact>设为主联系人</button>' : ""}<button type="button" data-remove-contact>删除</button>`}</div></div>
+      <input data-contact="id" type="hidden" value="${escapeHtml(contact.id || "")}" />
+      <label>姓名<input data-contact="name" value="${escapeHtml(contact.name || "")}" /></label>
+      <label>手机号<input data-contact="phone" value="${escapeHtml(contact.phone || "")}" ${contact.isPrimary && !canAdmin() && $("#customerForm [name=id]")?.value ? "readonly" : ""} /></label>
+      <label>职位<input data-contact="position" value="${escapeHtml(contact.position || "")}" placeholder="老板/设计主管/生产主管" /></label>
+      <label>微信<input data-contact="wechat" value="${escapeHtml(contact.wechat || "")}" /></label>
+      <label>决策角色<input data-contact="decisionRole" value="${escapeHtml(contact.decisionRole || "")}" placeholder="决策人/影响人/使用人" /></label>
+      <label>备注<input data-contact="note" value="${escapeHtml(contact.note || "")}" /></label>
+      <input data-contact="isPrimary" type="hidden" value="${contact.isPrimary ? "1" : "0"}" />
+    </article>`).join("");
+}
+
+function readContactsEditor() {
+  return $$("#customerContactsEditor .contact-row").map((row) => {
+    const value = (name) => row.querySelector(`[data-contact=${name}]`)?.value || "";
+    return { id: value("id"), name: value("name"), phone: value("phone"), position: value("position"), wechat: value("wechat"), decisionRole: value("decisionRole"), note: value("note"), isPrimary: value("isPrimary") === "1" };
+  });
+}
+
+function renderCompetitorProfilesEditor(profiles = []) {
+  $("#customerCompetitorsEditor").innerHTML = profiles.map((profile, index) => `
+    <article class="repeat-row competitor-row" data-index="${index}">
+      <div class="repeat-row-head"><b>竞品档案${index + 1}</b><button type="button" data-remove-competitor>删除</button></div>
+      <input data-competitor="id" type="hidden" value="${escapeHtml(profile.id || "")}" />
+      <label>品牌<select data-competitor="competitorId">${(state.competitors || []).map((item) => `<option value="${item.id}" ${item.id === profile.competitorId || item.name === profile.brand ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label>
+      <label>版本<input data-competitor="version" value="${escapeHtml(profile.version || "")}" /></label>
+      <label>价格<input data-competitor="price" value="${escapeHtml(profile.price || "")}" /></label>
+      <label>到期时间<input data-competitor="expiresAt" type="date" value="${escapeHtml(profile.expiresAt || "")}" /></label>
+      <label>满意度<input data-competitor="satisfaction" value="${escapeHtml(profile.satisfaction || "")}" placeholder="满意/一般/不满意" /></label>
+      <label>切换障碍<input data-competitor="switchingBarrier" value="${escapeHtml(profile.switchingBarrier || "")}" /></label>
+      <label>备注<input data-competitor="note" value="${escapeHtml(profile.note || "")}" /></label>
+      <label class="inline-check"><input data-competitor="isPrimary" type="checkbox" ${profile.isPrimary || index === 0 ? "checked" : ""} />主要现用软件</label>
+    </article>`).join("");
+}
+
+function readCompetitorProfilesEditor() {
+  return $$("#customerCompetitorsEditor .competitor-row").map((row) => {
+    const value = (name) => row.querySelector(`[data-competitor=${name}]`)?.value || "";
+    const competitorId = value("competitorId");
+    const definition = (state.competitors || []).find((item) => item.id === competitorId) || {};
+    return { id: value("id"), competitorId, brand: definition.name || "其他", version: value("version"), price: value("price"), expiresAt: value("expiresAt"), satisfaction: value("satisfaction"), switchingBarrier: value("switchingBarrier"), note: value("note"), isPrimary: Boolean(row.querySelector("[data-competitor=isPrimary]")?.checked) };
+  });
+}
+
 function openCustomerDialog(customer = null) {
   const form = $("#customerForm");
   form.reset();
@@ -732,6 +808,10 @@ function openCustomerDialog(customer = null) {
   form.phone.readOnly = identityLocked;
   form.name.classList.toggle("locked-input", identityLocked);
   form.phone.classList.toggle("locked-input", identityLocked);
+  renderContactsEditor(customer?.contacts || []);
+  renderCompetitorProfilesEditor(customer?.competitorProfiles || []);
+  $("#customerAiBtn").classList.toggle("hidden", !customer);
+  $("#customerArchiveBtn").classList.toggle("hidden", !customer || customer.lifecycleStatus === "archived");
   $("#customerDialogTitle").textContent = customer ? "客户跟进" : "新增客户";
   $("#customerDialog").showModal();
 }
@@ -760,10 +840,15 @@ async function saveCustomer(event) {
   const ownerUser = userByName(String(form.get("owner")));
   const ownerUnit = unitForId(ownerUser.unitId);
   const note = String(form.get("note") || "").trim();
+  const contacts = readContactsEditor();
+  const primaryContact = contacts.find((item) => item.isPrimary) || contacts[0] || {};
+  const competitorProfiles = readCompetitorProfilesEditor();
   const customer = {
     id: id || Date.now(),
     name: String(form.get("name")).trim(),
-    phone: String(form.get("phone")).trim(),
+    phone: String(primaryContact.phone || form.get("phone")).trim(),
+    contacts,
+    competitorProfiles,
     channelSource: normalizeChannelSource(form.get("channelSource") || "其他"),
     createdBy: String(form.get("createdBy") || currentUser().name || "未记录"),
     followPerson: String(form.get("followPerson") || form.get("owner") || "未分配"),
@@ -923,12 +1008,15 @@ async function batchImport(event) {
     if (!rows) return toast("请选择文件或粘贴客户数据");
     importBody.append("rows", rows);
   }
-  const result = await api("/import/customers", { method: "POST", body: importBody });
+  if (currentStage === "公海") importBody.append("target", "public_pool");
+  const endpoint = currentStage === "公海" ? "/import/customers?target=public_pool" : "/import/customers";
+  const result = await api(endpoint, { method: "POST", body: importBody });
   $("#batchDialog").close();
   event.currentTarget.reset();
   customerPage = 1;
   await loadState();
   showImportFeedback(result);
+  if (currentStage === "公海" && result.pendingLocation) trackGeocodeProgress();
 }
 
 function isSoldStatus(status) {
@@ -1024,72 +1112,87 @@ function mapDotIcon(color) {
   return canvas.toDataURL("image/png");
 }
 
-function renderFieldSummary(visits) {
+function renderFieldSummary(result) {
   const summaryNode = $("#fieldSummaryCards");
   if (!summaryNode) return;
-  const located = visits.filter(validVisitLocation);
-  const sold = visits.filter((visit) => isSoldStatus(visit.status));
-  const cities = Object.entries(
-    visits.reduce((map, visit) => {
-      const city = visit.city || "未知城市";
-      map[city] = (map[city] || 0) + 1;
-      return map;
-    }, {})
-  )
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 6);
-  const stageCards = stages.map((stage) => ({
-    name: stage,
-    count: visits.filter((visit) => displayVisitStatus(visit.status) === stage).length
-  }));
+  const summary = result.summary || {};
+  const statusLabels = { pending: "待拜访", visited: "已拜访未成交", sold: "已成交", archived: "无效或倒闭" };
   summaryNode.innerHTML = [
-    `<article><span>已打卡工厂</span><strong>${visits.length}</strong><small>其中 ${located.length} 家有地图点位</small></article>`,
-    `<article><span>成交工厂</span><strong>${sold.length}</strong><small>地图上显示为红点</small></article>`,
-    ...stageCards.map((item) => `<article><span>${item.name}</span><strong>${item.count}</strong><small>客户阶段同步统计</small></article>`),
-    ...cities.map(([city, count]) => `<article><span>${city}</span><strong>${count}</strong><small>城市拜访分布</small></article>`)
+    `<article><span>地图工厂</span><strong>${summary.total || 0}</strong><small>一个工厂只保留一个点位</small></article>`,
+    ...(summary.statuses || []).map((item) => `<article><span>${statusLabels[item.name] || item.name}</span><strong>${item.count}</strong><small>客户状态分布</small></article>`),
+    ...(fieldMapMode === "competitor" ? (summary.competitors || []).slice(0, 6) : (summary.cities || []).slice(0, 6)).map((item) => `<article><span>${escapeHtml(item.name)}</span><strong>${item.count}</strong><small>${fieldMapMode === "competitor" ? `市场占比 ${summary.total ? Math.round(item.count / summary.total * 100) : 0}%` : "城市分布"}</small></article>`),
+    ...(fieldMapMode === "competitor" ? (summary.cities || []).slice(0, 3).map((item) => `<article><span>${escapeHtml(item.name)}</span><strong>${item.count}</strong><small>城市工厂覆盖</small></article>`) : [])
   ].join("");
 }
 
-function renderFieldMap(visits) {
+function markerStyleForPoint(point) {
+  if (fieldMapMode === "competitor") return `competitor-${String(point.competitorColor || "#64748b").replace("#", "")}`;
+  return point.pointStatus || "pending";
+}
+
+function showFieldPointInfo(point, position) {
+  if (!point || !fieldInfoWindow) return;
+  fieldInfoWindow.setPosition(position || new TMap.LatLng(Number(point.latitude), Number(point.longitude)));
+  fieldInfoWindow.setContent(`
+    <strong>${escapeHtml(point.name || "未命名工厂")}</strong>
+    <p>${escapeHtml(point.stage)} · ${escapeHtml(point.city || "未知城市")} · 拜访${point.visitCount || 0}次</p>
+    <p>${escapeHtml(point.address || "")}</p>
+    ${point.phone ? `<p>主联系人：${escapeHtml(point.phone)}</p>` : ""}
+    <p>现用软件：${escapeHtml(point.competitor || point.software || "待补充")}</p>
+    <p>${escapeHtml(point.equipment || "设备待补充")}</p>
+    <button type="button" onclick="openCustomerFromMap(${Number(point.customerId)})">查看客户与拜访轨迹</button>
+  `);
+  fieldInfoWindow.open();
+}
+
+function renderFieldMap(points) {
   if (currentView !== "field" || !initFieldMap()) return;
   if (fieldLayer) {
     fieldLayer.setMap(null);
     fieldLayer = null;
   }
-  const locatedVisits = visits.filter(validVisitLocation);
-  const geometries = locatedVisits.map((visit) => {
-    const latitude = Number(visit.latitude);
-    const longitude = Number(visit.longitude);
-    const sold = isSoldStatus(visit.status);
+  if (fieldCluster?.setMap) fieldCluster.setMap(null);
+  fieldCluster = null;
+  const geometries = points.map((point) => {
+    const latitude = Number(point.latitude);
+    const longitude = Number(point.longitude);
     return {
-      id: String(visit.id),
-      styleId: sold ? "sold" : "active",
+      id: String(point.customerId),
+      styleId: markerStyleForPoint(point),
       position: new TMap.LatLng(latitude, longitude),
-      properties: { visit }
+      properties: { point }
     };
   });
-  fieldLayer = new TMap.MultiMarker({
-    map: fieldMap,
-    styles: {
-      active: new TMap.MarkerStyle({ width: 28, height: 28, anchor: { x: 14, y: 14 }, src: mapDotIcon("#67c23a") }),
-      sold: new TMap.MarkerStyle({ width: 28, height: 28, anchor: { x: 14, y: 14 }, src: mapDotIcon("#f56c6c") })
-    },
-    geometries
+  const styles = {
+    pending: new TMap.MarkerStyle({ width: 26, height: 26, anchor: { x: 13, y: 13 }, src: mapDotIcon("#9ca3af") }),
+    visited: new TMap.MarkerStyle({ width: 26, height: 26, anchor: { x: 13, y: 13 }, src: mapDotIcon("#22c55e") }),
+    sold: new TMap.MarkerStyle({ width: 26, height: 26, anchor: { x: 13, y: 13 }, src: mapDotIcon("#ef4444") }),
+    archived: new TMap.MarkerStyle({ width: 26, height: 26, anchor: { x: 13, y: 13 }, src: mapDotIcon("#111827") })
+  };
+  points.forEach((point) => {
+    const styleId = markerStyleForPoint(point);
+    if (!styles[styleId]) styles[styleId] = new TMap.MarkerStyle({ width: 26, height: 26, anchor: { x: 13, y: 13 }, src: mapDotIcon(point.competitorColor || "#64748b") });
   });
+  if (geometries.length > 60 && window.TMap.MarkerCluster) {
+    try {
+      fieldCluster = new TMap.MarkerCluster({
+        id: "customer-cluster",
+        map: fieldMap,
+        geometries,
+        minimumClusterSize: 2,
+        zoomOnClick: true,
+        gridSize: 60,
+        averageCenter: true
+      });
+      if (fieldCluster.on) fieldCluster.on("click", (event) => showFieldPointInfo(event.geometry?.properties?.point, event.geometry?.position));
+    } catch {
+      fieldCluster = null;
+    }
+  }
+  fieldLayer = new TMap.MultiMarker({ map: fieldCluster ? null : fieldMap, styles, geometries });
   fieldLayer.on("click", (event) => {
-    const visit = event.geometry?.properties?.visit;
-    if (!visit) return;
-    fieldInfoWindow.setPosition(event.geometry.position);
-    fieldInfoWindow.setContent(`
-      <strong>${escapeHtml(visit.factory || "未命名工厂")}</strong>
-      <p>${escapeHtml(displayVisitStatus(visit.status))} · ${escapeHtml(visit.city || "未知城市")}</p>
-      <p>${escapeHtml(visit.address || "")}</p>
-      ${visit.phone ? `<p>电话：${escapeHtml(visit.phone)}</p>` : ""}
-      <p>${escapeHtml(visitDeviceLine(visit))}</p>
-      <p>${escapeHtml(visit.software || "待补充")} ${visit.softwarePrice ? `· ${escapeHtml(visit.softwarePrice)}` : ""}</p>
-      ${visit.lossReason ? `<p>未成交原因：${escapeHtml(visit.lossReason)}</p>` : ""}
-    `);
-    fieldInfoWindow.open();
+    const point = event.geometry?.properties?.point;
+    showFieldPointInfo(point, event.geometry?.position);
   });
   if (geometries.length && !fieldUserLocated) {
     const bounds = new TMap.LatLngBounds();
@@ -1102,39 +1205,154 @@ function renderFieldMap(visits) {
   }
 }
 
-function renderField() {
-  const visits = scopeVisits();
-  renderFieldSummary(visits);
-  renderFieldMap(visits);
-  $("#visitList").innerHTML = visits.length
-    ? visits
-        .slice(0, 12)
-        .map((visit) => {
-          const status = displayVisitStatus(visit.status);
-          return `<article>
-            <b>${escapeHtml(visit.factory || "未命名工厂")}</b>
-            <span class="${isSoldStatus(status) ? "sold-text" : ""}">${escapeHtml(status)}</span>
-            <p>${escapeHtml(visit.city || "未知城市")} · ${escapeHtml(visit.address || "")}</p>
-            ${visit.phone ? `<p>电话：${escapeHtml(visit.phone)}</p>` : ""}
-            <p>${escapeHtml(visitDeviceLine(visit))}</p>
-            <p>${escapeHtml(visit.software || "待补充")}${visit.softwarePrice ? ` · ${escapeHtml(visit.softwarePrice)}` : ""} · ${escapeHtml(visit.date || "")}</p>
-            ${visit.lossReason ? `<p>未成交原因：${escapeHtml(visit.lossReason)}</p>` : ""}
-            ${(visit.photos || []).map((url) => `<img src="${escapeHtml(url)}" alt="${escapeHtml(visit.factory || "现场图片")}" />`).join("")}
-          </article>`;
-        })
-        .join("")
-    : `<div class="empty">暂无地推拜访数据，请先在小程序选择位置并上传打卡。</div>`;
+function mapFilterQuery() {
+  const ids = ["Province", "City", "District", "Owner", "Unit", "Zone", "Stage", "PointStatus", "Equipment", "Software"];
+  const params = new URLSearchParams();
+  ids.forEach((name) => {
+    const value = $(`#map${name}Filter`)?.value?.trim();
+    if (value) params.set(name.charAt(0).toLowerCase() + name.slice(1), value);
+  });
+  return params.toString();
 }
 
+function renderMapFilterOptions(points) {
+  const fill = (id, label, values, valueKey = null) => {
+    const node = $(id);
+    if (!node) return;
+    const selected = node.value;
+    node.innerHTML = `<option value="">${label}</option>${[...new Map(values.filter(Boolean).map((item) => [valueKey ? item[valueKey] : item, item])).values()].map((item) => `<option value="${escapeHtml(valueKey ? item[valueKey] : item)}">${escapeHtml(item.name || item)}</option>`).join("")}`;
+    if ([...node.options].some((option) => option.value === selected)) node.value = selected;
+  };
+  fill("#mapProvinceFilter", "全部省份", points.map((item) => item.province));
+  fill("#mapCityFilter", "全部城市", points.map((item) => item.city));
+  fill("#mapDistrictFilter", "全部区县", points.map((item) => item.district));
+  fill("#mapOwnerFilter", "全部销售", visibleUsers(), "id");
+  fill("#mapUnitFilter", "全部单位", state.units || [], "id");
+  fill("#mapZoneFilter", "全部战区", zones);
+  fill("#mapStageFilter", "全部阶段", stages);
+}
+
+async function renderField() {
+  if (currentView !== "field") return;
+  try {
+    const result = await api(`/map/points?${mapFilterQuery()}`);
+    fieldMapResult = result;
+    fieldPoints = result.points || [];
+    renderMapFilterOptions(fieldPoints);
+    renderFieldSummary(result);
+    renderFieldMap(fieldPoints);
+    const customerById = new Map(state.customers.map((item) => [Number(item.id), item]));
+    $("#visitList").innerHTML = fieldPoints.length
+      ? fieldPoints.slice(0, 20).map((point) => {
+          const customer = customerById.get(Number(point.customerId)) || {};
+          return `<article>
+            <b>${escapeHtml(point.name)}</b><span>${escapeHtml(point.stage)} · 拜访${point.visitCount}次</span>
+            <p>${escapeHtml(point.city || "未知城市")} · ${escapeHtml(point.address || "")}</p>
+            <p>现用软件：${escapeHtml(point.competitor || point.software || "待补充")}</p>
+            <button type="button" data-map-customer="${point.customerId}">查看客户与拜访轨迹</button>
+          </article>`;
+        }).join("")
+      : `<div class="empty">当前筛选条件下暂无地图工厂。</div>`;
+  } catch (error) {
+    $("#visitList").innerHTML = `<div class="empty">地图数据加载失败：${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function openCustomerFromMap(id) {
+  const point = fieldPoints.find((item) => Number(item.customerId) === Number(id));
+  const customer = state.customers.find((item) => Number(item.id) === Number(id)) || (point ? { id, name: point.name, address: point.address, lifecycleStatus: point.pointStatus === "archived" ? "archived" : "active", ownershipStatus: point.pointStatus === "pending" ? "public_pool" : "" } : null);
+  if (!customer) return toast("客户资料暂未同步，请刷新后重试");
+  if (customer.lifecycleStatus !== "archived" && customer.ownershipStatus !== "public_pool") {
+    openCustomerDialog(customer);
+    return;
+  }
+  try {
+    const visits = await api(`/customers/${id}/visits`);
+    $("#followHistoryTitle").textContent = customer.name || "工厂详情";
+    $("#followHistorySummary").textContent = `${customer.lifecycleStatus === "archived" ? "已归档" : "公海客户"} · ${customer.address || "地址待补充"} · 共${visits.length}次拜访`;
+    const canRestore = customer.lifecycleStatus === "archived" && roleForUser(currentUser()).customerScope !== "self";
+    $("#followHistoryList").innerHTML = `${canRestore ? `<button class="primary" type="button" data-restore-customer="${customer.id}">恢复为有效客户</button>` : ""}${visits.length ? visits.map((visit) => `
+      <article class="follow-history-item">
+        <div class="follow-history-meta"><b>${escapeHtml(visit.date || "未记录时间")}</b><small>${escapeHtml(visit.owner || "未记录拜访人")}</small></div>
+        <p>${escapeHtml(visit.result || visit.note || visit.lossReason || "已完成现场拜访")}</p>
+        <small>${escapeHtml(visit.address || "")} · ${escapeHtml(visit.software || "软件待补充")}</small>
+      </article>`).join("") : '<div class="empty">暂无拜访轨迹</div>'}`;
+    $("#followHistoryDialog").showModal();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function archiveCustomerFromDialog() {
+  const id = Number($("#customerForm [name=id]").value || 0);
+  if (!id) return;
+  const reason = window.confirm("该工厂是否已经倒闭？\n确定：标记为倒闭；取消：标记为无效客户。") ? "closed" : "invalid";
+  await api(`/customers/${id}/archive`, { method: "POST", body: { reason } });
+  $("#customerDialog").close();
+  await loadState();
+  toast("客户已归档，并从漏斗和业绩统计中移出");
+}
+
+async function restoreCustomer(id) {
+  await api(`/customers/${id}/restore`, { method: "POST", body: {} });
+  $("#followHistoryDialog").close();
+  await loadState();
+  toast("客户已恢复");
+}
+
+window.openCustomerFromMap = openCustomerFromMap;
+
 function renderAssistant() {
+  const select = $("#assistantCustomerSelect");
+  if (!select) return;
+  const current = select.value;
+  const customers = scopeCustomers().filter((item) => item.ownershipStatus !== "public_pool" && item.lifecycleStatus !== "archived");
+  select.innerHTML = `<option value="">通用咨询</option>${customers.map((item) => `<option value="${item.id}">${escapeHtml(item.name)} · ${escapeHtml(item.stage)}</option>`).join("")}`;
+  if (customers.some((item) => String(item.id) === current)) select.value = current;
 }
 
 async function recommend() {
   const question = $("#customerQuestion").value.trim();
-  if (!question) return toast("请先输入客户问题");
-  $("#aiResult").textContent = "小智思考中...";
-  const result = await api("/ai/script", { method: "POST", body: { question, user: currentUser() } });
-  $("#aiResult").textContent = result.answer || "暂无结果";
+  const customerId = Number($("#assistantCustomerSelect")?.value || 0);
+  if (!question && !customerId) return toast("请选择客户或输入客户问题");
+  $("#aiResult").innerHTML = '<div class="ai-loading">小智正在结合客户资料与知识库分析...</div>';
+  const result = customerId
+    ? await api(`/ai/customers/${customerId}/advice`, { method: "POST", body: { question } })
+    : await api("/ai/script", { method: "POST", body: { question, user: currentUser() } });
+  if (!result.advice) {
+    $("#aiResult").innerHTML = `<pre>${escapeHtml(result.answer || "暂无结果")}</pre>`;
+    return;
+  }
+  const labels = {
+    intention: "客户意向判断",
+    coreObjection: "当前核心异议",
+    recommendedScript: "推荐回复话术",
+    communicationGoal: "本次沟通目标",
+    nextAction: "下一步行动",
+    followUpDraft: "跟进记录草稿",
+    riskReminder: "风险提醒"
+  };
+  $("#aiResult").innerHTML = `${Object.entries(labels).map(([key, label]) => `<section class="ai-advice-card"><h3>${label}</h3>${key === "followUpDraft" ? `<textarea id="aiFollowDraft" rows="4">${escapeHtml(result.advice[key] || "")}</textarea><button type="button" id="saveAiFollowBtn" data-customer-id="${customerId}">确认并保存为跟进记录</button>` : `<p>${escapeHtml(result.advice[key] || "未识别")}</p>`}</section>`).join("")}<section class="ai-citations"><h3>参考知识来源</h3>${(result.citations || []).length ? result.citations.map((item) => `<article><b>${escapeHtml(item.title)}</b>${item.fileUrl ? `<a href="${escapeHtml(item.fileUrl)}" target="_blank">${escapeHtml(item.fileName || "查看文件")}</a>` : ""}<p>${escapeHtml(item.summary || "")}</p></article>`).join("") : "<p>本次没有命中明确知识来源。</p>"}</section>`;
+}
+
+async function saveAiFollowDraft() {
+  const button = $("#saveAiFollowBtn");
+  const customerId = Number(button?.dataset.customerId || 0);
+  const note = $("#aiFollowDraft")?.value.trim();
+  if (!customerId || !note) return toast("跟进草稿不能为空");
+  await api(`/customers/${customerId}/follow`, { method: "POST", body: { note, date: today } });
+  await loadState();
+  toast("跟进记录已保存，客户归属保护时间已更新");
+}
+
+function analyzeCustomer(id) {
+  const customer = state.customers.find((item) => Number(item.id) === Number(id));
+  if (!customer) return;
+  if ($("#customerDialog")?.open) $("#customerDialog").close();
+  switchView("assistant");
+  $("#assistantCustomerSelect").value = String(id);
+  $("#customerQuestion").value = "请结合当前客户全部资料，给出本次跟进策略。";
+  recommend().catch((error) => toast(error.message));
 }
 
 async function addKnowledge(event) {
@@ -1158,7 +1376,8 @@ function renderAdmin() {
     .map((item) => {
       const fileUrl = item.fileUrl ? (item.fileUrl.startsWith("http") ? item.fileUrl : `${window.location.origin}${item.fileUrl}`) : "";
       const summary = item.summary || item.answer || item.content || "暂无摘要";
-      return `<article><b>${escapeHtml(item.question)}</b>${fileUrl ? `<a class="kb-file-link" href="${escapeHtml(fileUrl)}" target="_blank" rel="noopener">${escapeHtml(item.fileName || "查看文件")}</a>` : ""}<p>${escapeHtml(summary)}</p></article>`;
+      const tags = Object.values(item.tags || {}).flat().filter(Boolean);
+      return `<article><b>${escapeHtml(item.question)}</b>${fileUrl ? `<a class="kb-file-link" href="${escapeHtml(fileUrl)}" target="_blank" rel="noopener">${escapeHtml(item.fileName || "查看文件")}</a>` : ""}<p>${escapeHtml(summary)}</p>${tags.length ? `<div class="tag-list">${tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</div>` : ""}</article>`;
     })
     .join("");
   const roleSelect = $("#userRoleSelect");
@@ -1174,8 +1393,9 @@ function renderAdmin() {
     zoneSelect.innerHTML = zones.map((zone) => `<option>${zone}</option>`).join("");
   }
   $("#userList").innerHTML = visibleUsers()
-    .map((user) => `<article><b>${escapeHtml(user.name)}</b><span>${user.status || "启用"}</span><p>${escapeHtml(user.role)} · ${escapeHtml(user.unit || "待分配")} · ${escapeHtml(user.zone || "未分战区")} · 账号：${escapeHtml(user.account || user.username || user.phone || "-")}</p><div class="user-actions">${Number(user.id) === Number(currentUser().id) ? "" : `<button data-action="reset-password" data-id="${user.id}">重置密码</button><button data-action="delete-user" data-id="${user.id}">删除员工</button>`}</div></article>`)
+    .map((user) => `<article><b>${escapeHtml(user.name)}</b><span>${user.status || "启用"}</span><p>${escapeHtml(user.role)} · ${escapeHtml(user.unit || "待分配")} · ${escapeHtml(user.zone || "未分战区")} · 账号：${escapeHtml(user.account || user.username || user.phone || "-")}</p><div class="user-actions">${Number(user.id) === Number(currentUser().id) ? "" : `<button data-action="reset-password" data-id="${user.id}">重置密码</button><button data-action="offboard-user" data-id="${user.id}">离职交接</button><button data-action="delete-user" data-id="${user.id}">删除员工</button>`}</div></article>`)
     .join("");
+  $("#competitorList").innerHTML = (state.competitors || []).map((item) => `<article><b><i class="competitor-swatch" style="background:${escapeHtml(item.color)}"></i>${escapeHtml(item.name)}</b><span>${item.active === false ? "停用" : "启用"}</span></article>`).join("");
   $("#roleList").innerHTML = roles()
     .map((role) => `<article><b>${role.name}</b><span>${scopeLabels[role.customerScope] || role.customerScope}</span><p>${(role.permissions || []).map((permission) => permissionLabels[permission] || permission).join(" · ")}</p></article>`)
     .join("");
@@ -1253,6 +1473,54 @@ async function addUnit(event) {
   } finally {
     setFormSubmitting(formNode, false, "添加中...");
   }
+}
+
+async function addCompetitor(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  await api("/competitors", { method: "POST", body: { name: form.get("name"), color: form.get("color") } });
+  event.currentTarget.reset();
+  await loadState();
+  showSuccessFeedback("竞品添加成功", "竞品字典和客户档案选项已自动更新。");
+}
+
+async function importUsers(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const file = form.get("file");
+  const body = new FormData();
+  if (file?.size) body.append("file", file);
+  else {
+    const rows = String(form.get("rows") || "").trim();
+    if (!rows) return toast("请选择文件或粘贴员工数据");
+    body.append("rows", rows);
+  }
+  const result = await api("/import/users", { method: "POST", body });
+  $("#userImportDialog").close();
+  event.currentTarget.reset();
+  await loadState();
+  showImportFeedback({ total: result.total, imported: result.imported, failed: result.failed, duplicates: 0, failures: result.failures, skipped: [], reportUrl: result.reportUrl }, "员工");
+}
+
+function openOffboardDialog(id) {
+  const user = state.users.find((item) => Number(item.id) === Number(id));
+  if (!user) return;
+  const receivers = visibleUsers().filter((item) => Number(item.id) !== Number(id) && item.status !== "停用");
+  if (!receivers.length) return toast("当前管理范围内没有可接收客户的员工");
+  const form = $("#offboardForm");
+  form.userId.value = id;
+  $("#offboardSummary").textContent = `将 ${user.name} 的未归档客户和未完成路线转交给接收员工，并停用原账号。`;
+  $("#offboardReceiverSelect").innerHTML = receivers.map((item) => `<option value="${item.id}">${escapeHtml(item.name)} · ${escapeHtml(item.unit || "待分配")}</option>`).join("");
+  $("#offboardDialog").showModal();
+}
+
+async function submitOffboard(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const result = await api(`/users/${Number(form.get("userId"))}/offboard`, { method: "POST", body: { receiverId: Number(form.get("receiverId")) } });
+  $("#offboardDialog").close();
+  await loadState();
+  showSuccessFeedback("离职交接完成", `已转移${result.transferred || 0}个客户，原员工账号已停用并退出所有设备。`);
 }
 
 async function deleteUser(id) {
@@ -1364,6 +1632,7 @@ function wireEvents() {
   $("#dashboardStart").value = initialRange.start;
   $("#dashboardEnd").value = initialRange.end;
   $("#downloadTemplateLink").href = `${API_BASE}/import/customers/template`;
+  $("#downloadUserTemplateLink").href = `${API_BASE}/import/users/template`;
   $("#loginForm").addEventListener("submit", login);
   $("#changePasswordBtn").addEventListener("click", openChangePasswordDialog);
   $("#logoutBtn").addEventListener("click", logout);
@@ -1454,6 +1723,7 @@ function wireEvents() {
       return;
     }
     if (button.dataset.action === "follow") openCustomerDialog(state.customers.find((item) => item.id === id));
+    if (button.dataset.action === "ai") analyzeCustomer(id);
     if (button.dataset.action === "advance") advanceCustomer(id);
     if (button.dataset.action === "claim") claimCustomer(id);
     if (button.dataset.action === "assign") {
@@ -1462,23 +1732,74 @@ function wireEvents() {
     }
   });
   $("#customerForm").addEventListener("submit", saveCustomer);
+  $("#addContactBtn").addEventListener("click", () => renderContactsEditor([...readContactsEditor(), { name: "", phone: "", isPrimary: false }]));
+  $("#customerContactsEditor").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-remove-contact], [data-set-primary-contact]");
+    if (!button) return;
+    const index = Number(button.closest(".contact-row").dataset.index);
+    const contacts = readContactsEditor();
+    if (button.hasAttribute("data-set-primary-contact")) {
+      renderContactsEditor(contacts.map((item, itemIndex) => ({ ...item, isPrimary: itemIndex === index })));
+    } else {
+      renderContactsEditor(contacts.filter((_, itemIndex) => itemIndex !== index));
+    }
+  });
+  $("#addCompetitorProfileBtn").addEventListener("click", () => renderCompetitorProfilesEditor([...readCompetitorProfilesEditor(), { competitorId: state.competitors?.[0]?.id || "", isPrimary: readCompetitorProfilesEditor().length === 0 }]));
+  $("#customerCompetitorsEditor").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-remove-competitor]");
+    if (!button) return;
+    const index = Number(button.closest(".competitor-row").dataset.index);
+    renderCompetitorProfilesEditor(readCompetitorProfilesEditor().filter((_, itemIndex) => itemIndex !== index));
+  });
+  $("#customerAiBtn").addEventListener("click", () => analyzeCustomer(Number($("#customerForm [name=id]").value)));
+  $("#customerArchiveBtn").addEventListener("click", () => archiveCustomerFromDialog().catch((error) => toast(error.message)));
+  $("#followHistoryList").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-restore-customer]");
+    if (button) restoreCustomer(Number(button.dataset.restoreCustomer)).catch((error) => toast(error.message));
+  });
   $("#batchForm").addEventListener("submit", batchImport);
   $("#assignForm").addEventListener("submit", batchAssignCustomers);
   $("#targetForm").addEventListener("submit", saveTarget);
   $("#recommendBtn").addEventListener("click", recommend);
+  $("#aiResult").addEventListener("click", (event) => {
+    if (event.target.closest("#saveAiFollowBtn")) saveAiFollowDraft().catch((error) => toast(error.message));
+  });
   $("#knowledgeForm").addEventListener("submit", addKnowledge);
   $("#userForm").addEventListener("submit", addUser);
   $("#roleForm").addEventListener("submit", addRole);
   $("#unitForm").addEventListener("submit", addUnit);
+  $("#competitorForm").addEventListener("submit", addCompetitor);
+  $("#openUserImportBtn").addEventListener("click", () => $("#userImportDialog").showModal());
+  $("#userImportForm").addEventListener("submit", importUsers);
+  $("#offboardForm").addEventListener("submit", submitOffboard);
   $("#userList").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-action]");
     if (!button) return;
     if (button.dataset.action === "delete-user") deleteUser(button.dataset.id);
     if (button.dataset.action === "reset-password") openResetPasswordDialog(button.dataset.id);
+    if (button.dataset.action === "offboard-user") openOffboardDialog(button.dataset.id);
   });
   $("#unitList").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-action='delete-unit']");
     if (button) deleteUnit(button.dataset.id);
+  });
+  $("#fieldModeSwitch").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-map-mode]");
+    if (!button) return;
+    fieldMapMode = button.dataset.mapMode;
+    $$("#fieldModeSwitch button").forEach((item) => item.classList.toggle("active", item === button));
+    renderFieldMap(fieldPoints);
+    renderFieldSummary(fieldMapResult);
+  });
+  ["mapProvinceFilter", "mapCityFilter", "mapDistrictFilter", "mapOwnerFilter", "mapUnitFilter", "mapZoneFilter", "mapStageFilter", "mapPointStatusFilter"].forEach((id) => $(`#${id}`).addEventListener("change", renderField));
+  ["mapEquipmentFilter", "mapSoftwareFilter"].forEach((id) => $(`#${id}`).addEventListener("change", renderField));
+  $("#mapFilterReset").addEventListener("click", () => {
+    $$(".field-filters select, .field-filters input").forEach((node) => { node.value = ""; });
+    renderField();
+  });
+  $("#visitList").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-map-customer]");
+    if (button) openCustomerFromMap(Number(button.dataset.mapCustomer));
   });
 }
 

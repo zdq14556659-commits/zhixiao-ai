@@ -2,94 +2,81 @@
   <view class="header">
     <text class="crumb">首页 / 地推地图</text>
     <view class="title">地推拜访</view>
-    <view class="subtitle">当前员工：{{currentUser.name}}。销售只显示自己的拜访点，主管以上显示团队拜访点。</view>
+    <view class="subtitle">一个工厂一个点位，多次拜访形成完整轨迹。</view>
   </view>
 
   <view class="map-shell">
-    <map
-      class="map"
-      latitude="{{latitude}}"
-      longitude="{{longitude}}"
-      markers="{{markers}}"
-      scale="{{scale}}"
-      show-location
-      enable-zoom
-      enable-scroll
-    ></map>
+    <map class="map" latitude="{{latitude}}" longitude="{{longitude}}" markers="{{markers}}" scale="{{scale}}" show-location enable-zoom enable-scroll bindmarkertap="onMarkerTap"></map>
     <view class="map-legend">
-      <view><text class="dot green"></text>名单/线索/商机</view>
+      <view><text class="dot gray"></text>待拜访</view>
+      <view><text class="dot green"></text>已拜访</view>
       <view><text class="dot red"></text>成交</view>
+      <view><text class="dot black"></text>无效</view>
+    </view>
+  </view>
+
+  <view wx:if="{{selectedPoint}}" class="card point-detail">
+    <view class="row"><view><view class="point-name">{{selectedPoint.name}}</view><text class="tag">{{selectedPoint.stage}}</text></view><button class="icon-close" bindtap="closePointDetail">×</button></view>
+    <view class="muted">{{selectedPoint.address || '地址待补充'}}</view>
+    <view class="muted">主联系人：{{selectedPoint.phone || '待补充'}} · 已拜访{{selectedPoint.visitCount}}次</view>
+    <view class="muted">现用软件：{{selectedPoint.competitor || selectedPoint.software || '待补充'}}</view>
+    <view class="point-actions">
+      <button class="plain-btn" data-id="{{selectedPoint.customerId}}" bindtap="navigatePoint">一键导航</button>
+      <button wx:if="{{selectedPoint.pointStatus !== 'archived'}}" class="primary-btn" bindtap="startVisitForPoint">拜访打卡</button>
+      <button wx:elif="{{canRestoreSelected}}" class="primary-btn" bindtap="restoreSelectedCustomer">恢复客户</button>
     </view>
   </view>
 
   <view class="city-strip">
-    <view wx:for="{{cityStats}}" wx:key="city">
-      <strong>{{item.city}}</strong>
-      <text>{{item.count}}家</text>
+    <view wx:for="{{cityStats}}" wx:key="city"><strong>{{item.city}}</strong><text>{{item.count}}家</text></view>
+  </view>
+
+  <view class="card nearby-card">
+    <view class="row section-head">
+      <view><view class="section-title no-bottom">附近待拜访工厂</view><text class="muted">按当前位置距离排序</text></view>
+      <picker range="{{radiusOptions}}" value="{{radiusIndex}}" bindchange="onRadius"><view class="radius-picker">{{radiusOptions[radiusIndex]}}公里⌄</view></picker>
+    </view>
+    <view wx:if="{{!nearbyPoints.length}}" class="empty">当前范围暂无待拜访工厂</view>
+    <view class="nearby-item" wx:for="{{nearbyPoints}}" wx:key="customerId">
+      <view class="nearby-main" data-id="{{item.customerId}}" bindtap="focusNearby"><strong>{{item.name}}</strong><text>{{item.address || item.city || '地址待补充'}}</text><text>{{item.distanceText}}公里</text></view>
+      <view class="nearby-actions">
+        <button class="route-check {{item.selectedForRoute ? 'selected' : ''}}" data-id="{{item.customerId}}" bindtap="toggleRouteStop">{{item.selectedForRoute ? '已选' : '路线+'}}</button>
+        <button class="nav-btn" data-id="{{item.customerId}}" bindtap="navigatePoint">导航</button>
+      </view>
+    </view>
+    <button wx:if="{{nearbyPoints.length}}" class="primary-btn route-build" bindtap="buildTodayRoute">智能生成今日路线（{{routeSelectedIds.length}}/12）</button>
+  </view>
+
+  <view wx:if="{{todayRoute && todayRoute.stops.length}}" class="card route-card">
+    <view class="section-title">今日拜访路线</view>
+    <view class="route-stop {{item.completed ? 'completed' : ''}}" wx:for="{{todayRoute.stops}}" wx:key="customerId">
+      <text class="route-order">{{index + 1}}</text>
+      <view><strong>{{item.name}}</strong><text>{{item.address}}</text></view>
+      <text>{{item.completed ? '已完成' : '待拜访'}}</text>
     </view>
   </view>
 
   <form bindsubmit="submitVisit">
     <view class="card fresh-card">
-      <view class="row form-title-row">
-        <view class="section-title no-bottom">{{editingVisitId ? '编辑拜访' : '上传打卡'}}</view>
-        <button wx:if="{{editingVisitId}}" class="plain-btn mini-cancel" type="button" bindtap="cancelEdit">取消编辑</button>
-      </view>
-      <view class="form-item">
-        <text class="label">工厂名称</text>
-        <input name="factory" value="{{form.factory}}" placeholder="杭州雅居全屋定制工厂" />
-      </view>
-      <view class="form-item">
-        <text class="label">客户电话</text>
-        <input name="phone" type="number" value="{{form.phone}}" placeholder="客户手机号" />
-      </view>
-      <view class="form-item">
-        <text class="label">数量*开料设备</text>
-        <input name="cuttingDevice" value="{{form.cuttingDevice}}" placeholder="2*电子锯" />
-      </view>
-      <view class="form-item">
-        <text class="label">数量*打孔设备</text>
-        <input name="drillingDevice" value="{{form.drillingDevice}}" placeholder="1*六面钻" />
-      </view>
-      <view class="form-item">
-        <text class="label">现使用软件</text>
-        <input name="software" value="{{form.software}}" placeholder="酷家乐 + Excel排产" />
-      </view>
-      <view class="form-item">
-        <text class="label">软件版本价格</text>
-        <input name="softwarePrice" value="{{form.softwarePrice}}" placeholder="基础版 / 每年3万 / 一次性买断" />
-      </view>
-      <view class="form-item">
-        <text class="label">市场状态</text>
-        <picker range="{{statuses}}" value="{{statusIndex}}" bindchange="onStatus">
-          <view class="picker-box">{{statuses[statusIndex]}}</view>
-        </picker>
-      </view>
-      <view class="form-item">
-        <text class="label">未成交原因</text>
-        <input name="lossReason" value="{{form.lossReason}}" placeholder="预算不足 / 老板未决策 / 现系统未到期" />
-      </view>
+      <view class="row form-title-row"><view class="section-title no-bottom">{{editingVisitId ? '编辑拜访' : '上传打卡'}}</view><button wx:if="{{editingVisitId}}" class="plain-btn mini-cancel" type="button" bindtap="cancelEdit">取消编辑</button></view>
+      <view class="form-item"><text class="label">工厂名称</text><input name="factory" value="{{form.factory}}" placeholder="杭州雅居全屋定制工厂" /></view>
+      <view class="form-item"><text class="label">客户电话</text><input name="phone" type="number" value="{{form.phone}}" placeholder="客户手机号" /></view>
+      <view class="form-item"><text class="label">数量*开料设备</text><input name="cuttingDevice" value="{{form.cuttingDevice}}" placeholder="2*电子锯" /></view>
+      <view class="form-item"><text class="label">数量*打孔设备</text><input name="drillingDevice" value="{{form.drillingDevice}}" placeholder="1*六面钻" /></view>
+      <view class="form-item"><text class="label">现使用软件</text><input name="software" value="{{form.software}}" placeholder="酷家乐 + Excel排产" /></view>
+      <view class="form-item"><text class="label">软件版本价格</text><input name="softwarePrice" value="{{form.softwarePrice}}" placeholder="基础版 / 每年3万" /></view>
+      <view class="form-item"><text class="label">市场状态</text><picker range="{{statuses}}" value="{{statusIndex}}" bindchange="onStatus"><view class="picker-box">{{statuses[statusIndex]}}</view></picker></view>
+      <view class="form-item"><text class="label">客户异议</text><input name="objections" value="{{form.objections}}" placeholder="价格、迁移、员工学习成本等" /></view>
+      <view class="form-item"><text class="label">拜访结果</text><textarea name="result" value="{{form.result}}" placeholder="本次见到谁、沟通了什么、下一步计划"></textarea></view>
+      <view class="form-item"><text class="label">未成交原因</text><input name="lossReason" value="{{form.lossReason}}" placeholder="预算不足 / 老板未决策 / 现系统未到期" /></view>
 
       <view class="form-item">
-        <view class="row">
-          <text class="label no-margin">现场图片</text>
-          <text class="muted">{{photos.length}}/6</text>
-        </view>
-        <view class="photo-grid">
-          <image wx:for="{{photos}}" wx:key="*this" src="{{item}}" mode="aspectFill" bindtap="previewPhoto" data-src="{{item}}"></image>
-          <button wx:if="{{photos.length < 6}}" class="photo-add" type="button" bindtap="choosePhotos">+</button>
-        </view>
+        <view class="row"><text class="label no-margin">现场图片</text><text class="muted">{{photos.length}}/6</text></view>
+        <view class="photo-grid"><image wx:for="{{photos}}" wx:key="*this" src="{{item}}" mode="aspectFill" bindtap="previewPhoto" data-src="{{item}}"></image><button wx:if="{{photos.length < 6}}" class="photo-add" type="button" bindtap="choosePhotos">+</button></view>
       </view>
 
-      <view class="location-box">
-        <view>经纬度：{{locationReady ? latitude + ', ' + longitude : '待选择位置'}}</view>
-        <view>城市：{{currentCity || '待选择'}}</view>
-        <view>地址：{{currentAddress || '点击选择位置后自动带入'}}</view>
-      </view>
-
-      <view class="location-actions">
-        <button class="plain-btn" type="button" bindtap="chooseLocation">选择位置</button>
-      </view>
+      <view class="location-box"><view>经纬度：{{locationReady ? latitude + ', ' + longitude : '待选择位置'}}</view><view>城市：{{currentCity || '待选择'}}</view><view>地址：{{currentAddress || '点击选择位置后自动带入'}}</view></view>
+      <button class="plain-btn location-button" type="button" bindtap="chooseLocation">选择工厂位置</button>
       <button class="primary-btn submit-visit-btn" form-type="submit">{{editingVisitId ? '保存拜访' : '上传打卡'}}</button>
     </view>
   </form>
@@ -97,19 +84,10 @@
   <view class="card fresh-card">
     <view class="section-title">最近拜访</view>
     <view class="visit" wx:for="{{visits}}" wx:key="id" data-id="{{item.id}}" bindtap="editVisit">
-      <view class="row">
-        <text class="visit-title">{{item.factory}}</text>
-        <text class="tag {{item.status === '成交' || item.status === '已成交' ? 'sold' : ''}}">{{item.status}}</text>
-      </view>
+      <view class="row"><text class="visit-title">{{item.factory}}</text><text class="tag {{item.status === '成交' || item.status === '已成交' ? 'sold' : ''}}">{{item.status}}</text></view>
       <view class="muted">{{item.city || '未知城市'}} · {{item.address || '暂无地址'}}</view>
-      <view class="muted">电话：{{item.phone || '待补充'}} · 拜访人：{{item.owner || '未记录'}} · {{item.date}}</view>
-      <view class="muted">开料：{{item.cuttingDevice || item.cuttingCount || '待补充'}}</view>
-      <view class="muted">打孔：{{item.drillingDevice || item.drillingCount || '待补充'}}</view>
-      <view class="muted">{{item.software || '待补充'}} · {{item.softwarePrice || '价格待补充'}}</view>
-      <view wx:if="{{item.lossReason}}" class="muted">未成交原因：{{item.lossReason}}</view>
-      <scroll-view wx:if="{{item.photos && item.photos.length}}" class="visit-photos" scroll-x>
-        <image wx:for="{{item.photos}}" wx:key="*this" src="{{item}}" mode="aspectFill" catchtap="previewPhoto" data-src="{{item}}"></image>
-      </scroll-view>
+      <view class="muted">拜访人：{{item.owner || '未记录'}} · {{item.date}} · {{item.result || '已完成拜访'}}</view>
+      <scroll-view wx:if="{{item.photos && item.photos.length}}" class="visit-photos" scroll-x><image wx:for="{{item.photos}}" wx:key="*this" src="{{item}}" mode="aspectFill" catchtap="previewPhoto" data-src="{{item}}"></image></scroll-view>
     </view>
   </view>
 </view>

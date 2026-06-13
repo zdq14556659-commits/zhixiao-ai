@@ -12,7 +12,9 @@ Page({
     filePath: "",
     fileName: "",
     importing: false,
-    importResult: null
+    importResult: null,
+    targetPublicPool: false,
+    geocodeProgressText: ""
   },
 
   onLoad(options) {
@@ -20,7 +22,7 @@ Page({
     const ownerUsers = app.visibleSales();
     const owners = ownerUsers.map((user) => user.name);
     const stageIndex = Math.max(0, this.data.stages.indexOf(options.stage || "名单"));
-    this.setData({ owners, ownerUsers, stageIndex, channelSources: app.globalData.channelSources });
+    this.setData({ owners, ownerUsers, stageIndex, channelSources: app.globalData.channelSources, targetPublicPool: options.target === "public_pool" });
   },
 
   onStage(event) {
@@ -47,7 +49,8 @@ Page({
     this.setData({ importing: true, importResult: null });
     wx.showLoading({ title: "导入中" });
     try {
-      const result = await app.requestApi("/import/customers", {
+      const endpoint = this.data.targetPublicPool ? "/import/customers?target=public_pool" : "/import/customers";
+      const result = await app.requestApi(endpoint, {
         method: "POST",
         data: {
           rows,
@@ -91,7 +94,7 @@ Page({
     wx.showLoading({ title: "导入中" });
     const session = app.getSession();
     wx.uploadFile({
-      url: `${app.globalData.apiBase}/import/customers`,
+      url: `${app.globalData.apiBase}/import/customers${this.data.targetPublicPool ? '?target=public_pool' : ''}`,
       filePath,
       name: "file",
       header: session && session.token ? { Authorization: `Bearer ${session.token}` } : {},
@@ -134,6 +137,7 @@ Page({
       imported: Number(result.imported || 0),
       duplicates: Number(result.duplicates || 0),
       failed: Number(result.failed || 0),
+      pendingLocation: Number(result.pendingLocation || 0),
       skipped: Array.isArray(result.skipped) ? result.skipped : [],
       failures: Array.isArray(result.failures) ? result.failures : []
     };
@@ -142,10 +146,21 @@ Page({
       : "";
     normalizedResult.reportUrl = reportUrl;
     this.setData({ importResult: normalizedResult });
+    if (this.data.targetPublicPool && normalizedResult.pendingLocation) this.refreshGeocodeProgress();
     if (normalizedResult.duplicates) {
       wx.showToast({ title: `发现${normalizedResult.duplicates}条重复客户，已跳过`, icon: "none", duration: 2600 });
     } else {
       wx.showToast({ title: "导入完成", icon: "success" });
+    }
+  },
+
+  async refreshGeocodeProgress() {
+    try {
+      const progress = await app.requestApi("/geocode/status");
+      const counts = progress.counts || {};
+      this.setData({ geocodeProgressText: progress.configured ? `地址解析剩余${progress.remaining || 0}条，成功${counts.resolved || 0}条，失败${counts.failed || 0}条` : "服务器尚未配置腾讯地图服务Key，地址解析任务会保留等待执行" });
+    } catch (error) {
+      this.setData({ geocodeProgressText: error.message || "定位进度读取失败" });
     }
   },
 

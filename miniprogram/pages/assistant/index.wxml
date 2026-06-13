@@ -3,22 +3,46 @@
     <view class="xiaozhi-icon">智</view>
     <view>
       <view class="title">小智</view>
-      <view class="subtitle">智销AI销售跟进助手 · 从知识库检索并生成成交策略</view>
+      <view class="subtitle">自动读取客户档案、跟进历史、拜访和竞品信息</view>
     </view>
   </view>
 
   <view class="card">
     <view class="form-item">
-      <text class="label">客户问题</text>
-      <textarea value="{{question}}" bindinput="onQuestion" placeholder="客户说：设计图能不能直接拆单到开料？"></textarea>
+      <text class="label">分析客户</text>
+      <picker range="{{customerNames}}" value="{{customerIndex}}" bindchange="onCustomer">
+        <view class="picker-box">{{customerNames[customerIndex] || '暂无可分析客户'}}</view>
+      </picker>
     </view>
-    <button class="primary-btn" bindtap="recommend">让小智生成策略</button>
+    <view class="form-item">
+      <text class="label">补充客户本次问题（可不填）</text>
+      <textarea value="{{question}}" bindinput="onQuestion" placeholder="例如：客户担心换软件后历史订单无法迁移"></textarea>
+    </view>
+    <button class="primary-btn" bindtap="recommend">让小智生成跟进策略</button>
   </view>
 
-  <view class="card" wx:if="{{result}}">
-    <view class="section-title">小智建议</view>
-    <view class="source">来源：{{result.source === 'deepseek' ? 'DeepSeek + 知识库' : '知识库本地策略'}}</view>
-    <view class="answer">{{result.answer}}</view>
-    <view wx:if="{{result.matched && result.matched.length}}" class="muted">命中知识：{{result.matched[0].question}}</view>
+  <view wx:if="{{result}}">
+    <view class="advice-grid">
+      <view class="advice-card"><text>1. 客户意向判断</text><view>{{result.advice.intention}}</view></view>
+      <view class="advice-card"><text>2. 当前核心异议</text><view>{{result.advice.coreObjection}}</view></view>
+      <view class="advice-card"><text>3. 推荐回复话术</text><view>{{result.advice.recommendedScript}}</view></view>
+      <view class="advice-card"><text>4. 本次沟通目标</text><view>{{result.advice.communicationGoal}}</view></view>
+      <view class="advice-card"><text>5. 下一步行动</text><view>{{result.advice.nextAction}}</view></view>
+      <view class="advice-card"><text>7. 风险提醒</text><view>{{result.advice.riskReminder}}</view></view>
+    </view>
+
+    <view class="card draft-card">
+      <view class="section-title">6. 跟进记录草稿</view>
+      <textarea value="{{followDraft}}" bindinput="onDraftInput"></textarea>
+      <button class="primary-btn" loading="{{savingDraft}}" bindtap="saveFollowDraft">确认写入跟进历史</button>
+    </view>
+
+    <view class="card" wx:if="{{result.citations && result.citations.length}}">
+      <view class="section-title">参考知识来源</view>
+      <view class="citation" wx:for="{{result.citations}}" wx:key="id">
+        <text>{{item.title}}</text>
+        <view class="muted">{{item.fileName || '知识库条目'}} · {{item.summary}}</view>
+      </view>
+    </view>
   </view>
 </view>

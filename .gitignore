@@ -3,8 +3,10 @@ npm-debug.log*
 
 # Runtime data and uploaded visit photos
 backend/data/db.json
+backend/data/db.backup.json
 backend/uploads/
 .tmp-render-data/
+.tmp-ui-v6/
 
 # Local WeChat DevTools settings
 miniprogram/project.private.config.json

@@ -102,9 +102,9 @@
 
   <view class="list-head">
     <text class="muted list-count">共 {{filtered.length}} 个客户</text>
-    <view wx:if="{{currentStage !== '公海'}}" class="head-actions">
-      <button class="plain-btn mini-btn" bindtap="goBatchImport">批量导入</button>
-      <button class="primary-btn mini-btn" bindtap="goAdd">单个添加</button>
+    <view wx:if="{{currentStage !== '公海' || canImportPublic}}" class="head-actions">
+      <button class="plain-btn mini-btn" bindtap="goBatchImport">{{currentStage === '公海' ? '导入公海' : '批量导入'}}</button>
+      <button wx:if="{{currentStage !== '公海'}}" class="primary-btn mini-btn" bindtap="goAdd">单个添加</button>
     </view>
   </view>
 

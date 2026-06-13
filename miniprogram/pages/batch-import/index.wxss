@@ -11,7 +11,7 @@ textarea {
 }
 
 .import-result-card { margin-top: 20rpx; }
-.result-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10rpx; }
+.result-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10rpx; }
 .result-grid view { padding: 16rpx 8rpx; border: 1rpx solid #e4e9f0; border-radius: 8rpx; background: #f8fafc; text-align: center; }
 .result-grid text { display: block; color: #7a8798; font-size: 22rpx; }
 .result-grid strong { display: block; margin-top: 6rpx; color: #1f2d3d; font-size: 34rpx; }
@@ -19,6 +19,8 @@ textarea {
 .result-grid .warning strong { color: #e6a23c; }
 .result-grid .danger strong { color: #f56c6c; }
 .duplicate-notice { margin-top: 18rpx; padding: 18rpx; border-left: 6rpx solid #e6a23c; border-radius: 6rpx; color: #8a5a00; background: #fdf6ec; font-size: 25rpx; line-height: 1.6; }
+.geocode-progress { display: grid; gap: 12rpx; margin-top: 16rpx; padding: 16rpx; border-radius: 8rpx; color: #35617d; background: #eef8ff; font-size: 24rpx; }
+.geocode-progress button { width: 100%; }
 .result-list { margin-top: 20rpx; }
 .result-scroll { max-height: 520rpx; margin-top: 16rpx; border: 1rpx solid #e4e9f0; border-radius: 8rpx; }
 .result-scroll .result-list { margin: 0; padding: 0 16rpx; }

@@ -18,6 +18,8 @@ services:
         sync: false
       - key: AMAP_KEY
         sync: false
+      - key: TENCENT_MAP_SERVER_KEY
+        sync: false
       - key: DEEPSEEK_API_KEY
         sync: false
       - key: DEEPSEEK_MODEL

@@ -2,16 +2,33 @@ const app = getApp();
 
 Page({
   data: {
-    question: "你们软件能不能从设计图直接拆单到开料？我们现在酷家乐出图，后面还要人工算板件。",
-    knowledge: [],
-    result: null
+    question: "",
+    customers: [],
+    customerNames: [],
+    customerIndex: 0,
+    selectedCustomerId: 0,
+    result: null,
+    followDraft: "",
+    savingDraft: false
+  },
+
+  onLoad(options) {
+    this.pendingCustomerId = Number(options.customerId || 0);
   },
 
   onShow() {
     if (!app.ensureLogin()) return;
     app.loadRemoteState(() => {
-      const state = app.getState();
-      this.setData({ knowledge: state.knowledge });
+      const customers = app.scopeCustomers().filter((item) => item.ownershipStatus !== "public_pool" && item.lifecycleStatus !== "archived");
+      const selectedCustomerId = this.pendingCustomerId || this.data.selectedCustomerId || customers[0]?.id || 0;
+      const customerIndex = Math.max(0, customers.findIndex((item) => Number(item.id) === Number(selectedCustomerId)));
+      this.setData({
+        customers,
+        customerNames: customers.map((item) => `${item.name} · ${item.stage}`),
+        customerIndex,
+        selectedCustomerId: customers[customerIndex]?.id || 0
+      });
+      this.pendingCustomerId = 0;
     });
   },
 
@@ -19,41 +36,52 @@ Page({
     this.setData({ question: event.detail.value });
   },
 
-  recommend() {
-    if (!this.data.question.trim()) {
-      wx.showToast({ title: "请填写客户问题", icon: "none" });
+  onCustomer(event) {
+    const customerIndex = Number(event.detail.value);
+    this.setData({ customerIndex, selectedCustomerId: this.data.customers[customerIndex]?.id || 0, result: null, followDraft: "" });
+  },
+
+  onDraftInput(event) {
+    this.setData({ followDraft: event.detail.value });
+  },
+
+  async recommend() {
+    if (!this.data.selectedCustomerId) {
+      wx.showToast({ title: "请先选择客户", icon: "none" });
       return;
     }
-    wx.showLoading({ title: "小智思考中" });
-    wx.request({
-      url: `${app.globalData.apiBase}/ai/script`,
-      method: "POST",
-      header: { "Content-Type": "application/json" },
-      data: {
-        question: this.data.question,
-        user: app.getCurrentUser()
-      },
-      success: (res) => {
-        this.setData({ result: res.data });
-      },
-      fail: () => {
-        const scored = this.data.knowledge
-          .map((item) => ({
-            ...item,
-            score: this.data.question.split(/[，。；\s]+/).filter((word) => word && `${item.question}${item.answer}`.includes(word)).length
-          }))
-          .sort((a, b) => b.score - a.score);
-        this.setData({
-          result: {
-            source: "fallback",
-            matched: scored,
-            answer: scored[0] ? scored[0].answer : "建议先让客户提供真实订单，演示从设计、报价、拆单到开料标签的完整流程。"
-          }
-        });
-      },
-      complete: () => {
-        wx.hideLoading();
-      }
-    });
+    wx.showLoading({ title: "小智分析中" });
+    try {
+      const result = await app.requestApi(`/ai/customers/${this.data.selectedCustomerId}/advice`, {
+        method: "POST",
+        data: { question: this.data.question.trim() }
+      });
+      this.setData({ result, followDraft: result.advice?.followUpDraft || "" });
+    } catch (error) {
+      wx.showModal({ title: "分析失败", content: error.message || "请稍后重试", showCancel: false });
+    } finally {
+      wx.hideLoading();
+    }
+  },
+
+  async saveFollowDraft() {
+    const note = this.data.followDraft.trim();
+    if (!note) {
+      wx.showToast({ title: "请先完善跟进草稿", icon: "none" });
+      return;
+    }
+    this.setData({ savingDraft: true });
+    try {
+      await app.requestApi(`/customers/${this.data.selectedCustomerId}/follow`, {
+        method: "POST",
+        data: { note, nextFollow: app.globalData.today }
+      });
+      await new Promise((resolve) => app.loadRemoteState(resolve));
+      wx.showToast({ title: "已写入跟进历史", icon: "success" });
+    } catch (error) {
+      wx.showToast({ title: error.message || "保存失败", icon: "none" });
+    } finally {
+      this.setData({ savingDraft: false });
+    }
   }
 });

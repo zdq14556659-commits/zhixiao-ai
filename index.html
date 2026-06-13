@@ -169,10 +169,29 @@
         </section>
 
         <section class="view" id="fieldView">
+          <section class="panel field-toolbar-panel">
+            <div class="field-mode-switch" id="fieldModeSwitch">
+              <button class="active" data-map-mode="status" type="button">客户状态</button>
+              <button data-map-mode="competitor" type="button">竞品分布</button>
+            </div>
+            <div class="field-filters">
+              <select id="mapProvinceFilter"><option value="">全部省份</option></select>
+              <select id="mapCityFilter"><option value="">全部城市</option></select>
+              <select id="mapDistrictFilter"><option value="">全部区县</option></select>
+              <select id="mapOwnerFilter"><option value="">全部销售</option></select>
+              <select id="mapUnitFilter"><option value="">全部单位</option></select>
+              <select id="mapZoneFilter"><option value="">全部战区</option></select>
+              <select id="mapStageFilter"><option value="">全部阶段</option></select>
+              <select id="mapPointStatusFilter"><option value="">全部点位</option><option value="pending">待拜访</option><option value="visited">已拜访未成交</option><option value="sold">已成交</option><option value="archived">无效或倒闭</option></select>
+              <input id="mapEquipmentFilter" placeholder="设备品牌" />
+              <input id="mapSoftwareFilter" placeholder="现用软件" />
+              <button id="mapFilterReset" type="button">重置</button>
+            </div>
+          </section>
           <div class="field-layout">
             <section class="map-panel">
               <div class="map-canvas" id="mapCanvas"></div>
-              <div class="map-legend"><span><i class="green"></i>名单/线索/商机</span><span><i class="red"></i>成交</span></div>
+              <div class="map-legend" id="mapLegend"><span><i class="gray"></i>待拜访</span><span><i class="green"></i>已拜访未成交</span><span><i class="red"></i>成交</span><span><i class="black"></i>无效或倒闭</span></div>
             </section>
           </div>
           <section class="panel">
@@ -187,10 +206,11 @@
 
         <section class="view" id="assistantView">
           <section class="panel">
-            <div class="panel-title"><h2>小智话术推荐</h2><span>从知识库检索并调用 DeepSeek 生成跟进策略</span></div>
-            <textarea id="customerQuestion" rows="7" placeholder="输入客户问题"></textarea>
-            <button class="primary full" id="recommendBtn">让小智推荐话术</button>
-            <pre class="ai-result" id="aiResult"></pre>
+            <div class="panel-title"><h2>小智话术推荐</h2><span>读取客户资料、跟进与拜访上下文，并展示知识引用</span></div>
+            <label>选择客户<select id="assistantCustomerSelect"><option value="">通用咨询</option></select></label>
+            <textarea id="customerQuestion" rows="7" placeholder="输入客户问题，也可以选择客户后直接分析"></textarea>
+            <button class="primary full" id="recommendBtn">让小智生成策略</button>
+            <div class="ai-result structured-ai-result" id="aiResult"></div>
           </section>
         </section>
 
@@ -204,6 +224,13 @@
             <form class="form-stack" id="knowledgeForm">
               <label>知识标题<input name="question" placeholder="例如：价格异议处理" /></label>
               <label>知识内容<textarea name="answer" rows="4" placeholder="可直接填写标准话术，也可以只上传文件"></textarea></label>
+              <div class="knowledge-tag-grid">
+                <label>产品模块<input name="productModules" placeholder="报价,拆单,生产管理" /></label>
+                <label>销售阶段<input name="salesStages" placeholder="名单,线索,商机,成交" /></label>
+                <label>客户角色<input name="customerRoles" placeholder="老板,设计主管,生产主管" /></label>
+                <label>竞品<input name="competitors" placeholder="三维家,云熙,海迅" /></label>
+                <label>异议类型<input name="objectionTypes" placeholder="价格,功能,实施,售后" /></label>
+              </div>
               <label>上传文件<input name="file" type="file" accept=".txt,.md,.csv,.json,.pdf,.docx,.xlsx" /></label>
               <small class="muted">支持 TXT、Markdown、CSV、JSON、文本型 PDF、DOCX、XLSX；扫描版 PDF 需后续接入 OCR。</small>
               <button class="primary" type="submit">添加到知识库</button>
@@ -221,6 +248,16 @@
                 <label>单位<select name="unitId" id="userUnitSelect"></select></label>
                 <button class="primary" type="submit">开通账号</button>
               </form>
+              <button id="openUserImportBtn" type="button">Excel批量开通员工</button>
+            </section>
+            <section class="panel">
+              <div class="panel-title"><h2>竞品字典</h2><span>用于客户档案、地图着色和行业分析</span></div>
+              <form class="form-stack" id="competitorForm">
+                <label>竞品名称<input name="name" required placeholder="例如：新竞品" /></label>
+                <label>地图颜色<input name="color" type="color" value="#64748b" /></label>
+                <button class="primary" type="submit">添加竞品</button>
+              </form>
+              <div class="user-list compact-list" id="competitorList"></div>
             </section>
             <section class="panel">
               <div class="panel-title"><h2>角色权限</h2><span>设置角色能看到的客户范围和功能模块</span></div>
@@ -286,8 +323,16 @@
         <label>进款业绩归属人<select name="paymentOwnerId" id="paymentOwnerSelect"></select></label>
         <label>未成交原因<textarea name="lossReason" rows="2" placeholder="价格、竞品、暂时无预算等"></textarea></label>
         <label>现用软件<input name="software" /></label>
+        <div class="dialog-section-title">联系人</div>
+        <div id="customerContactsEditor" class="repeat-editor"></div>
+        <button id="addContactBtn" type="button">添加联系人</button>
+        <div class="dialog-section-title">竞品档案</div>
+        <div id="customerCompetitorsEditor" class="repeat-editor"></div>
+        <button id="addCompetitorProfileBtn" type="button">添加竞品档案</button>
         <label>跟进记录<textarea name="note" rows="4"></textarea></label>
         <label>下次跟进<input name="nextFollow" type="date" /></label>
+        <button id="customerAiBtn" type="button">让小智分析该客户</button>
+        <button id="customerArchiveBtn" class="danger-outline hidden" type="button">标记为无效或倒闭</button>
         <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">保存</button></div>
       </form>
     </dialog>
@@ -395,6 +440,28 @@
         <p>当前账号仍在使用初始或管理员重置的密码。为保护客户数据，建议现在修改。</p>
         <div class="button-row reminder-actions"><button id="skipPasswordChangeBtn" type="button">本次跳过</button><button class="primary" id="changePasswordNowBtn" type="button">现在修改</button></div>
       </div>
+    </dialog>
+
+    <dialog id="userImportDialog">
+      <form class="dialog-form" id="userImportForm">
+        <h2>批量开通员工</h2>
+        <p class="muted">表头：员工姓名、登录账号、初始密码、角色、单位。角色和单位必须已在系统中创建。</p>
+        <a class="template-link" id="downloadUserTemplateLink" href="/api/import/users/template" target="_blank" rel="noreferrer">下载员工样表</a>
+        <label>员工Excel/CSV<input name="file" type="file" accept=".xlsx,.csv,.txt" /></label>
+        <textarea name="rows" rows="7" placeholder="张销售,13800138000,123456,销售,杭州一部"></textarea>
+        <div class="button-row"><button type="button" data-close-dialog="userImportDialog">取消</button><button class="primary" type="submit">批量开通</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="offboardDialog">
+      <form class="dialog-form" id="offboardForm">
+        <h2>员工离职交接</h2>
+        <input type="hidden" name="userId" />
+        <p class="muted" id="offboardSummary"></p>
+        <label>接收员工<select name="receiverId" id="offboardReceiverSelect" required></select></label>
+        <p class="muted">客户和未完成路线将转交；原跟进作者、拜访人和历史进款业绩归属保持不变。</p>
+        <div class="button-row"><button type="button" data-close-dialog="offboardDialog">取消</button><button class="primary" type="submit">确认交接并停用账号</button></div>
+      </form>
     </dialog>
 
     <div class="toast" id="toast"></div>
