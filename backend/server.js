@@ -47,7 +47,12 @@ const PUBLIC_POOL_DAYS = 30;
 const LIFECYCLE_ACTIVE = "active";
 const LIFECYCLE_ARCHIVED = "archived";
 const DEFAULT_ADMIN_PASSWORD = "778899";
+const BACKEND_VERSION = "backend-v8";
+const MONEY_UNIT = "yuan";
+const LEGACY_MONEY_MULTIPLIER = 10000;
+const DEFAULT_EXPECTED_AMOUNT = 150000;
 const TARGET_FIELDS = ["revenueTarget", "contractTarget", "listTarget", "leadTarget", "opportunityTarget", "dealTarget"];
+const MONEY_FIELDS = ["amount", "quoteAmount", "contractAmount", "paymentAmount", "revenueTarget", "contractTarget"];
 const DEFAULT_ROLES = [
   { id: "role-owner", name: "总负责人", customerScope: "all", permissions: ADMIN_PERMISSIONS },
   { id: "role-region", name: "区域经理", customerScope: "zone", permissions: DEFAULT_PERMISSIONS },
@@ -92,7 +97,7 @@ ensureDataFile();
 try {
   readState();
 } catch (error) {
-  console.error("智销AI backend-v7 数据迁移失败，服务已停止启动，原数据库和备份文件均未删除。", error);
+  console.error("智销AI backend-v8 数据迁移失败，服务已停止启动，原数据库和备份文件均未删除。", error);
   throw error;
 }
 
@@ -124,7 +129,7 @@ async function routeApi(req, res, url) {
   if (req.method === "OPTIONS") return sendNoContent(res);
 
   if (req.method === "GET" && url.pathname === "/api/health") {
-    return sendJson(res, 200, { ok: true, service: "zhixiao-ai-backend" });
+    return sendJson(res, 200, { ok: true, service: "zhixiao-ai-backend", backendVersion: BACKEND_VERSION, moneyUnit: MONEY_UNIT });
   }
 
   if (req.method === "POST" && url.pathname === "/api/auth/login") {
@@ -283,7 +288,7 @@ async function routeApi(req, res, url) {
       const customer = findCustomer(authState.customers, opportunity.customerId);
       return sanitizePublicPoolOpportunity(customer, opportunity);
     });
-    return sendJson(res, 200, { count: items.length, items });
+    return sendJson(res, 200, { count: items.length, items, backendVersion: BACKEND_VERSION, moneyUnit: MONEY_UNIT });
   }
 
   const customerOpportunityCreate = url.pathname.match(/^\/api\/customers\/(\d+)\/opportunities$/);
@@ -510,12 +515,25 @@ async function routeApi(req, res, url) {
     const body = await readBody(req);
     const state = readState();
     const viewer = getAuthUser(req, state);
+    const requestedStops = (Array.isArray(body.stops) ? body.stops : []).slice(0, 12);
+    const routeStops = [];
+    for (const [index, stop] of requestedStops.entries()) {
+      const customer = state.customers.find((item) => Number(item.id) === Number(stop.customerId || stop.id));
+      if (!customer || customerMapAccess(state, viewer, customer).mode === "none") {
+        return sendJson(res, 403, { error: "路线中包含无权查看的客户" });
+      }
+      routeStops.push({
+        ...mapRouteStop(customer, index),
+        completed: Boolean(stop.completed),
+        completedAt: stop.completedAt || ""
+      });
+    }
     const route = normalizeRoute({
       id: body.id || Date.now(),
       ownerId: viewer.id,
       owner: viewer.name,
       date: body.date || today(),
-      stops: body.stops || [],
+      stops: routeStops,
       createdAt: new Date().toISOString()
     });
     const index = state.routes.findIndex((item) => Number(item.ownerId) === Number(viewer.id) && item.date === route.date);
@@ -692,8 +710,11 @@ async function routeApi(req, res, url) {
     const state = readState();
     const viewer = getAuthUser(req, state);
     const customer = state.customers.find((item) => Number(item.id) === Number(customerVisits[1]));
-    if (!customer || !canViewMapCustomer(state, viewer, customer)) return sendJson(res, 404, { error: "客户不存在" });
-    return sendJson(res, 200, (state.visits || []).filter((item) => Number(item.customerId) === Number(customer.id)).sort(sortByNewest));
+    if (!customer || customerMapAccess(state, viewer, customer).mode === "none") return sendJson(res, 404, { error: "客户不存在" });
+    if (customerMapAccess(state, viewer, customer).mode === "public") {
+      return sendJson(res, 409, { error: "公海客户认领后方可查看拜访记录", code: "CUSTOMER_CLAIM_REQUIRED" });
+    }
+    return sendJson(res, 200, visibleVisitsForCustomer(state, viewer, customer.id).sort(sortByNewest));
   }
 
   const customerArchive = url.pathname.match(/^\/api\/customers\/(\d+)\/archive$/);
@@ -911,7 +932,23 @@ async function routeApi(req, res, url) {
     const viewer = getAuthUser(req, state);
     const conflict = visitCustomerConflict(state, viewer, body);
     if (conflict) return sendJson(res, conflict.status, conflict.payload);
-    const visit = normalizeVisit({ id: Date.now(), date: today(), photos: [], ...body }, state);
+    const visitOpportunity = body.opportunityId
+      ? state.opportunities.find((item) => Number(item.id) === Number(body.opportunityId))
+      : (state.opportunities || []).find((item) => Number(item.customerId) === Number(body.customerId) && !isOpportunityPublicPool(item) && canViewOpportunity(state, viewer, item));
+    const visit = normalizeVisit({
+      id: Date.now(),
+      date: today(),
+      photos: [],
+      ...body,
+      opportunityId: visitOpportunity?.id || "",
+      productId: visitOpportunity?.productId || body.productId || "",
+      productName: visitOpportunity?.productName || body.productName || "",
+      owner: viewer.name,
+      ownerId: viewer.id,
+      unitId: viewer.unitId || "",
+      unit: viewer.unit || "",
+      zone: viewer.zone || ""
+    }, state);
     state.visits.unshift(visit);
     syncVisitToCustomer(state, visit);
     completeRouteStop(state, viewer.id, visit.customerId, visit.date);
@@ -926,13 +963,19 @@ async function routeApi(req, res, url) {
     const viewer = getAuthUser(req, state);
     const index = state.visits.findIndex((item) => Number(item.id) === Number(visitPatch[1]));
     if (index < 0) return sendJson(res, 404, { error: "visit not found" });
+    if (!canViewRecord(state, viewer, state.visits[index])) return sendJson(res, 403, { error: "无权修改该拜访记录" });
     const conflict = visitCustomerConflict(state, viewer, { ...state.visits[index], ...body });
     if (conflict) return sendJson(res, conflict.status, conflict.payload);
     const visit = normalizeVisit({
       ...state.visits[index],
       ...body,
       id: state.visits[index].id,
-      date: body.date || state.visits[index].date || today()
+      date: body.date || state.visits[index].date || today(),
+      owner: state.visits[index].owner,
+      ownerId: state.visits[index].ownerId,
+      unitId: state.visits[index].unitId,
+      unit: state.visits[index].unit,
+      zone: state.visits[index].zone
     }, state);
     state.visits[index] = visit;
     syncVisitToCustomer(state, visit);
@@ -1193,7 +1236,7 @@ async function routeApi(req, res, url) {
     const opportunity = selectedOpportunity || primaryOpportunity(state, customer.id);
     if (opportunity && isOpportunityPublicPool(opportunity)) return sendJson(res, 409, { error: "请先认领公海销售机会", code: "CUSTOMER_CLAIM_REQUIRED" });
     if (opportunity && !canViewOpportunity(state, viewer, opportunity)) return sendJson(res, 404, { error: "销售机会不存在" });
-    const context = buildCustomerAiContext(state, customer, opportunity);
+    const context = buildCustomerAiContext(state, customer, opportunity, viewer);
     const result = await generateStructuredXiaozhiAdvice(body.question || "", state.knowledge || [], context);
     return sendJson(res, 200, result);
   }
@@ -1274,37 +1317,40 @@ function mergeUsers(incomingUsers, existingUsers) {
 }
 
 function migrateState(state) {
-  const legacyOwnership = !["backend-v4", "backend-v5", "backend-v6", "backend-v7"].includes(state.version);
-  const roles = normalizeRoles(state.roles || []);
-  const units = normalizeUnits(state.units || [], state);
-  const competitors = normalizeCompetitors(state.competitors || []);
-  const products = normalizeProducts(state.products || []);
-  const users = normalizeUsers(state.users || [], {
+  const source = migrateMoneyToYuan(state);
+  const legacyOwnership = !["backend-v4", "backend-v5", "backend-v6", "backend-v7", "backend-v8"].includes(source.version);
+  const roles = normalizeRoles(source.roles || []);
+  const units = normalizeUnits(source.units || [], source);
+  const competitors = normalizeCompetitors(source.competitors || []);
+  const products = normalizeProducts(source.products || []);
+  const users = normalizeUsers(source.users || [], {
     roles,
     units,
-    resetAdminPassword: !["backend-v3", "backend-v4", "backend-v5", "backend-v6", "backend-v7"].includes(state.version)
+    resetAdminPassword: !["backend-v3", "backend-v4", "backend-v5", "backend-v6", "backend-v7", "backend-v8"].includes(source.version)
   });
-  const activities = state.activities || [];
+  const activities = source.activities || [];
   const context = { roles, units, users, activities, competitors, products, legacyOwnership };
-  const customers = (state.customers || []).map((customer) => normalizeCustomer(customer, context));
-  const opportunitySource = Array.isArray(state.opportunities) && state.opportunities.length
-    ? state.opportunities
+  const customers = (source.customers || []).map((customer) => normalizeCustomer(customer, context));
+  const opportunitySource = Array.isArray(source.opportunities) && source.opportunities.length
+    ? source.opportunities
     : customers.map((customer) => opportunityFromLegacyCustomer(customer));
   const opportunities = opportunitySource.map((opportunity) => normalizeOpportunity(opportunity, { ...context, customers }));
-  const visits = (state.visits || []).map((visit) => normalizeVisit(visit, context));
+  const visits = (source.visits || []).map((visit) => normalizeVisit(visit, context));
   linkVisitsToCustomers(customers, visits);
   const migratedState = {
-    ...state,
+    ...source,
     customers,
     opportunities,
     products
   };
   customers.forEach((customer) => syncCustomerCompatibility(migratedState, customer.id));
   return {
-    version: "backend-v7",
-    currentUserId: Number(state.currentUserId || users[0]?.id || 0),
-    stages: Array.isArray(state.stages) && state.stages.length ? state.stages : STAGES,
-    zones: Array.isArray(state.zones) && state.zones.length ? state.zones : ZONES,
+    version: BACKEND_VERSION,
+    moneyUnit: MONEY_UNIT,
+    moneyMigratedAt: source.moneyMigratedAt || new Date().toISOString(),
+    currentUserId: Number(source.currentUserId || users[0]?.id || 0),
+    stages: Array.isArray(source.stages) && source.stages.length ? source.stages : STAGES,
+    zones: Array.isArray(source.zones) && source.zones.length ? source.zones : ZONES,
     roles,
     units,
     competitors,
@@ -1314,13 +1360,38 @@ function migrateState(state) {
     opportunities,
     activities,
     visits,
-    routes: (state.routes || []).map(normalizeRoute),
-    geocodeJobs: (state.geocodeJobs || []).map(normalizeGeocodeJob),
-    targets: (state.targets || []).map(normalizeTarget),
-    knowledge: (state.knowledge || []).map(normalizeKnowledge),
-    resources: state.resources || [],
-    securityLogs: Array.isArray(state.securityLogs) ? state.securityLogs.slice(-1000) : []
+    routes: (source.routes || []).map(normalizeRoute),
+    geocodeJobs: (source.geocodeJobs || []).map(normalizeGeocodeJob),
+    targets: (source.targets || []).map(normalizeTarget),
+    knowledge: (source.knowledge || []).map(normalizeKnowledge),
+    resources: source.resources || [],
+    securityLogs: Array.isArray(source.securityLogs) ? source.securityLogs.slice(-1000) : []
   };
+}
+
+function migrateMoneyToYuan(state = {}) {
+  if (state.moneyUnit === MONEY_UNIT) return state;
+  const convertRecord = (record = {}, fields = MONEY_FIELDS) => {
+    const next = { ...record };
+    fields.forEach((field) => {
+      if (record[field] === undefined || record[field] === null || record[field] === "") return;
+      next[field] = multiplyLegacyMoney(record[field]);
+    });
+    return next;
+  };
+  return {
+    ...state,
+    moneyUnit: MONEY_UNIT,
+    moneyMigratedAt: new Date().toISOString(),
+    customers: (state.customers || []).map((item) => convertRecord(item, ["amount", "quoteAmount", "contractAmount", "paymentAmount"])),
+    opportunities: (state.opportunities || []).map((item) => convertRecord(item, ["amount", "quoteAmount", "contractAmount", "paymentAmount"])),
+    targets: (state.targets || []).map((item) => convertRecord(item, ["revenueTarget", "contractTarget"]))
+  };
+}
+
+function multiplyLegacyMoney(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) && number > 0 ? Math.round(number * LEGACY_MONEY_MULTIPLIER * 100) / 100 : 0;
 }
 
 function normalizeProducts(products = []) {
@@ -1559,6 +1630,26 @@ function normalizeMoney(value) {
   return Number.isFinite(number) && number > 0 ? Math.round(number * 100) / 100 : 0;
 }
 
+function formatMoneyYuan(value) {
+  return new Intl.NumberFormat("zh-CN", {
+    style: "currency",
+    currency: "CNY",
+    minimumFractionDigits: Number(value || 0) % 1 ? 2 : 0,
+    maximumFractionDigits: 2
+  }).format(normalizeMoney(value));
+}
+
+function normalizeIncomingMoneyPayload(payload = {}) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  const inputMoneyUnit = payload.moneyUnit === MONEY_UNIT ? MONEY_UNIT : "wan";
+  const next = { ...payload, moneyUnit: MONEY_UNIT, inputMoneyUnit };
+  MONEY_FIELDS.forEach((field) => {
+    if (payload[field] === undefined || payload[field] === null || payload[field] === "") return;
+    next[field] = inputMoneyUnit === MONEY_UNIT ? normalizeMoney(payload[field]) : multiplyLegacyMoney(payload[field]);
+  });
+  return next;
+}
+
 function normalizeTarget(item = {}) {
   const scopeType = ["company", "zone", "unit", "user"].includes(item.scopeType) ? item.scopeType : "user";
   const target = {
@@ -1655,7 +1746,7 @@ function normalizeCustomer(customer, context = {}) {
     unit: customer.unit || ownerUser.unit || unit.name || "",
     zone: customer.zone || ownerUser.zone || unit.zone || normalizeZone(customer.region),
     region: customer.region || ownerUser.zone || unit.zone || "待分区",
-    amount: Number(customer.amount || 15),
+    amount: Number(customer.amount || DEFAULT_EXPECTED_AMOUNT),
     demoAt: customer.demoAt || customer.effectiveDemoAt || "",
     quoteAmount: normalizeMoney(customer.quoteAmount),
     expectedDealDate: customer.expectedDealDate || "",
@@ -1759,7 +1850,7 @@ function normalizeOpportunity(opportunity = {}, context = {}) {
     region: opportunity.region || customer.region || "待分区",
     createdBy: opportunity.createdBy || customer.createdBy || ownerUser.name || "未记录",
     createdAt,
-    amount: Number(opportunity.amount || customer.amount || 15),
+    amount: Number(opportunity.amount || customer.amount || DEFAULT_EXPECTED_AMOUNT),
     demoAt: opportunity.demoAt || "",
     quoteAmount: normalizeMoney(opportunity.quoteAmount),
     expectedDealDate: opportunity.expectedDealDate || "",
@@ -2214,7 +2305,7 @@ function syncVisitToCustomer(state, visit) {
       owner,
       ownerId,
       region: visit.city || visit.address || "待分区",
-      amount: 15,
+      amount: DEFAULT_EXPECTED_AMOUNT,
       software: visit.software || "待补充",
       photos: normalizePhotos(visit.photos),
       location: {
@@ -2555,13 +2646,30 @@ function resolvePaymentOwner(state, viewer, previous = {}, body = {}) {
 function visitCustomerConflict(state, viewer, body = {}) {
   const phone = normalizePhone(body.phone);
   if (!phone) return { status: 400, payload: { error: "请填写有效的客户电话", code: "INVALID_CUSTOMER_PHONE" } };
+  const referenced = body.customerId ? findCustomer(state.customers || [], body.customerId) : null;
+  if (body.customerId && !referenced) return { status: 404, payload: { error: "客户不存在" } };
+  if (referenced && normalizePhone(referenced.phoneNormalized || referenced.phone) !== phone) {
+    return { status: 400, payload: { error: "客户电话与所选工厂不一致", code: "CUSTOMER_PHONE_MISMATCH" } };
+  }
+  if (body.opportunityId) {
+    const opportunity = (state.opportunities || []).find((item) => Number(item.id) === Number(body.opportunityId));
+    if (!opportunity || (referenced && Number(opportunity.customerId) !== Number(referenced.id))) {
+      return { status: 400, payload: { error: "销售机会与所选工厂不一致", code: "OPPORTUNITY_CUSTOMER_MISMATCH" } };
+    }
+    if (isOpportunityPublicPool(opportunity)) {
+      return { status: 409, payload: { error: "公海销售机会需先认领", code: "CUSTOMER_CLAIM_REQUIRED" } };
+    }
+    if (!canViewOpportunity(state, viewer, opportunity)) {
+      return { status: 403, payload: { error: "无权为该销售机会创建拜访记录" } };
+    }
+  }
   const duplicate = findCustomerByPhone(state, phone);
   if (duplicate) {
-    if (isCustomerClaimable(duplicate)) {
+    const access = customerMapAccess(state, viewer, duplicate);
+    if (access.mode === "public") {
       return { status: 409, payload: { error: "该客户已进入公海，请先认领", code: "CUSTOMER_CLAIMABLE" } };
     }
-    const sameOwner = Number(duplicate.ownerId) === Number(viewer.id) || cleanText(duplicate.owner) === cleanText(viewer.name);
-    if (sameOwner) return null;
+    if (access.mode === "private") return null;
     return { status: 409, payload: { error: "该客户已存在", code: "DUPLICATE_CUSTOMER" } };
   }
   if (!body.confirmSimilar && findSimilarCustomer(state, { name: body.factory, city: body.city, address: body.address })) {
@@ -3086,7 +3194,7 @@ function buildInsights(summary, funnel, actions, industry, target) {
   if (weakest) insights.push({ title: `${weakest.stage}环节转化偏弱`, detail: `滚动90天转化率为${weakest.conversionRate}%，建议优先复盘该阶段未推进客户。` });
   if (target.revenueTarget > 0) {
     const gap = Math.max(0, target.revenueTarget - summary.revenue);
-    insights.push({ title: gap ? `进款目标还差${normalizeMoney(gap)}万` : "本月进款目标已完成", detail: gap ? `当前完成率${summary.targetCompletionRate}%，优先推进已成交待进款客户。` : `当前完成率${summary.targetCompletionRate}%，继续保障已签客户交付。` });
+    insights.push({ title: gap ? `进款目标还差${formatMoneyYuan(gap)}` : "本月进款目标已完成", detail: gap ? `当前完成率${summary.targetCompletionRate}%，优先推进已成交待进款客户。` : `当前完成率${summary.targetCompletionRate}%，继续保障已签客户交付。` });
   } else {
     insights.push({ title: "本月尚未设置进款目标", detail: "主管以上可在看板中设置目标，设置后小智会计算差额与完成率。" });
   }
@@ -3303,7 +3411,7 @@ function readBody(req) {
     req.on("end", () => {
       if (!data) return resolve({});
       try {
-        resolve(JSON.parse(data));
+        resolve(normalizeIncomingMoneyPayload(JSON.parse(data)));
       } catch {
         reject(new Error("invalid json body"));
       }
@@ -3547,7 +3655,8 @@ async function importCustomers(req, viewer, target = "") {
     zone: ownerUser.zone || "",
     channelSource: multipart.fields.channelSource || "其他",
     createdBy: viewer.name,
-    followPerson: ownerUser.name
+    followPerson: ownerUser.name,
+    inputMoneyUnit: multipart.fields.inputMoneyUnit || (multipart.fields.moneyUnit === MONEY_UNIT ? MONEY_UNIT : "wan")
   };
   const rows = file
     ? parseCustomerImportFile(file, defaults)
@@ -3698,11 +3807,15 @@ function parseCustomerRows(text, defaults = {}) {
 function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
   const rows = matrix.filter((row) => row.some((cell) => String(cell || "").trim()));
   if (!rows.length) return [];
-  const rawHeaders = rows[0].map((cell) => normalizeHeader(cell));
+  const sourceHeaders = rows[0].map((cell) => String(cell || "").trim());
+  const rawHeaders = sourceHeaders.map((cell) => normalizeHeader(cell));
   const hasHeader = rawHeaders.some((header) => ["name", "phone", "channelSource", "address"].includes(header) || STAGES.includes(header));
   const headers = hasHeader ? rawHeaders : ["name", "phone", "region", "amount", "software"];
   const dataRows = hasHeader ? rows.slice(1) : rows;
   const stageHeader = rawHeaders.find((header) => STAGES.includes(header));
+  const amountHeaderIndex = rawHeaders.findIndex((header) => header === "amount");
+  const amountHeaderText = amountHeaderIndex >= 0 ? sourceHeaders[amountHeaderIndex] : "";
+  const inputMoneyUnit = /万/.test(amountHeaderText) ? "wan" : /元/.test(amountHeaderText) ? MONEY_UNIT : defaults.inputMoneyUnit || "wan";
   return dataRows
     .map((row, rowIndex) => {
       const rowNumber = rowIndex + (hasHeader ? 2 : 1);
@@ -3724,7 +3837,7 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
           unit: defaults.unit || "",
           zone: defaults.zone || "",
           region: thirdLooksLikeChannel ? row[3] || defaults.zone || "待分区" : third || defaults.zone || "待分区",
-          amount: Number(thirdLooksLikeChannel ? row[5] || 15 : row[3] || 15) || 15,
+          amount: normalizeImportedAmount(thirdLooksLikeChannel ? row[5] : row[3], inputMoneyUnit),
           software: thirdLooksLikeChannel ? row[4] || "待补充" : row[4] || "待补充",
           productName: row[6] || "",
           lastNote: "名单文件导入。",
@@ -3755,7 +3868,7 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
         unit: record.unit || defaults.unit || "",
         zone: defaults.zone || "",
         region: record.region || record.address || defaults.zone || "待分区",
-        amount: Number(record.amount || 15) || 15,
+        amount: normalizeImportedAmount(record.amount, inputMoneyUnit),
         software: record.software || "待补充",
         productName: record.productName || "",
         lastNote: record.lastNote || record.followRecord || "名单文件导入。",
@@ -3765,6 +3878,11 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
       };
     })
     .filter((row) => row.name);
+}
+
+function normalizeImportedAmount(value, inputMoneyUnit = MONEY_UNIT) {
+  if (value === undefined || value === null || String(value).trim() === "") return DEFAULT_EXPECTED_AMOUNT;
+  return inputMoneyUnit === MONEY_UNIT ? normalizeMoney(value) : multiplyLegacyMoney(value);
 }
 
 function normalizeHeader(value) {
@@ -4074,30 +4192,80 @@ function canManageCustomer(state, viewer, customer) {
 }
 
 function canViewMapCustomer(state, viewer, customer) {
-  if (customer.lifecycleStatus === LIFECYCLE_ARCHIVED) return true;
-  const opportunities = (state.opportunities || []).filter((item) => Number(item.customerId) === Number(customer.id));
-  if (opportunities.some((item) => isOpportunityPublicPool(item))) return true;
-  return opportunities.some((item) => canViewOpportunity(state, viewer, item)) || canViewRecord(state, viewer, customer);
+  return customerMapAccess(state, viewer, customer).mode !== "none";
 }
 
-function customerPointStatus(state, customer = {}) {
+function customerMapAccess(state, viewer, customer = {}) {
+  if (!viewer || !customer?.id) return { mode: "none", opportunities: [] };
+  const opportunities = (state.opportunities || []).filter((item) => Number(item.customerId) === Number(customer.id));
+  const privateOpportunities = opportunities.filter((item) => !isOpportunityPublicPool(item) && canViewOpportunity(state, viewer, item));
+  if (privateOpportunities.length || (!opportunities.length && canViewRecord(state, viewer, customer))) {
+    return { mode: "private", opportunities: privateOpportunities };
+  }
+  const publicOpportunities = opportunities.filter(isOpportunityPublicPool);
+  if (customer.lifecycleStatus !== LIFECYCLE_ARCHIVED && publicOpportunities.length) {
+    return { mode: "public", opportunities: publicOpportunities };
+  }
+  return { mode: "none", opportunities: [] };
+}
+
+function visibleVisitsForCustomer(state, viewer, customerId) {
+  return (state.visits || []).filter((visit) => Number(visit.customerId) === Number(customerId) && canViewRecord(state, viewer, visit));
+}
+
+function customerPointStatus(customer = {}, opportunities = [], visits = []) {
   if (customer.lifecycleStatus === LIFECYCLE_ARCHIVED) return "archived";
-  if ((state.opportunities || []).some((item) => Number(item.customerId) === Number(customer.id) && item.stage === "成交")) return "sold";
-  if (customer.lastVisitedAt) return "visited";
+  if (opportunities.some((item) => item.stage === "成交")) return "sold";
+  if (visits.length) return "visited";
   return "pending";
 }
 
 function buildMapPoints(state, viewer, filters = {}) {
   const points = (state.customers || [])
-    .filter((customer) => canViewMapCustomer(state, viewer, customer))
     .map((customer) => {
+      const access = customerMapAccess(state, viewer, customer);
+      if (access.mode === "none") return null;
       const location = normalizeLocation(customer.location || {}, customer);
-      const opportunities = (state.opportunities || []).filter((item) => Number(item.customerId) === Number(customer.id));
-      const activeOpportunity = primaryOpportunity(state, customer.id) || opportunities[0] || {};
+      const activeOpportunity = access.opportunities.find((item) => item.stage !== "成交") || access.opportunities[0] || {};
+      if (access.mode === "public") {
+        return {
+          id: customer.id,
+          customerId: customer.id,
+          name: customer.name,
+          phone: "",
+          stage: "公海",
+          productId: "",
+          productName: "",
+          ownerId: "",
+          owner: "",
+          unitId: "",
+          unit: "",
+          zone: "",
+          address: customer.address || location.address,
+          province: location.province,
+          city: location.city || customer.city || extractCity(customer.address) || "待识别",
+          district: location.district,
+          latitude: location.latitude,
+          longitude: location.longitude,
+          locationStatus: location.status,
+          pointStatus: "pending",
+          software: "",
+          competitor: "未公开",
+          competitorColor: "#94a3b8",
+          equipment: "",
+          visitCount: 0,
+          lastVisitedAt: "",
+          contacts: [],
+          competitorProfiles: [],
+          archiveReason: "",
+          isPublicPool: true,
+          claimable: findRole(state.roles, viewer.roleId, viewer.role).customerScope === "self"
+        };
+      }
       const primaryContact = (customer.contacts || []).find((item) => item.isPrimary) || (customer.contacts || [])[0] || {};
       const competitor = (customer.competitorProfiles || []).find((item) => item.isPrimary) || (customer.competitorProfiles || [])[0] || {};
       const competitorDef = (state.competitors || []).find((item) => item.id === competitor.competitorId || cleanText(item.name) === cleanText(competitor.brand));
-      const visits = (state.visits || []).filter((visit) => Number(visit.customerId) === Number(customer.id)).sort(sortByNewest);
+      const visits = visibleVisitsForCustomer(state, viewer, customer.id).sort(sortByNewest);
       return {
         id: customer.id,
         customerId: customer.id,
@@ -4118,7 +4286,7 @@ function buildMapPoints(state, viewer, filters = {}) {
         latitude: location.latitude,
         longitude: location.longitude,
         locationStatus: location.status,
-        pointStatus: customerPointStatus(state, customer),
+        pointStatus: customerPointStatus(customer, access.opportunities, visits),
         software: customer.software,
         competitor: competitor.brand || "未录入",
         competitorColor: competitorDef?.color || "#64748b",
@@ -4127,9 +4295,12 @@ function buildMapPoints(state, viewer, filters = {}) {
         lastVisitedAt: customer.lastVisitedAt || visits[0]?.date || "",
         contacts: customer.contacts || [],
         competitorProfiles: customer.competitorProfiles || [],
-        archiveReason: customer.archiveReason || ""
+        archiveReason: customer.archiveReason || "",
+        isPublicPool: false,
+        claimable: false
       };
     })
+    .filter(Boolean)
     .filter((point) => point.latitude && point.longitude)
     .filter((point) => !filters.province || point.province === filters.province)
     .filter((point) => !filters.city || point.city === filters.city)
@@ -4279,9 +4450,9 @@ function requestJson(url) {
   });
 }
 
-function buildCustomerAiContext(state, customer, opportunity = null) {
-  const visits = (state.visits || []).filter((item) => Number(item.customerId) === Number(customer.id)).sort(sortByNewest);
-  const opportunities = (state.opportunities || []).filter((item) => Number(item.customerId) === Number(customer.id));
+function buildCustomerAiContext(state, customer, opportunity = null, viewer = null) {
+  const visits = visibleVisitsForCustomer(state, viewer, customer.id).sort(sortByNewest);
+  const opportunities = (state.opportunities || []).filter((item) => Number(item.customerId) === Number(customer.id) && canViewOpportunity(state, viewer, item));
   const selected = opportunity || primaryOpportunity(state, customer.id) || {};
   return {
     id: customer.id,

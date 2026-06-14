@@ -116,7 +116,7 @@ async function run() {
   const wonPoint = map.data.points.find((item) => Number(item.customerId) === Number(wonV1.data.customerId));
   assert.equal(wonPoint?.pointStatus, "sold");
   const persisted = JSON.parse(fs.readFileSync(path.join(tempDir, "db.json"), "utf8"));
-  assert.equal(persisted.version, "backend-v7");
+  assert.equal(persisted.version, "backend-v8");
   assert.equal(persisted.customers.length, 2);
   assert.equal(persisted.opportunities.length, 4);
 }

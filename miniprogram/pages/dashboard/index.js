@@ -68,13 +68,13 @@ Page({
         summary,
         target: data.target || {},
         metrics: [
-          { key: "revenue", drilldown: "revenue", label: "实际进款", value: `¥${Number(summary.revenue || 0).toFixed(1)}万`, hint: data.target?.revenueTarget ? `目标 ¥${Number(data.target.revenueTarget).toFixed(1)}万` : "未设置目标" },
-          { key: "contract", drilldown: "contract", label: "签单金额", value: `¥${Number(summary.contract || 0).toFixed(1)}万`, hint: `${summary.deals || 0}家成交` },
+          { key: "revenue", drilldown: "revenue", label: "实际进款", value: app.formatMoney(summary.revenue), hint: data.target?.revenueTarget ? `目标 ${app.formatMoney(data.target.revenueTarget)}` : "未设置目标" },
+          { key: "contract", drilldown: "contract", label: "签单金额", value: app.formatMoney(summary.contract), hint: `${summary.deals || 0}家成交` },
           { key: "opportunity", drilldown: "opportunities", label: "转化商机", value: `${summary.opportunities || 0}家`, hint: "完成有效演示" },
           { key: "rate", drilldown: "", label: "目标完成", value: `${summary.targetCompletionRate || 0}%`, hint: `商机成交率 ${summary.opportunityCloseRate || 0}%` }
         ],
         funnel: data.funnel || [],
-        ranking: (data.ranking || []).slice(0, 8),
+        ranking: (data.ranking || []).slice(0, 8).map((item) => ({ ...item, revenueText: app.formatMoney(item.revenue) })),
         rankingTitle: data.scope?.type === "company" ? "全公司销售排名" : data.scope?.type === "zone" ? "战区销售排名" : "本单位销售排名",
         actions: data.actions || [],
         drilldowns: data.drilldowns || {},

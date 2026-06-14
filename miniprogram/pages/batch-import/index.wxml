@@ -2,7 +2,7 @@
   <view class="header">
     <text class="crumb">客户管理 / 批量导入</text>
     <view class="title">{{targetPublicPool ? '批量导入公海' : '批量导入客户'}}</view>
-    <view class="subtitle">{{targetPublicPool ? '公海导入必须包含工厂名称、有效主联系人手机号和完整地址' : '每行一个客户：客户名称,手机号,渠道来源,客户地址,现用软件,预计金额'}}</view>
+    <view class="subtitle">{{targetPublicPool ? '公海导入必须包含工厂名称、有效主联系人手机号和完整地址' : '每行一个客户：客户名称,手机号,渠道来源,客户地址,现用软件,预计金额（元）'}}</view>
   </view>
 
   <form bindsubmit="submitImport">
@@ -29,7 +29,7 @@
       </view>
       <view class="form-item">
         <text class="label">客户数据</text>
-        <textarea name="rows" placeholder="佛山柜体门板厂,13900139000,地推,广东省佛山市,酷家乐+手工报价,26&#10;成都整装定制工厂,13600000001,企查查,四川省成都市,自研ERP+Excel,32"></textarea>
+        <textarea name="rows" placeholder="佛山柜体门板厂,13900139000,地推,广东省佛山市,酷家乐+手工报价,260000&#10;成都整装定制工厂,13600000001,企查查,四川省成都市,自研ERP+Excel,320000"></textarea>
       </view>
       <view class="form-hint">也可以上传 CSV/TXT 文件，字段请和 Web 下载样表一致。</view>
       <view class="actions">

@@ -44,8 +44,8 @@
           <input name="region" value="{{form.region}}" placeholder="华东 / 华南" />
         </view>
         <view class="form-item">
-          <text class="label">预计金额（万）</text>
-          <input name="amount" type="digit" value="{{form.amount}}" placeholder="15" />
+          <text class="label">预计金额（元）</text>
+          <input name="amount" type="digit" value="{{form.amount}}" placeholder="150000" />
         </view>
       </view>
       <view class="section-divider row">
@@ -116,17 +116,17 @@
       </view>
       <view class="grid-2">
         <view class="form-item">
-          <text class="label">报价金额（万）</text>
+          <text class="label">报价金额（元）</text>
           <input name="quoteAmount" type="digit" value="{{form.quoteAmount}}" placeholder="0" />
         </view>
         <view class="form-item">
-          <text class="label">合同金额（万）</text>
+          <text class="label">合同金额（元）</text>
           <input name="contractAmount" type="digit" value="{{form.contractAmount}}" placeholder="成交时必填" />
         </view>
       </view>
       <view class="grid-2">
         <view class="form-item">
-          <text class="label">实际进款（万）</text>
+          <text class="label">实际进款（元）</text>
           <input name="paymentAmount" type="digit" value="{{form.paymentAmount}}" placeholder="0" />
         </view>
         <view class="form-item">

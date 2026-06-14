@@ -50,7 +50,7 @@
       <view class="section-title">{{rankingTitle}}</view>
       <view class="ranking-head"><text>排名 / 销售</text><text>进款</text><text>成交</text><text>完成率</text></view>
       <view class="ranking-row" wx:for="{{ranking}}" wx:key="userId">
-        <text><text class="rank-number">{{index + 1}}</text> {{item.name}}</text><text>¥{{item.revenue}}万</text><text>{{item.deals}}家</text><text>{{item.completionRate}}%</text>
+        <text><text class="rank-number">{{index + 1}}</text> {{item.name}}</text><text>{{item.revenueText}}</text><text>{{item.deals}}家</text><text>{{item.completionRate}}%</text>
       </view>
       <view wx:if="{{!ranking.length}}" class="empty">暂无排名数据</view>
     </view>

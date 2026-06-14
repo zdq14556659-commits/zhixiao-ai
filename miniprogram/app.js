@@ -1,4 +1,4 @@
-const STORAGE_KEY = "zhixiao_ai_mini_state_v3";
+const STORAGE_KEY = "zhixiao_ai_mini_state_v4";
 const AUTH_KEY = "zhixiao_ai_auth_v1";
 const API_BASE_OVERRIDE_KEY = "zhixiao_ai_api_base_override";
 const PROD_API_BASE = "https://zhixiaoai1.onrender.com/api";
@@ -66,6 +66,11 @@ function normalizeChannelSource(value) {
 
 function getApiBase() {
   try {
+    const envVersion = wx.getAccountInfoSync?.().miniProgram?.envVersion || "release";
+    if (envVersion !== "develop") {
+      wx.removeStorageSync(API_BASE_OVERRIDE_KEY);
+      return PROD_API_BASE;
+    }
     const override = String(wx.getStorageSync(API_BASE_OVERRIDE_KEY) || "").trim().replace(/\/$/, "");
     return override || PROD_API_BASE;
   } catch {
@@ -74,6 +79,12 @@ function getApiBase() {
 }
 
 const today = getChinaToday();
+
+function formatMoney(value) {
+  const amount = Number(value || 0);
+  const digits = amount % 1 ? 2 : 0;
+  return `¥${amount.toLocaleString("zh-CN", { minimumFractionDigits: digits, maximumFractionDigits: 2 })}`;
+}
 
 function migrateLocalState(state = seedState) {
   return {
@@ -87,7 +98,7 @@ function migrateLocalState(state = seedState) {
 }
 
 const seedState = {
-  version: "mini-v3",
+  version: "mini-v4",
   currentUserId: 0,
   stages: ["名单", "线索", "商机", "成交"],
   zones: ZONES,
@@ -117,7 +128,7 @@ const seedState = {
       unit: "华东定制产业带",
       zone: "东部战区",
       region: "东部战区",
-      amount: 18,
+      amount: 180000,
       software: "酷家乐 + Excel排产",
       createdAt: "2026-06-04",
       lastFollow: "2026-06-04",
@@ -139,7 +150,7 @@ const seedState = {
       unit: "华南定制产业带",
       zone: "南部战区",
       region: "南部战区",
-      amount: 26,
+      amount: 260000,
       software: "酷家乐 + 手工报价",
       createdAt: "2026-06-03",
       lastFollow: "2026-06-05",
@@ -161,7 +172,7 @@ const seedState = {
       unit: "华东定制产业带",
       zone: "东部战区",
       region: "东部战区",
-      amount: 32,
+      amount: 320000,
       software: "自研ERP + Excel",
       createdAt: "2026-06-02",
       lastFollow: "2026-06-03",
@@ -183,7 +194,7 @@ const seedState = {
       unit: "华南定制产业带",
       zone: "南部战区",
       region: "南部战区",
-      amount: 45,
+      amount: 450000,
       software: "三维家 + 云熙拆单",
       createdAt: "2026-06-01",
       lastFollow: "2026-06-05",
@@ -238,6 +249,8 @@ App({
   globalData: {
     today,
     apiBase: API_BASE,
+    backendVersion: "backend-v8",
+    moneyUnit: "yuan",
     channelSources: CHANNEL_SOURCES,
     stageColors: {
       名单: "#64748b",
@@ -285,7 +298,7 @@ App({
       wx.request({
         url: `${API_BASE}${path}`,
         method: options.method || "GET",
-        data: options.data || {},
+        data: { ...(options.data || {}), moneyUnit: "yuan" },
         header: headers,
         timeout: options.timeout || 60000,
         success: (res) => {
@@ -535,5 +548,9 @@ App({
 
   canAdmin() {
     return this.hasPermission("admin");
+  },
+
+  formatMoney(value) {
+    return formatMoney(value);
   }
 });

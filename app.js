@@ -206,10 +206,15 @@ async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (!(options.body instanceof FormData)) headers["Content-Type"] = "application/json";
   if (active?.token) headers.Authorization = `Bearer ${active.token}`;
+  const requestBody = options.body instanceof FormData
+    ? options.body
+    : options.body
+      ? { ...options.body, moneyUnit: "yuan" }
+      : undefined;
   const response = await fetch(`${API_BASE}${path}`, {
     method: options.method || "GET",
     headers,
-    body: options.body instanceof FormData ? options.body : options.body ? JSON.stringify(options.body) : undefined
+    body: requestBody instanceof FormData ? requestBody : requestBody ? JSON.stringify(requestBody) : undefined
   });
   const text = await response.text();
   const data = text ? JSON.parse(text) : {};
@@ -486,7 +491,12 @@ function render() {
 }
 
 function formatMoney(value) {
-  return `¥${Number(value || 0).toFixed(1)}万`;
+  return new Intl.NumberFormat("zh-CN", {
+    style: "currency",
+    currency: "CNY",
+    minimumFractionDigits: Number(value || 0) % 1 ? 2 : 0,
+    maximumFractionDigits: 2
+  }).format(Number(value || 0));
 }
 
 function monthDates(month) {
@@ -560,7 +570,7 @@ function renderDashboardSummary(data) {
 
   const maxTrend = Math.max(...data.trend.flatMap((item) => [item.revenue, item.contract]), 1);
   $("#dashboardTrend").innerHTML = `<div class="trend-columns">${data.trend.map((item) => `
-    <div class="trend-column" title="${escapeHtml(item.label)}：签单${item.contract}万，进款${item.revenue}万">
+    <div class="trend-column" title="${escapeHtml(item.label)}：签单${escapeHtml(formatMoney(item.contract))}，进款${escapeHtml(formatMoney(item.revenue))}">
       <div class="trend-bars"><i class="trend-bar contract" style="height:${Math.max((item.contract / maxTrend) * 100, item.contract ? 3 : 0)}%"></i><i class="trend-bar" style="height:${Math.max((item.revenue / maxTrend) * 100, item.revenue ? 3 : 0)}%"></i></div>
       <small>${escapeHtml(item.label)}</small>
     </div>`).join("")}</div><div class="trend-legend"><span><i class="contract"></i>签单</span><span><i></i>进款</span></div>`;
@@ -848,7 +858,7 @@ function openCustomerDialog(customer = null) {
   form.createdBy.value = customer?.createdBy || currentUser().name || "";
   form.followPerson.value = customer?.followPerson || customer?.owner || form.owner.value;
   form.address.value = customer?.address || "";
-  form.amount.value = customer?.amount || 15;
+  form.amount.value = customer?.amount || 150000;
   form.demoAt.value = customer?.demoAt || "";
   form.quoteAmount.value = customer?.quoteAmount || "";
   form.expectedDealDate.value = customer?.expectedDealDate || "";
@@ -920,7 +930,7 @@ async function saveCustomer(event) {
     unit: ownerUser.unit || ownerUnit.name || "",
     zone: ownerUser.zone || ownerUnit.zone || "",
     region: ownerUser.zone || ownerUnit.zone || "待分区",
-    amount: Number(form.get("amount") || 15),
+    amount: Number(form.get("amount") || 150000),
     demoAt: String(form.get("demoAt") || ""),
     quoteAmount: Number(form.get("quoteAmount") || 0),
     expectedDealDate: String(form.get("expectedDealDate") || ""),
@@ -1119,6 +1129,7 @@ async function batchImport(event) {
   importBody.append("channelSource", "其他");
   importBody.append("createdBy", currentUser().name || "未记录");
   importBody.append("followPerson", owner);
+  importBody.append("moneyUnit", "yuan");
   if (file && file.size) {
     importBody.append("file", file);
   } else {
@@ -1728,7 +1739,7 @@ function fillTargetForm() {
 
 function renderTargetList() {
   $("#targetList").innerHTML = targetManagement.targets.length ? targetManagement.targets.map((item) => `
-    <article><div><b>${escapeHtml(item.scopeName || item.scopeId)}</b><small>${escapeHtml(item.month)}</small></div><small>进款 ${Number(item.revenueTarget || 0).toFixed(1)}万 · 签单 ${Number(item.contractTarget || 0).toFixed(1)}万 · 成交 ${item.dealTarget || 0}家</small></article>`).join("") : '<div class="empty">本月尚未设置目标</div>';
+    <article><div><b>${escapeHtml(item.scopeName || item.scopeId)}</b><small>${escapeHtml(item.month)}</small></div><small>进款 ${escapeHtml(formatMoney(item.revenueTarget))} · 签单 ${escapeHtml(formatMoney(item.contractTarget))} · 成交 ${item.dealTarget || 0}家</small></article>`).join("") : '<div class="empty">本月尚未设置目标</div>';
 }
 
 async function saveTarget(event) {

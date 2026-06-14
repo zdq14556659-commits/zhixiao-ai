@@ -262,7 +262,7 @@ Page({
       unit: ownerUser.unit || "",
       zone: ownerUser.zone || "",
       region: form.region || "待分区",
-      amount: Number(form.amount) || 15,
+      amount: Number(form.amount) || 150000,
       demoAt,
       quoteAmount: Number(form.quoteAmount || 0),
       expectedDealDate: this.data.expectedDealDate,

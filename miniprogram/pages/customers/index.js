@@ -34,6 +34,10 @@ Page({
     totalPages: 1,
     canAssign: false,
     canImportPublic: false,
+    publicPoolLoading: false,
+    publicPoolLoaded: false,
+    publicPoolTotal: 0,
+    publicPoolFilteredOut: false,
     publicPoolError: "",
     advanceOpen: false,
     advanceItem: null,
@@ -56,11 +60,13 @@ Page({
 
   onShow() {
     if (!app.ensureLogin()) return;
-    this.publicPoolRequested = false;
     this.publicPoolItems = [];
     this.publicPoolCount = 0;
     this.consumeDashboardDrilldown();
-    app.loadRemoteState(() => this.loadData());
+    app.loadRemoteState(() => {
+      this.loadData();
+      this.loadPublicPool();
+    });
   },
 
   consumeDashboardDrilldown() {
@@ -76,22 +82,6 @@ Page({
     const role = app.getRole(currentUser);
     const privateCustomers = app.scopeOpportunityRows();
     const customers = this.data.currentStage === "公海" ? (this.publicPoolItems || []) : privateCustomers;
-    if (!this.publicPoolRequested) {
-      this.publicPoolRequested = true;
-      app.requestApi("/public-pool")
-        .then((result) => {
-          this.publicPoolItems = Array.isArray(result.items) ? result.items : [];
-          this.publicPoolCount = Number(result.count || this.publicPoolItems.length);
-          this.setData({ publicPoolError: "" });
-          this.loadData();
-        })
-        .catch(() => {
-          this.publicPoolItems = [];
-          this.publicPoolCount = 0;
-          this.setData({ publicPoolError: "公海加载失败，请稍后重试" });
-          this.loadData();
-        });
-    }
     const channelSources = ["全部", ...app.globalData.channelSources];
     const owners = role.customerScope === "self" ? [currentUser.name] : ["全部", ...app.visibleSales().map((user) => user.name)];
     const assignOwners = app.visibleSales();
@@ -122,15 +112,75 @@ Page({
       stageTimeLabel: this.stageTimeConfig(this.data.currentStage).label,
       canAssign: this.canAssignCustomers(),
       canImportPublic: app.canAdmin(),
+      publicPoolTotal: this.publicPoolCount || 0,
       stageTabs
     }, () => this.applyFilters());
+  },
+
+  loadPublicPool() {
+    this.setData({ publicPoolLoading: true, publicPoolLoaded: false, publicPoolError: "", publicPoolFilteredOut: false });
+    return app.requestApi("/health")
+      .then((health) => {
+        if (health.backendVersion !== "backend-v8" || health.moneyUnit !== "yuan") {
+          throw new Error("后端版本尚未更新，请等待部署完成后重试");
+        }
+        return app.requestApi("/public-pool");
+      })
+      .then((result) => {
+        if (result.backendVersion !== "backend-v8") throw new Error("后端版本尚未更新，请等待部署完成后重试");
+        this.publicPoolItems = Array.isArray(result.items) ? result.items : [];
+        this.publicPoolCount = Number(result.count ?? this.publicPoolItems.length);
+        this.setData({
+          publicPoolLoading: false,
+          publicPoolLoaded: true,
+          publicPoolTotal: this.publicPoolCount,
+          publicPoolError: ""
+        });
+        this.loadData();
+      })
+      .catch((error) => {
+        this.publicPoolItems = [];
+        this.publicPoolCount = 0;
+        this.setData({
+          publicPoolLoading: false,
+          publicPoolLoaded: false,
+          publicPoolTotal: 0,
+          publicPoolError: error.message || "公海加载失败，请检查网络后重试"
+        });
+        this.loadData();
+      });
+  },
+
+  retryPublicPool() {
+    this.loadPublicPool();
   },
 
   switchStage(event) {
     const currentStage = event.currentTarget.dataset.stage;
     this.dashboardCustomerIds = [];
-    this.setData({ currentStage, stageTimeLabel: this.stageTimeConfig(currentStage).label, page: 1 });
-    this.loadData();
+    const next = { currentStage, stageTimeLabel: this.stageTimeConfig(currentStage).label, page: 1 };
+    if (currentStage === "公海") Object.assign(next, this.emptyFilters());
+    this.setData(next, () => {
+      this.loadData();
+      if (currentStage === "公海") this.loadPublicPool();
+    });
+  },
+
+  emptyFilters() {
+    return {
+      keyword: "",
+      channelIndex: 0,
+      ownerIndex: 0,
+      regionIndex: 0,
+      cityIndex: 0,
+      stageStartDate: "",
+      stageEndDate: "",
+      lastStartDate: "",
+      lastEndDate: "",
+      nextStartDate: "",
+      nextEndDate: "",
+      followStatusIndex: 0
+    };
   },
 
   onKeyword(event) {
@@ -260,26 +310,18 @@ Page({
     const totalPages = Math.max(Math.ceil(filtered.length / this.data.pageSize), 1);
     const page = Math.min(this.data.page, totalPages);
     const start = (page - 1) * this.data.pageSize;
-    this.setData({ filtered, page, totalPages, paged: filtered.slice(start, start + this.data.pageSize) });
+    this.setData({
+      filtered,
+      page,
+      totalPages,
+      paged: filtered.slice(start, start + this.data.pageSize),
+      publicPoolFilteredOut: this.data.currentStage === "公海" && this.data.publicPoolLoaded && this.data.publicPoolTotal > 0 && filtered.length === 0
+    });
   },
 
   resetFilters() {
     this.dashboardCustomerIds = [];
-    this.setData({
-      keyword: "",
-      channelIndex: 0,
-      ownerIndex: 0,
-      regionIndex: 0,
-      cityIndex: 0,
-      stageStartDate: "",
-      stageEndDate: "",
-      lastStartDate: "",
-      lastEndDate: "",
-      nextStartDate: "",
-      nextEndDate: "",
-      followStatusIndex: 0,
-      page: 1
-    });
+    this.setData({ ...this.emptyFilters(), page: 1 });
     this.applyFilters();
   },
 
@@ -399,7 +441,7 @@ Page({
       .then(() => app.loadRemoteState(() => {
         wx.hideLoading();
         this.setData({ currentStage: nextStage, page: 1, advanceOpen: false, advanceItem: null });
-        this.publicPoolRequested = false;
+        this.loadPublicPool();
         this.loadData();
         wx.showToast({ title: `已推进至${nextStage}`, icon: "success" });
       }))

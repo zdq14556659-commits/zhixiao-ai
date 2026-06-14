@@ -108,7 +108,7 @@ async function run() {
   const offboard = await request("/users/2/offboard", { method: "POST", token: admin, body: { receiverId: 3 } });
   assert.equal(offboard.status, 200);
   const migrated = JSON.parse(fs.readFileSync(path.join(tempDir, "db.json"), "utf8"));
-  assert.equal(migrated.version, "backend-v7");
+  assert.equal(migrated.version, "backend-v8");
   assert.ok(migrated.competitors.length >= 5);
   assert.ok(!Object.prototype.hasOwnProperty.call(migrated.users[0], "password"));
 }

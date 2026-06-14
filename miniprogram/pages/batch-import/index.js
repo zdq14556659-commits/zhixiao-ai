@@ -107,7 +107,8 @@ Page({
         zone: (this.data.ownerUsers[this.data.ownerIndex] || {}).zone || "",
         createdBy: app.getCurrentUser().name || "未记录",
         followPerson: this.data.owners[this.data.ownerIndex],
-        channelSource: this.data.channelSources[this.data.channelIndex] || "其他"
+        channelSource: this.data.channelSources[this.data.channelIndex] || "其他",
+        moneyUnit: "yuan"
       },
       success: (res) => {
         wx.hideLoading();
