@@ -39,6 +39,13 @@
       </view>
       <view class="filter-grid">
         <view class="form-item">
+          <text class="label">城市</text>
+          <picker range="{{cities}}" value="{{cityIndex}}" bindchange="onCity"><view class="picker-box">{{cities[cityIndex]}}</view></picker>
+        </view>
+        <view class="form-item"></view>
+      </view>
+      <view class="filter-grid">
+        <view class="form-item">
           <text class="label">最新跟进开始</text>
           <picker mode="date" value="{{lastStartDate}}" bindchange="onLastStartDate">
             <view class="picker-box">{{lastStartDate || '请选择'}}</view>
@@ -117,10 +124,13 @@
           <text class="tag">{{item.stage}}</text>
         </view>
       </view>
-      <view class="strip-line ellipsis">{{item.phone}} · {{item.channelLabel}} · {{item.followPerson || item.owner}}</view>
+      <view class="strip-line ellipsis">{{item.productName || '待确认产品'}} · {{item.city || '待识别'}} · {{item.channelLabel}}</view>
+      <view wx:if="{{!item.isPublicPool}}" class="strip-line ellipsis">{{item.phone}} · {{item.followPerson || item.owner}}</view>
+      <view wx:else class="strip-line ellipsis">手机号与联系人认领后可见</view>
       <view class="strip-line ellipsis">{{stageTimeLabel}}：{{item.stageDate || '未记录'}}</view>
-      <view class="strip-line ellipsis">{{item.software || '软件待补充'}} · 下次：{{item.nextFollow || '未设置'}}</view>
-      <view class="strip-note ellipsis">{{item.lastNote || '暂无跟进记录'}}</view>
+      <view wx:if="{{!item.isPublicPool}}" class="strip-line ellipsis">{{item.primarySoftware}} · 下次：{{item.nextFollow || '未设置'}}</view>
+      <view wx:if="{{!item.isPublicPool}}" class="strip-note ellipsis">{{item.lastNote || '暂无跟进记录'}}</view>
+      <view wx:else class="strip-note ellipsis">进入公海：{{item.publicPoolAt || '时间未记录'}}，认领后可查看历史跟进</view>
       <view wx:if="{{item.firstPhoto}}" class="photo-chip" data-id="{{item.id}}" data-src="{{item.firstPhoto}}" catchtap="previewCustomerPhoto">
         <image src="{{item.firstPhoto}}" mode="aspectFill"></image>
         <text>{{item.photoCount}}张现场图</text>
@@ -129,7 +139,7 @@
     <view wx:if="{{!item.isPublicPool}}" class="strip-actions {{item.canAssign ? 'has-assign' : ''}}">
       <button class="plain-btn" data-phone="{{item.phone}}" catchtap="callCustomer">拨打</button>
       <button class="plain-btn" data-id="{{item.id}}" catchtap="goFollow">跟进</button>
-      <button class="primary-btn" data-id="{{item.id}}" catchtap="advanceCustomer">{{item.stage === '成交' ? '查看' : '推进'}}</button>
+      <button class="primary-btn" data-id="{{item.id}}" catchtap="advanceCustomer">{{item.stage === '成交' ? '新增机会' : '推进'}}</button>
       <button wx:if="{{item.canAssign}}" class="assign-btn" data-id="{{item.id}}" catchtap="assignCustomer">分配</button>
     </view>
     <view wx:else class="strip-actions pool-actions">
@@ -139,7 +149,8 @@
     </view>
   </view>
 
-  <view class="empty" wx:if="{{filtered.length === 0}}">暂无符合条件的客户</view>
+  <view class="empty" wx:if="{{currentStage === '公海' && publicPoolError}}">{{publicPoolError}}</view>
+  <view class="empty" wx:elif="{{filtered.length === 0}}">暂无符合条件的客户</view>
   <view class="page-tools" wx:if="{{filtered.length}}">
     <picker range="{{pageSizes}}" value="{{pageSizeIndex}}" bindchange="onPageSize">
       <view class="page-size">每页 {{pageSize}} 条⌄</view>
@@ -150,5 +161,30 @@
     <button class="plain-btn" bindtap="prevPage" disabled="{{page <= 1}}">上一页</button>
     <text>{{page}} / {{totalPages}}</text>
     <button class="plain-btn" bindtap="nextPage" disabled="{{page >= totalPages}}">下一页</button>
+  </view>
+
+  <view wx:if="{{advanceOpen}}" class="modal-mask" catchtouchmove="true">
+    <view class="modal-card">
+      <view class="modal-title">推进为{{advanceTargetStage}}</view>
+      <view class="muted">{{advanceItem.name}} · {{advanceItem.productName}}</view>
+      <view wx:if="{{advanceTargetStage === '商机'}}" class="form-item"><text class="label">有效演示日期</text><picker mode="date" value="{{advanceDemoAt}}" bindchange="onAdvanceDemoAt"><view class="picker-box">{{advanceDemoAt || '请选择'}}</view></picker></view>
+      <block wx:if="{{advanceTargetStage === '成交'}}">
+        <view class="form-item"><text class="label">合同金额（万）</text><input type="digit" value="{{advanceContractAmount}}" data-field="advanceContractAmount" bindinput="onAdvanceField" /></view>
+        <view class="form-item"><text class="label">实际进款（万，可后补）</text><input type="digit" value="{{advancePaymentAmount}}" data-field="advancePaymentAmount" bindinput="onAdvanceField" /></view>
+        <view class="form-item"><text class="label">进款日期</text><picker mode="date" value="{{advancePaymentDate}}" bindchange="onAdvancePaymentDate"><view class="picker-box">{{advancePaymentDate || '未进款'}}</view></picker></view>
+      </block>
+      <view class="form-item"><text class="label">本次跟进内容</text><textarea value="{{advanceNote}}" data-field="advanceNote" bindinput="onAdvanceField"></textarea></view>
+      <view class="form-item"><text class="label">下次跟进</text><picker mode="date" value="{{advanceNextFollow}}" bindchange="onAdvanceNextFollow"><view class="picker-box">{{advanceNextFollow || '未设置'}}</view></picker></view>
+      <view class="modal-actions"><button class="plain-btn" bindtap="closeAdvance">取消</button><button class="primary-btn" bindtap="submitAdvanceForm">确认推进</button></view>
+    </view>
+  </view>
+
+  <view wx:if="{{newOpportunityOpen}}" class="modal-mask" catchtouchmove="true">
+    <view class="modal-card">
+      <view class="modal-title">新增销售机会</view>
+      <view class="muted">成交机会保留，新产品从线索重新轮转</view>
+      <view class="form-item"><text class="label">意向产品</text><picker range="{{products}}" range-key="name" value="{{productIndex}}" bindchange="onProduct"><view class="picker-box">{{products[productIndex].name || '请选择'}}</view></picker></view>
+      <view class="modal-actions"><button class="plain-btn" bindtap="closeNewOpportunity">取消</button><button class="primary-btn" bindtap="submitNewOpportunity">创建线索</button></view>
+    </view>
   </view>
 </view>

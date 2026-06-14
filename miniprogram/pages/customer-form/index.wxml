@@ -21,6 +21,10 @@
         </picker>
       </view>
       <view class="grid-2">
+        <view class="form-item"><text class="label">意向产品</text><picker range="{{products}}" range-key="name" value="{{productIndex}}" bindchange="onProduct"><view class="picker-box">{{products[productIndex].name || '请选择'}}</view></picker></view>
+        <view class="form-item"><text class="label">城市</text><input name="city" value="{{form.city}}" placeholder="可从地址自动识别" /></view>
+      </view>
+      <view class="grid-2">
         <view class="form-item">
           <text class="label">阶段</text>
           <picker range="{{stages}}" value="{{stageIndex}}" bindchange="onStage">
@@ -44,11 +48,6 @@
           <input name="amount" type="digit" value="{{form.amount}}" placeholder="15" />
         </view>
       </view>
-      <view class="form-item">
-        <text class="label">现用软件</text>
-        <input name="software" value="{{form.software}}" placeholder="酷家乐 + Excel排产" />
-      </view>
-
       <view class="section-divider row">
         <text>联系人档案</text>
         <button class="plain-btn section-add" type="button" bindtap="addContact">添加联系人</button>
@@ -80,23 +79,25 @@
       </view>
       <view class="repeat-card" wx:for="{{competitorProfiles}}" wx:key="index">
         <view class="row repeat-head">
-          <text>{{item.isPrimary ? '主要现用软件' : '其他竞品'}}</text>
+          <text>{{index === 0 ? '当前使用软件' : '其他竞品'}}</text>
           <view class="repeat-actions">
-            <button wx:if="{{!item.isPrimary}}" class="link-btn" type="button" data-index="{{index}}" bindtap="setPrimaryCompetitor">设为主要</button>
-            <button class="link-btn danger-text" type="button" data-index="{{index}}" bindtap="removeCompetitorProfile">删除</button>
+            <button class="link-btn" type="button" data-index="{{index}}" bindtap="toggleCompetitorDetails">{{item.expanded ? '收起详情' : '补充详情'}}</button>
+            <button wx:if="{{index > 0}}" class="link-btn danger-text" type="button" data-index="{{index}}" bindtap="removeCompetitorProfile">删除</button>
           </view>
         </view>
+        <view class="form-item"><text class="label">品牌</text><picker range="{{competitorNames}}" data-index="{{index}}" bindchange="onCompetitorBrand"><view class="picker-box">{{item.brand || '请选择'}}</view></picker></view>
+        <block wx:if="{{item.expanded}}">
         <view class="grid-2">
-          <view class="form-item"><text class="label">品牌</text><picker range="{{competitorNames}}" data-index="{{index}}" bindchange="onCompetitorBrand"><view class="picker-box">{{item.brand || '请选择'}}</view></picker></view>
           <view class="form-item"><text class="label">产品版本</text><input value="{{item.version}}" data-index="{{index}}" data-field="version" bindinput="updateCompetitor" placeholder="版本/模块" /></view>
+          <view class="form-item"><text class="label">价格</text><input value="{{item.price}}" data-index="{{index}}" data-field="price" bindinput="updateCompetitor" placeholder="年费/买断价" /></view>
         </view>
         <view class="grid-2">
-          <view class="form-item"><text class="label">价格</text><input value="{{item.price}}" data-index="{{index}}" data-field="price" bindinput="updateCompetitor" placeholder="年费/买断价" /></view>
           <view class="form-item"><text class="label">到期时间</text><input value="{{item.expiresAt}}" data-index="{{index}}" data-field="expiresAt" bindinput="updateCompetitor" placeholder="YYYY-MM-DD" /></view>
+          <view class="form-item"><text class="label">满意度</text><input value="{{item.satisfaction}}" data-index="{{index}}" data-field="satisfaction" bindinput="updateCompetitor" placeholder="满意 / 一般 / 不满意" /></view>
         </view>
-        <view class="form-item"><text class="label">满意度</text><input value="{{item.satisfaction}}" data-index="{{index}}" data-field="satisfaction" bindinput="updateCompetitor" placeholder="满意 / 一般 / 不满意" /></view>
         <view class="form-item"><text class="label">切换障碍</text><input value="{{item.switchingBarrier}}" data-index="{{index}}" data-field="switchingBarrier" bindinput="updateCompetitor" placeholder="数据迁移、员工习惯、合同未到期等" /></view>
         <view class="form-item"><text class="label">备注</text><input value="{{item.note}}" data-index="{{index}}" data-field="note" bindinput="updateCompetitor" /></view>
+        </block>
       </view>
       <view class="section-divider">商机与成交信息</view>
       <view class="grid-2">

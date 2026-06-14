@@ -17,7 +17,7 @@ const defaultRoles = [
   { id: "role-admin", name: "管理员", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] }
 ];
 
-let state = { users: [], customers: [], visits: [], knowledge: [], stages, roles: defaultRoles, units: [], competitors: [], routes: [] };
+let state = { users: [], customers: [], opportunities: [], products: [], visits: [], knowledge: [], stages, roles: defaultRoles, units: [], competitors: [], routes: [] };
 let currentStage = "名单";
 let currentView = "dashboard";
 let currentSettingsTab = "accounts";
@@ -302,7 +302,7 @@ async function trackGeocodeProgress() {
 }
 
 async function loadState() {
-  state = await api("/state?client=mini");
+  state = await api("/state");
   render();
 }
 
@@ -409,6 +409,37 @@ async function resetPassword(event) {
 function scopeCustomers() {
   const user = currentUser();
   return (state.customers || []).filter((item) => item.lifecycleStatus !== "archived" && canSeeRecord(item, user));
+}
+
+function opportunityCustomer(opportunity = {}) {
+  return (state.customers || []).find((customer) => Number(customer.id) === Number(opportunity.customerId)) || {};
+}
+
+function opportunityRow(opportunity = {}) {
+  const customer = opportunityCustomer(opportunity);
+  return {
+    ...customer,
+    ...opportunity,
+    id: opportunity.id,
+    opportunityId: opportunity.id,
+    customerId: customer.id || opportunity.customerId,
+    name: customer.name || opportunity.name || "未命名客户",
+    phone: customer.phone || opportunity.phone || "",
+    contacts: customer.contacts || opportunity.contacts || [],
+    competitorProfiles: customer.competitorProfiles || opportunity.competitorProfiles || [],
+    photos: customer.photos || opportunity.photos || [],
+    address: customer.address || opportunity.address || "",
+    city: customer.city || customer.location?.city || opportunity.city || "待识别",
+    channelSource: customer.channelSource || opportunity.channelSource || "其他",
+    createdBy: customer.createdBy || opportunity.createdBy || "未记录"
+  };
+}
+
+function scopeOpportunityRows() {
+  const opportunities = Array.isArray(state.opportunities) && state.opportunities.length
+    ? state.opportunities
+    : (state.customers || []).map((customer) => ({ ...customer, id: customer.id, customerId: customer.id, productName: "待确认产品" }));
+  return opportunities.map(opportunityRow).filter((item) => item.lifecycleStatus !== "archived" && (item.ownershipStatus === "public_pool" || canSeeRecord(item)));
 }
 
 function scopeVisits() {
@@ -557,14 +588,15 @@ function renderDashboardSummary(data) {
 }
 
 function renderCustomers() {
-  const customers = scopeCustomers();
+  const customers = scopeOpportunityRows();
   const stageTime = stageTimeConfig();
   const customerTabs = [...stages, "公海"];
   const currentFilters = {
     channel: $("#channelFilter")?.value || "",
     createdBy: $("#createdByFilter")?.value || "",
     followPerson: $("#followPersonFilter")?.value || "",
-    unit: $("#unitFilter")?.value || ""
+    unit: $("#unitFilter")?.value || "",
+    city: $("#cityFilter")?.value || ""
   };
   $("#stageTabs").innerHTML = customerTabs
     .map((stage) => {
@@ -580,10 +612,12 @@ function renderCustomers() {
   $("#createdByFilter").innerHTML = optionList("全部录入人", customers.map((item) => item.createdBy));
   $("#followPersonFilter").innerHTML = `${roleForUser(currentUser()).customerScope === "self" ? "" : '<option value="">全部跟进人</option>'}${ownerOptions.map((user) => `<option>${escapeHtml(user.name)}</option>`).join("")}`;
   $("#unitFilter").innerHTML = optionList("全部单位", customers.map((item) => item.unit));
+  $("#cityFilter").innerHTML = optionList("全部城市", customers.map((item) => item.city));
   $("#channelFilter").value = currentFilters.channel;
   $("#createdByFilter").value = currentFilters.createdBy;
   $("#followPersonFilter").value = currentFilters.followPerson;
   $("#unitFilter").value = currentFilters.unit;
+  $("#cityFilter").value = currentFilters.city;
   $("#customerOwnerSelect").innerHTML = ownerOptions.map((user) => `<option>${user.name}</option>`).join("");
   const paymentOwners = roleForUser(currentUser()).customerScope === "self" ? [currentUser()] : visibleUsers();
   $("#paymentOwnerSelect").innerHTML = paymentOwners.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
@@ -591,6 +625,9 @@ function renderCustomers() {
   $("#assignOwnerSelect").innerHTML = ownerOptions.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
   $("#customerStageSelect").innerHTML = stages.map((stage) => `<option>${stage}</option>`).join("");
   $("#customerChannelSelect").innerHTML = channelSources.map((source) => `<option>${source}</option>`).join("");
+  const productOptions = (state.products || []).filter((item) => item.active !== false).map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
+  $("#customerProductSelect").innerHTML = productOptions;
+  $("#newOpportunityProductSelect").innerHTML = productOptions;
   $("#batchAssignBtn").classList.toggle("hidden", !canAssignCustomers());
   $("#addCustomerBtn").classList.toggle("hidden", currentStage === "公海");
   $("#batchImportBtn").classList.toggle("hidden", currentStage === "公海" && !canAdmin());
@@ -603,6 +640,7 @@ function renderCustomers() {
   const createdBy = $("#createdByFilter").value;
   const followPerson = $("#followPersonFilter").value;
   const unit = $("#unitFilter").value;
+  const city = $("#cityFilter").value;
   const stageStart = $("#stageTimeStart").value;
   const stageEnd = $("#stageTimeEnd").value;
   const lastStart = $("#lastFollowStart").value;
@@ -611,14 +649,15 @@ function renderCustomers() {
   const nextEnd = $("#nextFollowEnd").value;
   const filteredRows = customers.filter((item) => {
     const source = `${item.name} ${item.phone}`.toLowerCase();
-    if (dashboardDrilldownIds && !dashboardDrilldownIds.has(Number(item.id))) return false;
+    if (dashboardDrilldownIds && !dashboardDrilldownIds.has(Number(item.id)) && !dashboardDrilldownIds.has(Number(item.customerId))) return false;
     const isPublicPool = item.ownershipStatus === "public_pool";
     if (currentStage === "公海" ? !isPublicPool : (isPublicPool || item.stage !== currentStage)) return false;
     if (keyword && !source.includes(keyword)) return false;
     if (channel && normalizeChannelSource(item.channelSource) !== channel) return false;
     if (createdBy && item.createdBy !== createdBy) return false;
-    if (followPerson && (item.followPerson || item.owner) !== followPerson) return false;
+    if (currentStage !== "公海" && followPerson && (item.followPerson || item.owner) !== followPerson) return false;
     if (unit && item.unit !== unit) return false;
+    if (city && item.city !== city) return false;
     if (!inDateRange(customerStageTime(item), stageStart, stageEnd)) return false;
     if (!inDateRange(latestFollow(item), lastStart, lastEnd)) return false;
     if (!inDateRange(item.nextFollow || "", nextStart, nextEnd)) return false;
@@ -635,7 +674,7 @@ function renderCustomers() {
   selectedCustomerIds = new Set([...selectedCustomerIds].filter((id) => selectableIds.has(Number(id))));
   $("#customerRows").innerHTML = rows.length
     ? rows.map(customerRow).join("")
-    : `<tr><td colspan="13" class="empty">暂无客户</td></tr>`;
+    : `<tr><td colspan="15" class="empty">暂无销售机会</td></tr>`;
   updateCustomerSelectionUI();
   const sizeSelect = $("#customerPageSize");
   if (sizeSelect) sizeSelect.value = String(customerPageSize);
@@ -658,21 +697,29 @@ function customerRow(item) {
   const ownership = ownershipLabel(item);
   const primaryContact = (item.contacts || []).find((contact) => contact.isPrimary) || (item.contacts || [])[0] || { phone: item.phone };
   const contactCount = (item.contacts || []).length;
+  const phoneHtml = isPublicPool
+    ? `<span class="pool-private-value">认领后可见</span>`
+    : `<a href="tel:${escapeHtml(primaryContact.phone || item.phone)}">${escapeHtml(primaryContact.phone || item.phone)}</a>${contactCount > 1 ? `<small>另有${contactCount - 1}位联系人</small>` : ""}`;
+  const followHtml = isPublicPool
+    ? `<small class="pool-private-value">认领后可查看跟进历史</small>`
+    : `<small>${escapeHtml(item.lastNote || "暂无跟进记录")}</small><button class="history-link" data-action="history" data-id="${item.id}">查看历史(${(item.followUps || []).length})</button>${photoHtml}`;
   const actions = isPublicPool
     ? (roleForUser(currentUser()).customerScope === "self"
         ? `<button class="primary" data-action="claim" data-id="${item.id}">认领</button>`
         : `<span class="pool-action-hint">${assignable ? "请勾选后分配" : "不在您的分配范围"}</span>`)
-    : `<button data-action="follow" data-id="${item.id}">跟进</button><button data-action="ai" data-id="${item.id}">小智</button><button data-action="advance" data-id="${item.id}">${item.stage === "成交" ? "已成交" : "推进"}</button>`;
+    : `<button data-action="follow" data-id="${item.id}">跟进</button><button data-action="ai" data-id="${item.id}">小智</button>${item.stage === "成交" ? `<button class="primary" data-action="new-opportunity" data-id="${item.id}">新增机会</button>` : `<button data-action="advance" data-id="${item.id}">推进</button>`}`;
   return `
     <tr>
       <td class="select-cell"><input type="checkbox" class="customer-select" data-id="${item.id}" ${checked} ${disabled} title="${title}" /></td>
       <td><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.stage || "")}${ownership ? ` · <span class="ownership-state ${item.ownershipStatus}">${escapeHtml(ownership)}</span>` : ""}</small></td>
-      <td><a href="tel:${escapeHtml(primaryContact.phone || item.phone)}">${escapeHtml(primaryContact.phone || item.phone)}</a>${contactCount > 1 ? `<small>另有${contactCount - 1}位联系人</small>` : ""}</td>
+      <td><span class="tag">${escapeHtml(item.productName || "待确认产品")}</span></td>
+      <td>${phoneHtml}</td>
+      <td>${escapeHtml(item.city || "待识别")}</td>
       <td>${escapeHtml(normalizeChannelSource(item.channelSource))}</td>
       <td>${escapeHtml(item.createdBy || "未记录")}</td>
       <td>${escapeHtml(item.followPerson || item.owner || "未分配")}</td>
       <td>${escapeHtml(customerStageTime(item) || "-")}</td>
-      <td><small>${escapeHtml(item.lastNote || "暂无跟进记录")}</small><button class="history-link" data-action="history" data-id="${item.id}">查看历史(${(item.followUps || []).length})</button>${photoHtml}</td>
+      <td>${followHtml}</td>
       <td>${latestFollow(item) || "-"}</td>
       <td class="${dueClass}">${item.nextFollow || "未设置"}</td>
       <td>${escapeHtml(item.unit || "待分配")}</td>
@@ -755,18 +802,21 @@ function readContactsEditor() {
 }
 
 function renderCompetitorProfilesEditor(profiles = []) {
-  $("#customerCompetitorsEditor").innerHTML = profiles.map((profile, index) => `
+  const list = profiles.length ? profiles : [{ competitorId: state.competitors?.[0]?.id || "", isPrimary: true }];
+  $("#customerCompetitorsEditor").innerHTML = list.map((profile, index) => `
     <article class="repeat-row competitor-row" data-index="${index}">
-      <div class="repeat-row-head"><b>竞品档案${index + 1}</b><button type="button" data-remove-competitor>删除</button></div>
+      <div class="repeat-row-head"><b>${index === 0 ? "当前使用软件" : `其他竞品${index}`}</b>${index === 0 ? '<span class="tag">主要</span>' : '<button type="button" data-remove-competitor>删除</button>'}</div>
       <input data-competitor="id" type="hidden" value="${escapeHtml(profile.id || "")}" />
       <label>品牌<select data-competitor="competitorId">${(state.competitors || []).map((item) => `<option value="${item.id}" ${item.id === profile.competitorId || item.name === profile.brand ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label>
-      <label>版本<input data-competitor="version" value="${escapeHtml(profile.version || "")}" /></label>
-      <label>价格<input data-competitor="price" value="${escapeHtml(profile.price || "")}" /></label>
-      <label>到期时间<input data-competitor="expiresAt" type="date" value="${escapeHtml(profile.expiresAt || "")}" /></label>
-      <label>满意度<input data-competitor="satisfaction" value="${escapeHtml(profile.satisfaction || "")}" placeholder="满意/一般/不满意" /></label>
-      <label>切换障碍<input data-competitor="switchingBarrier" value="${escapeHtml(profile.switchingBarrier || "")}" /></label>
-      <label>备注<input data-competitor="note" value="${escapeHtml(profile.note || "")}" /></label>
-      <label class="inline-check"><input data-competitor="isPrimary" type="checkbox" ${profile.isPrimary || index === 0 ? "checked" : ""} />主要现用软件</label>
+      <details class="competitor-details"><summary>补充版本、价格和切换障碍</summary>
+        <label>版本<input data-competitor="version" value="${escapeHtml(profile.version || "")}" /></label>
+        <label>价格<input data-competitor="price" value="${escapeHtml(profile.price || "")}" /></label>
+        <label>到期时间<input data-competitor="expiresAt" type="date" value="${escapeHtml(profile.expiresAt || "")}" /></label>
+        <label>满意度<input data-competitor="satisfaction" value="${escapeHtml(profile.satisfaction || "")}" placeholder="满意/一般/不满意" /></label>
+        <label>切换障碍<input data-competitor="switchingBarrier" value="${escapeHtml(profile.switchingBarrier || "")}" /></label>
+        <label>备注<input data-competitor="note" value="${escapeHtml(profile.note || "")}" /></label>
+      </details>
+      <input data-competitor="isPrimary" type="hidden" value="${index === 0 ? "1" : "0"}" />
     </article>`).join("");
 }
 
@@ -775,16 +825,23 @@ function readCompetitorProfilesEditor() {
     const value = (name) => row.querySelector(`[data-competitor=${name}]`)?.value || "";
     const competitorId = value("competitorId");
     const definition = (state.competitors || []).find((item) => item.id === competitorId) || {};
-    return { id: value("id"), competitorId, brand: definition.name || "其他", version: value("version"), price: value("price"), expiresAt: value("expiresAt"), satisfaction: value("satisfaction"), switchingBarrier: value("switchingBarrier"), note: value("note"), isPrimary: Boolean(row.querySelector("[data-competitor=isPrimary]")?.checked) };
+    return { id: value("id"), competitorId, brand: definition.name || "其他", version: value("version"), price: value("price"), expiresAt: value("expiresAt"), satisfaction: value("satisfaction"), switchingBarrier: value("switchingBarrier"), note: value("note"), isPrimary: value("isPrimary") === "1" };
   });
 }
 
 function openCustomerDialog(customer = null) {
   const form = $("#customerForm");
   form.reset();
-  form.id.value = customer?.id || "";
+  form.id.value = customer?.customerId || customer?.id || "";
+  form.opportunityId.value = customer?.opportunityId || "";
   form.name.value = customer?.name || "";
   form.phone.value = customer?.phone || "";
+  form.city.value = customer?.city || "";
+  const productId = customer?.productId || state.products?.[0]?.id || "";
+  if (productId && !Array.from(form.productId.options).some((option) => option.value === productId)) {
+    form.productId.add(new Option(customer?.productName || "历史产品（待补充）", productId));
+  }
+  form.productId.value = productId;
   form.channelSource.value = normalizeChannelSource(customer?.channelSource || "其他");
   form.stage.value = customer?.stage || (stages.includes(currentStage) ? currentStage : "名单");
   form.owner.value = customer?.owner || $("#customerOwnerSelect").value;
@@ -800,7 +857,6 @@ function openCustomerDialog(customer = null) {
   form.paymentDate.value = customer?.paymentDate || "";
   form.paymentOwnerId.value = customer?.paymentOwnerId || currentUser().id || "";
   form.lossReason.value = customer?.lossReason || "";
-  form.software.value = customer?.software || "";
   form.note.value = "";
   form.nextFollow.value = customer?.nextFollow || today;
   const identityLocked = Boolean(customer) && !canAdmin();
@@ -837,6 +893,7 @@ async function saveCustomer(event) {
   if (event.submitter?.value === "cancel") return $("#customerDialog").close();
   const form = new FormData(event.currentTarget);
   const id = Number(form.get("id"));
+  const opportunityId = Number(form.get("opportunityId"));
   const ownerUser = userByName(String(form.get("owner")));
   const ownerUnit = unitForId(ownerUser.unitId);
   const note = String(form.get("note") || "").trim();
@@ -849,10 +906,13 @@ async function saveCustomer(event) {
     phone: String(primaryContact.phone || form.get("phone")).trim(),
     contacts,
     competitorProfiles,
+    opportunityId: opportunityId || undefined,
+    productId: String(form.get("productId") || ""),
     channelSource: normalizeChannelSource(form.get("channelSource") || "其他"),
     createdBy: String(form.get("createdBy") || currentUser().name || "未记录"),
     followPerson: String(form.get("followPerson") || form.get("owner") || "未分配"),
     address: String(form.get("address") || ""),
+    city: String(form.get("city") || ""),
     stage: String(form.get("stage")),
     owner: String(form.get("owner")),
     ownerId: ownerUser.id || "",
@@ -869,7 +929,6 @@ async function saveCustomer(event) {
     paymentDate: String(form.get("paymentDate") || ""),
     paymentOwnerId: Number(form.get("paymentOwnerId") || currentUser().id),
     lossReason: String(form.get("lossReason") || ""),
-    software: String(form.get("software") || "待补充"),
     createdAt: id ? undefined : today,
     lastFollow: today,
     nextFollow: String(form.get("nextFollow") || ""),
@@ -914,11 +973,11 @@ async function saveCustomer(event) {
 async function claimCustomer(id) {
   if (!window.confirm("认领后将获得3天临时保护，请及时提交有效跟进。确认认领？")) return;
   try {
-    const claimed = await api(`/customers/${id}/claim`, { method: "POST" });
+    const claimed = await api(`/opportunities/${id}/claim`, { method: "POST" });
     currentStage = claimed.stage || "名单";
     customerPage = 1;
     await loadState();
-    const fresh = state.customers.find((item) => Number(item.id) === Number(claimed.id));
+    const fresh = scopeOpportunityRows().find((item) => Number(item.id) === Number(claimed.id));
     if (fresh) openCustomerDialog(fresh);
     toast("认领成功，请填写首次有效跟进");
   } catch (error) {
@@ -928,35 +987,94 @@ async function claimCustomer(id) {
 }
 
 async function advanceCustomer(id) {
-  const customer = state.customers.find((item) => item.id === id);
+  const customer = scopeOpportunityRows().find((item) => Number(item.id) === Number(id));
+  if (!customer) return;
   const index = stages.indexOf(customer.stage);
   if (index >= stages.length - 1) return;
   const nextStage = stages[index + 1];
-  if (nextStage === "商机" && !customer.demoAt) {
-    openCustomerDialog(customer);
-    return toast("进入商机前请填写有效演示时间");
+  if (nextStage === "线索") {
+    if (!window.confirm(`确认将“${customer.name} · ${customer.productName || "待确认产品"}”推进为线索？`)) return;
+    await api(`/opportunities/${id}/advance`, { method: "POST", body: {} });
+    currentStage = nextStage;
+    customerPage = 1;
+    await loadState();
+    return toast("已推进至线索");
   }
-  if (nextStage === "成交" && Number(customer.contractAmount || 0) <= 0) {
-    openCustomerDialog(customer);
-    return toast("进入成交前请填写合同金额");
-  }
-  const nextCustomer = {
-    ...customer,
-    stage: nextStage,
-    lastFollow: today,
-    nextFollow: today,
-    lastNote: `客户推进至${nextStage}阶段。`
-  };
-  await api(`/customers/${id}`, { method: "PUT", body: nextCustomer });
+  const form = $("#advanceForm");
+  form.reset();
+  form.opportunityId.value = id;
+  form.demoAt.value = customer.demoAt || today;
+  form.contractAmount.value = customer.contractAmount || "";
+  form.paymentAmount.value = customer.paymentAmount || "";
+  form.paymentDate.value = customer.paymentDate || "";
+  form.nextFollow.value = customer.nextFollow || "";
+  $("#advanceDialogTitle").textContent = nextStage === "商机" ? "推进为商机" : "推进为成交";
+  $("#advanceDialogSummary").textContent = `${customer.name} · ${customer.productName || "待确认产品"}`;
+  $$(".advance-demo-field").forEach((node) => node.classList.toggle("hidden", nextStage !== "商机"));
+  $$(".advance-deal-field").forEach((node) => node.classList.toggle("hidden", nextStage !== "成交"));
+  const paymentOwners = roleForUser(currentUser()).customerScope === "self" ? [currentUser()] : visibleUsers();
+  $("#advancePaymentOwnerSelect").innerHTML = paymentOwners.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
+  $("#advancePaymentOwnerSelect").value = String(customer.paymentOwnerId || currentUser().id || "");
+  $("#advanceDialog").showModal();
+}
+
+async function submitAdvance(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const id = Number(form.get("opportunityId"));
+  const opportunity = scopeOpportunityRows().find((item) => Number(item.id) === id);
+  if (!opportunity) return toast("销售机会不存在");
+  const nextStage = stages[stages.indexOf(opportunity.stage) + 1];
+  await api(`/opportunities/${id}/advance`, {
+    method: "POST",
+    body: {
+      demoAt: String(form.get("demoAt") || ""),
+      contractAmount: Number(form.get("contractAmount") || 0),
+      paymentAmount: Number(form.get("paymentAmount") || 0),
+      paymentDate: String(form.get("paymentDate") || ""),
+      paymentOwnerId: Number(form.get("paymentOwnerId") || currentUser().id),
+      note: String(form.get("note") || "").trim(),
+      nextFollow: String(form.get("nextFollow") || "")
+    }
+  });
+  $("#advanceDialog").close();
   currentStage = nextStage;
+  customerPage = 1;
   await loadState();
-  toast("已推进");
+  toast(`已推进至${nextStage}`);
+}
+
+function openNewOpportunityDialog(opportunityId) {
+  const row = scopeOpportunityRows().find((item) => Number(item.id) === Number(opportunityId));
+  if (!row) return;
+  const form = $("#newOpportunityForm");
+  form.reset();
+  form.customerId.value = row.customerId;
+  $("#newOpportunitySummary").textContent = `${row.name}已有成交机会，新产品将从线索阶段重新轮转。`;
+  $("#newOpportunityOwnerSelect").innerHTML = visibleSales().map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
+  $("#newOpportunityOwnerSelect").value = String(row.ownerId || currentUser().id || "");
+  $("#newOpportunityDialog").showModal();
+}
+
+async function submitNewOpportunity(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const customerId = Number(form.get("customerId"));
+  await api(`/customers/${customerId}/opportunities`, {
+    method: "POST",
+    body: { productId: form.get("productId"), ownerId: Number(form.get("ownerId") || currentUser().id), note: String(form.get("note") || "").trim() }
+  });
+  $("#newOpportunityDialog").close();
+  currentStage = "线索";
+  customerPage = 1;
+  await loadState();
+  toast("新销售机会已创建");
 }
 
 async function assignCustomer(id, ownerId) {
   const target = state.users.find((user) => Number(user.id) === Number(ownerId));
   if (!target) return toast("请选择销售");
-  await api(`/customers/${id}/assign`, {
+  await api(`/opportunities/${id}/assign`, {
     method: "POST",
     body: { ownerId: target.id, owner: target.name }
   });
@@ -973,7 +1091,7 @@ async function batchAssignCustomers(event) {
   const ownerId = Number(form.get("ownerId"));
   const target = state.users.find((user) => Number(user.id) === Number(ownerId));
   if (!target) return toast("请选择员工");
-  const result = await api("/customers/assign", {
+  const result = await api("/opportunities/assign", {
     method: "POST",
     body: { ids, ownerId: target.id, owner: target.name }
   });
@@ -1306,18 +1424,19 @@ function renderAssistant() {
   const select = $("#assistantCustomerSelect");
   if (!select) return;
   const current = select.value;
-  const customers = scopeCustomers().filter((item) => item.ownershipStatus !== "public_pool" && item.lifecycleStatus !== "archived");
-  select.innerHTML = `<option value="">通用咨询</option>${customers.map((item) => `<option value="${item.id}">${escapeHtml(item.name)} · ${escapeHtml(item.stage)}</option>`).join("")}`;
+  const customers = scopeOpportunityRows().filter((item) => item.ownershipStatus !== "public_pool" && item.lifecycleStatus !== "archived");
+  select.innerHTML = `<option value="">通用咨询</option>${customers.map((item) => `<option value="${item.id}">${escapeHtml(item.name)} · ${escapeHtml(item.productName || "待确认产品")} · ${escapeHtml(item.stage)}</option>`).join("")}`;
   if (customers.some((item) => String(item.id) === current)) select.value = current;
 }
 
 async function recommend() {
   const question = $("#customerQuestion").value.trim();
-  const customerId = Number($("#assistantCustomerSelect")?.value || 0);
-  if (!question && !customerId) return toast("请选择客户或输入客户问题");
+  const opportunityId = Number($("#assistantCustomerSelect")?.value || 0);
+  const selected = scopeOpportunityRows().find((item) => Number(item.id) === opportunityId);
+  if (!question && !selected) return toast("请选择客户或输入客户问题");
   $("#aiResult").innerHTML = '<div class="ai-loading">小智正在结合客户资料与知识库分析...</div>';
-  const result = customerId
-    ? await api(`/ai/customers/${customerId}/advice`, { method: "POST", body: { question } })
+  const result = selected
+    ? await api(`/ai/customers/${selected.customerId}/advice`, { method: "POST", body: { question, opportunityId } })
     : await api("/ai/script", { method: "POST", body: { question, user: currentUser() } });
   if (!result.advice) {
     $("#aiResult").innerHTML = `<pre>${escapeHtml(result.answer || "暂无结果")}</pre>`;
@@ -1332,21 +1451,21 @@ async function recommend() {
     followUpDraft: "跟进记录草稿",
     riskReminder: "风险提醒"
   };
-  $("#aiResult").innerHTML = `${Object.entries(labels).map(([key, label]) => `<section class="ai-advice-card"><h3>${label}</h3>${key === "followUpDraft" ? `<textarea id="aiFollowDraft" rows="4">${escapeHtml(result.advice[key] || "")}</textarea><button type="button" id="saveAiFollowBtn" data-customer-id="${customerId}">确认并保存为跟进记录</button>` : `<p>${escapeHtml(result.advice[key] || "未识别")}</p>`}</section>`).join("")}<section class="ai-citations"><h3>参考知识来源</h3>${(result.citations || []).length ? result.citations.map((item) => `<article><b>${escapeHtml(item.title)}</b>${item.fileUrl ? `<a href="${escapeHtml(item.fileUrl)}" target="_blank">${escapeHtml(item.fileName || "查看文件")}</a>` : ""}<p>${escapeHtml(item.summary || "")}</p></article>`).join("") : "<p>本次没有命中明确知识来源。</p>"}</section>`;
+  $("#aiResult").innerHTML = `${Object.entries(labels).map(([key, label]) => `<section class="ai-advice-card"><h3>${label}</h3>${key === "followUpDraft" ? `<textarea id="aiFollowDraft" rows="4">${escapeHtml(result.advice[key] || "")}</textarea><button type="button" id="saveAiFollowBtn" data-opportunity-id="${opportunityId}">确认并保存为跟进记录</button>` : `<p>${escapeHtml(result.advice[key] || "未识别")}</p>`}</section>`).join("")}<section class="ai-citations"><h3>参考知识来源</h3>${(result.citations || []).length ? result.citations.map((item) => `<article><b>${escapeHtml(item.title)}</b>${item.fileUrl ? `<a href="${escapeHtml(item.fileUrl)}" target="_blank">${escapeHtml(item.fileName || "查看文件")}</a>` : ""}<p>${escapeHtml(item.summary || "")}</p></article>`).join("") : "<p>本次没有命中明确知识来源。</p>"}</section>`;
 }
 
 async function saveAiFollowDraft() {
   const button = $("#saveAiFollowBtn");
-  const customerId = Number(button?.dataset.customerId || 0);
+  const opportunityId = Number(button?.dataset.opportunityId || 0);
   const note = $("#aiFollowDraft")?.value.trim();
-  if (!customerId || !note) return toast("跟进草稿不能为空");
-  await api(`/customers/${customerId}/follow`, { method: "POST", body: { note, date: today } });
+  if (!opportunityId || !note) return toast("跟进草稿不能为空");
+  await api(`/opportunities/${opportunityId}/follow`, { method: "POST", body: { note, date: today } });
   await loadState();
   toast("跟进记录已保存，客户归属保护时间已更新");
 }
 
 function analyzeCustomer(id) {
-  const customer = state.customers.find((item) => Number(item.id) === Number(id));
+  const customer = scopeOpportunityRows().find((item) => Number(item.id) === Number(id));
   if (!customer) return;
   if ($("#customerDialog")?.open) $("#customerDialog").close();
   switchView("assistant");
@@ -1396,6 +1515,7 @@ function renderAdmin() {
     .map((user) => `<article><b>${escapeHtml(user.name)}</b><span>${user.status || "启用"}</span><p>${escapeHtml(user.role)} · ${escapeHtml(user.unit || "待分配")} · ${escapeHtml(user.zone || "未分战区")} · 账号：${escapeHtml(user.account || user.username || user.phone || "-")}</p><div class="user-actions">${Number(user.id) === Number(currentUser().id) ? "" : `<button data-action="reset-password" data-id="${user.id}">重置密码</button><button data-action="offboard-user" data-id="${user.id}">离职交接</button><button data-action="delete-user" data-id="${user.id}">删除员工</button>`}</div></article>`)
     .join("");
   $("#competitorList").innerHTML = (state.competitors || []).map((item) => `<article><b><i class="competitor-swatch" style="background:${escapeHtml(item.color)}"></i>${escapeHtml(item.name)}</b><span>${item.active === false ? "停用" : "启用"}</span></article>`).join("");
+  $("#productList").innerHTML = (state.products || []).map((item) => `<article><b>${escapeHtml(item.name)}</b><span>${item.active === false ? "停用" : "启用"}</span></article>`).join("");
   $("#roleList").innerHTML = roles()
     .map((role) => `<article><b>${role.name}</b><span>${scopeLabels[role.customerScope] || role.customerScope}</span><p>${(role.permissions || []).map((permission) => permissionLabels[permission] || permission).join(" · ")}</p></article>`)
     .join("");
@@ -1482,6 +1602,15 @@ async function addCompetitor(event) {
   event.currentTarget.reset();
   await loadState();
   showSuccessFeedback("竞品添加成功", "竞品字典和客户档案选项已自动更新。");
+}
+
+async function addProduct(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  await api("/products", { method: "POST", body: { name: String(form.get("name") || "").trim() } });
+  event.currentTarget.reset();
+  await loadState();
+  showSuccessFeedback("产品添加成功", "产品已加入销售机会和客户导入选项。 ");
 }
 
 async function importUsers(event) {
@@ -1659,7 +1788,7 @@ function wireEvents() {
     customerPage = 1;
     renderCustomers();
   });
-  ["customerKeyword", "channelFilter", "createdByFilter", "followPersonFilter", "unitFilter", "stageTimeStart", "stageTimeEnd", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
+  ["customerKeyword", "channelFilter", "createdByFilter", "followPersonFilter", "unitFilter", "cityFilter", "stageTimeStart", "stageTimeEnd", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
     const resetAndRender = () => {
       dashboardDrilldownIds = null;
       customerPage = 1;
@@ -1719,19 +1848,22 @@ function wireEvents() {
     if (!button) return;
     const id = Number(button.dataset.id);
     if (button.dataset.action === "history") {
-      openFollowHistory(state.customers.find((item) => Number(item.id) === id));
+      openFollowHistory(scopeOpportunityRows().find((item) => Number(item.id) === id));
       return;
     }
-    if (button.dataset.action === "follow") openCustomerDialog(state.customers.find((item) => item.id === id));
+    if (button.dataset.action === "follow") openCustomerDialog(scopeOpportunityRows().find((item) => Number(item.id) === id));
     if (button.dataset.action === "ai") analyzeCustomer(id);
     if (button.dataset.action === "advance") advanceCustomer(id);
     if (button.dataset.action === "claim") claimCustomer(id);
+    if (button.dataset.action === "new-opportunity") openNewOpportunityDialog(id);
     if (button.dataset.action === "assign") {
       const select = button.parentElement.querySelector(`select[data-role="assign-owner"][data-id="${id}"]`);
       assignCustomer(id, select?.value);
     }
   });
   $("#customerForm").addEventListener("submit", saveCustomer);
+  $("#advanceForm").addEventListener("submit", submitAdvance);
+  $("#newOpportunityForm").addEventListener("submit", submitNewOpportunity);
   $("#addContactBtn").addEventListener("click", () => renderContactsEditor([...readContactsEditor(), { name: "", phone: "", isPrimary: false }]));
   $("#customerContactsEditor").addEventListener("click", (event) => {
     const button = event.target.closest("[data-remove-contact], [data-set-primary-contact]");
@@ -1751,7 +1883,7 @@ function wireEvents() {
     const index = Number(button.closest(".competitor-row").dataset.index);
     renderCompetitorProfilesEditor(readCompetitorProfilesEditor().filter((_, itemIndex) => itemIndex !== index));
   });
-  $("#customerAiBtn").addEventListener("click", () => analyzeCustomer(Number($("#customerForm [name=id]").value)));
+  $("#customerAiBtn").addEventListener("click", () => analyzeCustomer(Number($("#customerForm [name=opportunityId]").value)));
   $("#customerArchiveBtn").addEventListener("click", () => archiveCustomerFromDialog().catch((error) => toast(error.message)));
   $("#followHistoryList").addEventListener("click", (event) => {
     const button = event.target.closest("[data-restore-customer]");
@@ -1769,6 +1901,7 @@ function wireEvents() {
   $("#roleForm").addEventListener("submit", addRole);
   $("#unitForm").addEventListener("submit", addUnit);
   $("#competitorForm").addEventListener("submit", addCompetitor);
+  $("#productForm").addEventListener("submit", addProduct);
   $("#openUserImportBtn").addEventListener("click", () => $("#userImportDialog").showModal());
   $("#userImportForm").addEventListener("submit", importUsers);
   $("#offboardForm").addEventListener("submit", submitOffboard);

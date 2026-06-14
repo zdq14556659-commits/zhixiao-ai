@@ -63,7 +63,7 @@
       <view class="form-item"><text class="label">客户电话</text><input name="phone" type="number" value="{{form.phone}}" placeholder="客户手机号" /></view>
       <view class="form-item"><text class="label">数量*开料设备</text><input name="cuttingDevice" value="{{form.cuttingDevice}}" placeholder="2*电子锯" /></view>
       <view class="form-item"><text class="label">数量*打孔设备</text><input name="drillingDevice" value="{{form.drillingDevice}}" placeholder="1*六面钻" /></view>
-      <view class="form-item"><text class="label">现使用软件</text><input name="software" value="{{form.software}}" placeholder="酷家乐 + Excel排产" /></view>
+      <view class="form-item"><text class="label">当前使用软件</text><picker range="{{softwareOptions}}" value="{{softwareIndex}}" bindchange="onSoftware"><view class="picker-box">{{softwareOptions[softwareIndex]}}</view></picker><input name="software" value="{{softwareOptions[softwareIndex]}}" hidden /></view>
       <view class="form-item"><text class="label">软件版本价格</text><input name="softwarePrice" value="{{form.softwarePrice}}" placeholder="基础版 / 每年3万" /></view>
       <view class="form-item"><text class="label">市场状态</text><picker range="{{statuses}}" value="{{statusIndex}}" bindchange="onStatus"><view class="picker-box">{{statuses[statusIndex]}}</view></picker></view>
       <view class="form-item"><text class="label">客户异议</text><input name="objections" value="{{form.objections}}" placeholder="价格、迁移、员工学习成本等" /></view>

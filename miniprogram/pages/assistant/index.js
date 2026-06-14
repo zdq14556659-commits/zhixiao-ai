@@ -7,28 +7,30 @@ Page({
     customerNames: [],
     customerIndex: 0,
     selectedCustomerId: 0,
+    selectedOpportunityId: 0,
     result: null,
     followDraft: "",
     savingDraft: false
   },
 
   onLoad(options) {
-    this.pendingCustomerId = Number(options.customerId || 0);
+    this.pendingOpportunityId = Number(options.opportunityId || 0);
   },
 
   onShow() {
     if (!app.ensureLogin()) return;
     app.loadRemoteState(() => {
-      const customers = app.scopeCustomers().filter((item) => item.ownershipStatus !== "public_pool" && item.lifecycleStatus !== "archived");
-      const selectedCustomerId = this.pendingCustomerId || this.data.selectedCustomerId || customers[0]?.id || 0;
-      const customerIndex = Math.max(0, customers.findIndex((item) => Number(item.id) === Number(selectedCustomerId)));
+      const customers = app.scopeOpportunityRows();
+      const selectedOpportunityId = this.pendingOpportunityId || this.data.selectedOpportunityId || customers[0]?.id || 0;
+      const customerIndex = Math.max(0, customers.findIndex((item) => Number(item.id) === Number(selectedOpportunityId)));
       this.setData({
         customers,
-        customerNames: customers.map((item) => `${item.name} · ${item.stage}`),
+        customerNames: customers.map((item) => `${item.name} · ${item.productName || "待确认产品"} · ${item.stage}`),
         customerIndex,
-        selectedCustomerId: customers[customerIndex]?.id || 0
+        selectedCustomerId: customers[customerIndex]?.customerId || 0,
+        selectedOpportunityId: customers[customerIndex]?.id || 0
       });
-      this.pendingCustomerId = 0;
+      this.pendingOpportunityId = 0;
     });
   },
 
@@ -38,7 +40,7 @@ Page({
 
   onCustomer(event) {
     const customerIndex = Number(event.detail.value);
-    this.setData({ customerIndex, selectedCustomerId: this.data.customers[customerIndex]?.id || 0, result: null, followDraft: "" });
+    this.setData({ customerIndex, selectedCustomerId: this.data.customers[customerIndex]?.customerId || 0, selectedOpportunityId: this.data.customers[customerIndex]?.id || 0, result: null, followDraft: "" });
   },
 
   onDraftInput(event) {
@@ -54,7 +56,7 @@ Page({
     try {
       const result = await app.requestApi(`/ai/customers/${this.data.selectedCustomerId}/advice`, {
         method: "POST",
-        data: { question: this.data.question.trim() }
+        data: { question: this.data.question.trim(), opportunityId: this.data.selectedOpportunityId }
       });
       this.setData({ result, followDraft: result.advice?.followUpDraft || "" });
     } catch (error) {
@@ -72,7 +74,7 @@ Page({
     }
     this.setData({ savingDraft: true });
     try {
-      await app.requestApi(`/customers/${this.data.selectedCustomerId}/follow`, {
+      await app.requestApi(`/opportunities/${this.data.selectedOpportunityId}/follow`, {
         method: "POST",
         data: { note, nextFollow: app.globalData.today }
       });

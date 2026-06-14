@@ -84,31 +84,31 @@ async function run() {
 
   for (let index = 0; index < 2; index += 1) {
     const visit = await request("/visits", { method: "POST", token: salesA, body: {
-      customerId: first.data.id, factory: first.data.name, phone: first.data.phone, status: "线索",
+      customerId: first.data.customerId, opportunityId: first.data.id, factory: first.data.name, phone: first.data.phone, status: "线索",
       latitude: 30.28, longitude: 120.16, city: "杭州市", address: "浙江省杭州市余杭区测试路1号",
       result: `第${index + 1}次拜访`, ownerId: 2, owner: "销售甲", date: "2026-06-13"
     } });
     assert.equal(visit.status, 201);
   }
   const map = await request("/map/points", { token: salesA });
-  const point = map.data.points.find((item) => Number(item.customerId) === Number(first.data.id));
+  const point = map.data.points.find((item) => Number(item.customerId) === Number(first.data.customerId));
   assert.equal(point.visitCount, 2);
-  assert.equal(map.data.points.filter((item) => Number(item.customerId) === Number(first.data.id)).length, 1);
+  assert.equal(map.data.points.filter((item) => Number(item.customerId) === Number(first.data.customerId)).length, 1);
 
-  const advice = await request(`/ai/customers/${first.data.id}/advice`, { method: "POST", token: salesA, body: { question: "客户担心历史数据迁移" } });
+  const advice = await request(`/ai/customers/${first.data.customerId}/advice`, { method: "POST", token: salesA, body: { question: "客户担心历史数据迁移", opportunityId: first.data.id } });
   assert.equal(advice.status, 200);
   ["intention", "coreObjection", "recommendedScript", "communicationGoal", "nextAction", "followUpDraft", "riskReminder"].forEach((key) => assert.ok(advice.data.advice[key]));
   assert.ok(advice.data.citations.length);
 
-  const archive = await request(`/customers/${first.data.id}/archive`, { method: "POST", token: salesA, body: { reason: "closed" } });
+  const archive = await request(`/customers/${first.data.customerId}/archive`, { method: "POST", token: salesA, body: { reason: "closed" } });
   assert.equal(archive.status, 200);
   const archivedMap = await request("/map/points?pointStatus=archived", { token: salesA });
-  assert.ok(archivedMap.data.points.some((item) => Number(item.customerId) === Number(first.data.id) && item.pointStatus === "archived"));
+  assert.ok(archivedMap.data.points.some((item) => Number(item.customerId) === Number(first.data.customerId) && item.pointStatus === "archived"));
 
   const offboard = await request("/users/2/offboard", { method: "POST", token: admin, body: { receiverId: 3 } });
   assert.equal(offboard.status, 200);
   const migrated = JSON.parse(fs.readFileSync(path.join(tempDir, "db.json"), "utf8"));
-  assert.equal(migrated.version, "backend-v6");
+  assert.equal(migrated.version, "backend-v7");
   assert.ok(migrated.competitors.length >= 5);
   assert.ok(!Object.prototype.hasOwnProperty.call(migrated.users[0], "password"));
 }

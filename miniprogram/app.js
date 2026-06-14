@@ -15,6 +15,13 @@ const DEFAULT_ROLES = [
   { id: "role-admin", name: "管理员", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] }
 ];
 const DEFAULT_UNITS = [];
+const DEFAULT_PRODUCTS = [
+  { id: "product-v1", name: "V1", active: true },
+  { id: "product-v3-upgrade", name: "V3升级", active: true },
+  { id: "product-erp", name: "ERP", active: true },
+  { id: "product-render", name: "渲染软件", active: true },
+  { id: "product-other", name: "其他", active: true }
+];
 const LEGACY_DEMO_UNIT_IDS = [
   "unit-east-custom",
   "unit-south-custom",
@@ -71,6 +78,7 @@ const today = getChinaToday();
 function migrateLocalState(state = seedState) {
   return {
     ...state,
+    products: state.products?.length ? state.products : DEFAULT_PRODUCTS,
     units: (state.units || []).filter((unit) => unit && !LEGACY_DEMO_UNIT_IDS.includes(unit.id)),
     users: (state.users || []).map((user) => LEGACY_DEMO_UNIT_IDS.includes(user.unitId)
       ? { ...user, unitId: "", unit: "待分配" }
@@ -83,6 +91,7 @@ const seedState = {
   currentUserId: 0,
   stages: ["名单", "线索", "商机", "成交"],
   zones: ZONES,
+  products: DEFAULT_PRODUCTS,
   roles: DEFAULT_ROLES,
   units: DEFAULT_UNITS,
   users: [
@@ -488,6 +497,34 @@ App({
     const state = this.getState();
     const currentUser = this.getCurrentUser();
     return (state.customers || []).filter((customer) => this.canSeeRecord(customer, currentUser));
+  },
+
+  opportunityRow(opportunity = {}) {
+    const state = this.getState();
+    const customer = (state.customers || []).find((item) => Number(item.id) === Number(opportunity.customerId)) || {};
+    return {
+      ...customer,
+      ...opportunity,
+      id: opportunity.id,
+      opportunityId: opportunity.id,
+      customerId: customer.id || opportunity.customerId,
+      name: customer.name || opportunity.name || "未命名客户",
+      phone: customer.phone || opportunity.phone || "",
+      contacts: customer.contacts || opportunity.contacts || [],
+      competitorProfiles: customer.competitorProfiles || opportunity.competitorProfiles || [],
+      photos: customer.photos || opportunity.photos || [],
+      address: customer.address || opportunity.address || "",
+      city: customer.city || customer.location?.city || opportunity.city || "待识别",
+      channelSource: customer.channelSource || opportunity.channelSource || "其他"
+    };
+  },
+
+  scopeOpportunityRows() {
+    const state = this.getState();
+    const opportunities = state.opportunities?.length
+      ? state.opportunities
+      : (state.customers || []).map((customer) => ({ ...customer, id: customer.id, customerId: customer.id, productName: "待确认产品" }));
+    return opportunities.map((item) => this.opportunityRow(item)).filter((item) => item.ownershipStatus !== "public_pool" && item.lifecycleStatus !== "archived");
   },
 
   scopeVisits() {

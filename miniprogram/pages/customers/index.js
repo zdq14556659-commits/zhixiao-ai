@@ -13,6 +13,8 @@ Page({
     ownerIndex: 0,
     regions: ["全部"],
     regionIndex: 0,
+    cities: ["全部"],
+    cityIndex: 0,
     stageTimeLabel: "录入时间",
     stageStartDate: "",
     stageEndDate: "",
@@ -31,7 +33,21 @@ Page({
     pageSizeIndex: 0,
     totalPages: 1,
     canAssign: false,
-    canImportPublic: false
+    canImportPublic: false,
+    publicPoolError: "",
+    advanceOpen: false,
+    advanceItem: null,
+    advanceTargetStage: "",
+    advanceDemoAt: "",
+    advanceContractAmount: "",
+    advancePaymentAmount: "",
+    advancePaymentDate: "",
+    advanceNote: "",
+    advanceNextFollow: "",
+    newOpportunityOpen: false,
+    newOpportunityCustomerId: 0,
+    products: [],
+    productIndex: 0
   },
 
   onLoad(options) {
@@ -40,6 +56,9 @@ Page({
 
   onShow() {
     if (!app.ensureLogin()) return;
+    this.publicPoolRequested = false;
+    this.publicPoolItems = [];
+    this.publicPoolCount = 0;
     this.consumeDashboardDrilldown();
     app.loadRemoteState(() => this.loadData());
   },
@@ -55,19 +74,38 @@ Page({
     const state = app.getState();
     const currentUser = app.getCurrentUser();
     const role = app.getRole(currentUser);
-    const customers = app.scopeCustomers().filter((customer) => customer.lifecycleStatus !== "archived");
+    const privateCustomers = app.scopeOpportunityRows();
+    const customers = this.data.currentStage === "公海" ? (this.publicPoolItems || []) : privateCustomers;
+    if (!this.publicPoolRequested) {
+      this.publicPoolRequested = true;
+      app.requestApi("/public-pool")
+        .then((result) => {
+          this.publicPoolItems = Array.isArray(result.items) ? result.items : [];
+          this.publicPoolCount = Number(result.count || this.publicPoolItems.length);
+          this.setData({ publicPoolError: "" });
+          this.loadData();
+        })
+        .catch(() => {
+          this.publicPoolItems = [];
+          this.publicPoolCount = 0;
+          this.setData({ publicPoolError: "公海加载失败，请稍后重试" });
+          this.loadData();
+        });
+    }
     const channelSources = ["全部", ...app.globalData.channelSources];
     const owners = role.customerScope === "self" ? [currentUser.name] : ["全部", ...app.visibleSales().map((user) => user.name)];
     const assignOwners = app.visibleSales();
     const regions = ["全部", ...Array.from(new Set(customers.map((item) => item.region).filter(Boolean)))];
+    const cities = ["全部", ...Array.from(new Set(customers.map((item) => item.city).filter(Boolean)))];
     const channelIndex = Math.min(this.data.channelIndex, channelSources.length - 1);
     const ownerIndex = Math.min(this.data.ownerIndex, owners.length - 1);
     const regionIndex = Math.min(this.data.regionIndex, regions.length - 1);
+    const cityIndex = Math.min(this.data.cityIndex, cities.length - 1);
     const stageTabs = [...state.stages, "公海"].map((stage) => ({
       name: stage,
       count: stage === "公海"
-        ? customers.filter((customer) => customer.ownershipStatus === "public_pool").length
-        : customers.filter((customer) => customer.stage === stage && customer.ownershipStatus !== "public_pool").length
+        ? this.publicPoolCount || 0
+        : privateCustomers.filter((customer) => customer.stage === stage).length
     }));
     this.setData({
       customers,
@@ -76,8 +114,11 @@ Page({
       owners,
       assignOwners,
       regions,
+      cities,
       ownerIndex,
       regionIndex,
+      cityIndex,
+      products: (state.products || []).filter((item) => item.active !== false),
       stageTimeLabel: this.stageTimeConfig(this.data.currentStage).label,
       canAssign: this.canAssignCustomers(),
       canImportPublic: app.canAdmin(),
@@ -89,7 +130,7 @@ Page({
     const currentStage = event.currentTarget.dataset.stage;
     this.dashboardCustomerIds = [];
     this.setData({ currentStage, stageTimeLabel: this.stageTimeConfig(currentStage).label, page: 1 });
-    this.applyFilters();
+    this.loadData();
   },
 
   onKeyword(event) {
@@ -112,6 +153,11 @@ Page({
 
   onRegion(event) {
     this.setData({ regionIndex: Number(event.detail.value) });
+    this.applyFilters();
+  },
+
+  onCity(event) {
+    this.setData({ cityIndex: Number(event.detail.value) });
     this.applyFilters();
   },
 
@@ -175,17 +221,20 @@ Page({
     const channel = this.data.channelSources[this.data.channelIndex];
     const owner = this.data.owners[this.data.ownerIndex];
     const region = this.data.regions[this.data.regionIndex];
+    const city = this.data.cities[this.data.cityIndex];
     const status = this.data.followStatuses[this.data.followStatusIndex];
     const filtered = this.data.customers.filter((item) => {
       const itemChannel = app.normalizeChannelSource(item.channelSource);
-      const source = `${item.name} ${item.phone} ${item.software} ${item.lastNote}`.toLowerCase();
+      const primarySoftware = item.competitorProfiles?.find((profile) => profile.isPrimary)?.brand || item.software || "";
+      const source = `${item.name} ${item.phone} ${primarySoftware} ${item.productName || ""} ${item.lastNote || ""}`.toLowerCase();
       const isPublicPool = item.ownershipStatus === "public_pool";
       if (this.data.currentStage === "公海" ? !isPublicPool : (isPublicPool || item.stage !== this.data.currentStage)) return false;
-      if (this.dashboardCustomerIds?.length && !this.dashboardCustomerIds.includes(Number(item.id))) return false;
+      if (this.dashboardCustomerIds?.length && !this.dashboardCustomerIds.includes(Number(item.id)) && !this.dashboardCustomerIds.includes(Number(item.customerId))) return false;
       if (keyword && !source.includes(keyword)) return false;
       if (channel !== "全部" && itemChannel !== channel) return false;
-      if (owner !== "全部" && item.owner !== owner) return false;
+      if (this.data.currentStage !== "公海" && owner !== "全部" && item.owner !== owner) return false;
       if (region !== "全部" && item.region !== region) return false;
+      if (city !== "全部" && item.city !== city) return false;
       if (!this.inDateRange(this.customerStageTime(item), this.data.stageStartDate, this.data.stageEndDate)) return false;
       if (!this.inDateRange(String(item.lastFollow || "").slice(0, 10), this.data.lastStartDate, this.data.lastEndDate)) return false;
       if (!this.inDateRange(String(item.nextFollow || "").slice(0, 10), this.data.nextStartDate, this.data.nextEndDate)) return false;
@@ -205,7 +254,8 @@ Page({
       canAssign: this.data.canAssign && app.canSeePrivateRecord(item) && this.isCustomerAssignable(item),
       poolHint: role.customerScope === "self" ? "公海客户需先认领" : "不在您的分配范围",
       photoCount: Array.isArray(item.photos) ? item.photos.length : 0,
-      firstPhoto: Array.isArray(item.photos) && item.photos.length ? item.photos[0] : ""
+      firstPhoto: Array.isArray(item.photos) && item.photos.length ? item.photos[0] : "",
+      primarySoftware: primarySoftware || "软件待补充"
     }));
     const totalPages = Math.max(Math.ceil(filtered.length / this.data.pageSize), 1);
     const page = Math.min(this.data.page, totalPages);
@@ -220,6 +270,7 @@ Page({
       channelIndex: 0,
       ownerIndex: 0,
       regionIndex: 0,
+      cityIndex: 0,
       stageStartDate: "",
       stageEndDate: "",
       lastStartDate: "",
@@ -269,7 +320,7 @@ Page({
       wx.showToast({ title: "请先认领公海客户", icon: "none" });
       return;
     }
-    wx.navigateTo({ url: `/pages/customer-form/index?id=${id}` });
+    wx.navigateTo({ url: `/pages/customer-form/index?id=${customer.customerId || id}&opportunityId=${id}` });
   },
 
   callCustomer(event) {
@@ -285,54 +336,95 @@ Page({
   },
 
   goFollow(event) {
-    wx.navigateTo({ url: `/pages/follow/index?id=${event.currentTarget.dataset.id}` });
+    const opportunity = this.data.filtered.find((item) => Number(item.id) === Number(event.currentTarget.dataset.id));
+    if (!opportunity) return;
+    wx.navigateTo({ url: `/pages/follow/index?id=${opportunity.customerId}&opportunityId=${opportunity.id}` });
   },
 
   advanceCustomer(event) {
     const id = Number(event.currentTarget.dataset.id);
-    const state = app.getState();
-    const stages = state.stages;
-    const index = state.customers.findIndex((item) => item.id === id);
-    if (index < 0) return;
-    const customer = state.customers[index];
+    const customer = this.data.filtered.find((item) => Number(item.id) === id);
+    if (!customer) return;
+    const stages = app.getState().stages;
     const stageIndex = stages.indexOf(customer.stage);
     if (stageIndex >= stages.length - 1) {
-      wx.showToast({ title: "已成交", icon: "none" });
+      this.openNewOpportunity(event);
       return;
     }
     const nextStage = stages[stageIndex + 1];
-    if (nextStage === "商机" && !customer.demoAt) {
-      wx.showToast({ title: "请先填写有效演示时间", icon: "none" });
-      setTimeout(() => wx.navigateTo({ url: `/pages/customer-form/index?id=${id}` }), 500);
-      return;
-    }
-    if (nextStage === "成交" && Number(customer.contractAmount || 0) <= 0) {
-      wx.showToast({ title: "请先填写合同金额", icon: "none" });
-      setTimeout(() => wx.navigateTo({ url: `/pages/customer-form/index?id=${id}` }), 500);
-      return;
-    }
-    const nextCustomer = {
-      ...customer,
-      stage: nextStage,
-      lastFollow: app.globalData.today,
-      nextFollow: app.globalData.today,
-      lastNote: `客户推进至${nextStage}阶段。`
-    };
-    wx.showLoading({ title: "推进中" });
-    app
-      .requestApi(`/customers/${id}`, { method: "PUT", data: nextCustomer })
-      .then(() => {
-        app.loadRemoteState(() => {
-          wx.hideLoading();
-          this.setData({ currentStage: nextStage, page: 1 });
-          this.loadData();
-          wx.showToast({ title: "已推进" });
-        });
-      })
-      .catch((error) => {
-        wx.hideLoading();
-        wx.showToast({ title: error.message || "推进失败", icon: "none" });
+    if (nextStage === "线索") {
+      wx.showModal({
+        title: "推进为线索",
+        content: `${customer.name} · ${customer.productName || "待确认产品"}`,
+        success: (result) => result.confirm && this.submitAdvanceRequest(customer, nextStage, {})
       });
+      return;
+    }
+    this.setData({
+      advanceOpen: true,
+      advanceItem: customer,
+      advanceTargetStage: nextStage,
+      advanceDemoAt: customer.demoAt || app.globalData.today,
+      advanceContractAmount: customer.contractAmount || "",
+      advancePaymentAmount: customer.paymentAmount || "",
+      advancePaymentDate: customer.paymentDate || "",
+      advanceNote: "",
+      advanceNextFollow: customer.nextFollow || ""
+    });
+  },
+
+  closeAdvance() { this.setData({ advanceOpen: false, advanceItem: null }); },
+  onAdvanceDemoAt(event) { this.setData({ advanceDemoAt: event.detail.value }); },
+  onAdvancePaymentDate(event) { this.setData({ advancePaymentDate: event.detail.value }); },
+  onAdvanceNextFollow(event) { this.setData({ advanceNextFollow: event.detail.value }); },
+  onAdvanceField(event) { this.setData({ [event.currentTarget.dataset.field]: event.detail.value }); },
+
+  submitAdvanceForm() {
+    const item = this.data.advanceItem;
+    if (!item) return;
+    this.submitAdvanceRequest(item, this.data.advanceTargetStage, {
+      demoAt: this.data.advanceDemoAt,
+      contractAmount: Number(this.data.advanceContractAmount || 0),
+      paymentAmount: Number(this.data.advancePaymentAmount || 0),
+      paymentDate: this.data.advancePaymentDate,
+      paymentOwnerId: app.getCurrentUser().id,
+      note: this.data.advanceNote,
+      nextFollow: this.data.advanceNextFollow
+    });
+  },
+
+  submitAdvanceRequest(item, nextStage, data) {
+    wx.showLoading({ title: "推进中" });
+    app.requestApi(`/opportunities/${item.id}/advance`, { method: "POST", data })
+      .then(() => app.loadRemoteState(() => {
+        wx.hideLoading();
+        this.setData({ currentStage: nextStage, page: 1, advanceOpen: false, advanceItem: null });
+        this.publicPoolRequested = false;
+        this.loadData();
+        wx.showToast({ title: `已推进至${nextStage}`, icon: "success" });
+      }))
+      .catch((error) => { wx.hideLoading(); wx.showToast({ title: error.message || "推进失败", icon: "none" }); });
+  },
+
+  openNewOpportunity(event) {
+    const item = this.data.filtered.find((row) => Number(row.id) === Number(event.currentTarget.dataset.id));
+    if (!item) return;
+    this.setData({ newOpportunityOpen: true, newOpportunityCustomerId: item.customerId, productIndex: 0 });
+  },
+  closeNewOpportunity() { this.setData({ newOpportunityOpen: false }); },
+  onProduct(event) { this.setData({ productIndex: Number(event.detail.value) }); },
+  submitNewOpportunity() {
+    const product = this.data.products[this.data.productIndex];
+    if (!product) return wx.showToast({ title: "请选择产品", icon: "none" });
+    wx.showLoading({ title: "创建中" });
+    app.requestApi(`/customers/${this.data.newOpportunityCustomerId}/opportunities`, { method: "POST", data: { productId: product.id } })
+      .then(() => app.loadRemoteState(() => {
+        wx.hideLoading();
+        this.setData({ newOpportunityOpen: false, currentStage: "线索", page: 1 });
+        this.loadData();
+        wx.showToast({ title: "新机会已创建", icon: "success" });
+      }))
+      .catch((error) => { wx.hideLoading(); wx.showToast({ title: error.message || "创建失败", icon: "none" }); });
   },
 
   canAssignCustomers() {
@@ -360,14 +452,14 @@ Page({
       success: (result) => {
         if (!result.confirm) return;
         wx.showLoading({ title: "认领中" });
-        app.requestApi(`/customers/${id}/claim`, { method: "POST" })
+        app.requestApi(`/opportunities/${id}/claim`, { method: "POST" })
           .then((customer) => {
             app.loadRemoteState(() => {
               wx.hideLoading();
               this.setData({ currentStage: customer.stage || "名单", page: 1 });
               this.loadData();
               wx.showToast({ title: "认领成功", icon: "success" });
-              setTimeout(() => wx.navigateTo({ url: `/pages/follow/index?id=${customer.id}` }), 500);
+              setTimeout(() => wx.navigateTo({ url: `/pages/follow/index?id=${customer.customerId}&opportunityId=${customer.id}` }), 500);
             });
           })
           .catch((error) => {
@@ -392,7 +484,7 @@ Page({
         const target = owners[res.tapIndex];
         wx.showLoading({ title: "分配中" });
         app
-          .requestApi(`/customers/${id}/assign`, {
+          .requestApi(`/opportunities/${id}/assign`, {
             method: "POST",
             data: { ownerId: target.id, owner: target.name }
           })

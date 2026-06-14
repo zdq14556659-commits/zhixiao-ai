@@ -568,6 +568,7 @@ button:disabled {
 }
 
 .pool-action-hint { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.pool-private-value { color: var(--muted); font-size: 12px; }
 
 .locked-input {
   color: #7a8798;
@@ -838,6 +839,17 @@ button:disabled {
   vertical-align: -1px;
 }
 
+.competitor-details {
+  grid-column: 1 / -1;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f8fafc;
+}
+.competitor-details summary { cursor: pointer; color: var(--blue); font-weight: 700; }
+.competitor-details[open] { display: grid; grid-template-columns: repeat(3, minmax(120px, 1fr)); gap: 9px; }
+.competitor-details[open] summary { grid-column: 1 / -1; margin-bottom: 2px; }
+
 .template-link {
   display: inline-flex;
   align-items: center;
@@ -1024,5 +1036,6 @@ button:disabled {
   .import-result-actions .template-link { width: 100%; margin-right: 0; }
   .field-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .contact-row, .competitor-row { grid-template-columns: 1fr 1fr; }
+  .competitor-details[open] { grid-template-columns: 1fr; }
   .ai-advice-grid { grid-template-columns: 1fr; }
 }

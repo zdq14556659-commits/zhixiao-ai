@@ -146,11 +146,16 @@ async function run() {
   assert.equal(stateA.status, 200);
   assert.equal(stateB.status, 200);
   assert.equal(stateA.data.customers.find((item) => item.id === 1).ownershipStatus, "locked");
-  assert.equal(stateA.data.customers.find((item) => item.id === 2).ownershipStatus, "public_pool");
   assert.equal(stateA.data.customers.find((item) => item.id === 3).ownershipStatus, "locked");
-  assert.equal(stateA.data.customers.find((item) => item.id === 4).publicPoolReason, "new_customer_timeout");
-  assert.equal(stateA.data.customers.find((item) => item.id === 5).ownershipStatus, "public_pool");
-  assert.ok(stateB.data.customers.some((item) => item.id === 2));
+  assert.ok(!stateA.data.customers.some((item) => [2, 4, 5].includes(item.id)));
+  const publicPoolA = await request("/public-pool", { token: tokenA });
+  assert.ok([2, 4, 5].every((id) => publicPoolA.data.items.some((item) => item.customerId === id)));
+  assert.ok(publicPoolA.data.items.every((item) => item.phone === "认领后可见"));
+  assert.ok(!stateB.data.customers.some((item) => item.id === 2));
+  const publicPoolB = await request("/public-pool", { token: tokenB });
+  assert.equal(publicPoolB.status, 200);
+  assert.ok(publicPoolB.data.items.some((item) => item.customerId === 2));
+  assert.equal(publicPoolB.data.items.find((item) => item.customerId === 2).phone, "认领后可见");
   assert.ok(!stateB.data.customers.some((item) => item.id === 1));
   assert.ok(!stateB.data.customers.some((item) => item.id === 3));
 
@@ -209,8 +214,8 @@ async function run() {
   assert.equal(importResult.data.imported, 1);
   assert.equal(importResult.data.duplicates, 2);
   assert.equal(importResult.data.failed, 1);
-  assert.ok(importResult.data.skipped.some((item) => item.reason === "系统已有重复客户"));
-  assert.ok(importResult.data.skipped.some((item) => item.reason.includes("文件内手机号重复")));
+  assert.ok(importResult.data.skipped.some((item) => item.reason.includes("系统已有该客户")));
+  assert.ok(importResult.data.skipped.some((item) => item.reason.includes("文件内手机号")));
   assert.ok(importResult.data.failures.some((item) => item.reason === "手机号无效"));
   assert.ok(importResult.data.reportUrl);
 }

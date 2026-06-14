@@ -87,7 +87,7 @@ async function run() {
 
   const migratedText = fs.readFileSync(path.join(tempDir, "db.json"), "utf8");
   const migrated = JSON.parse(migratedText);
-  assert.equal(migrated.version, "backend-v6");
+  assert.equal(migrated.version, "backend-v7");
   assert.ok(migrated.users.every((user) => user.passwordHash && user.passwordSalt));
   assert.ok(migrated.users.every((user) => !("password" in user) && !("initialPassword" in user)));
   assert.ok(fs.existsSync(path.join(tempDir, "db.backup.json")));
@@ -143,7 +143,7 @@ async function run() {
   assert.equal(duplicateImport.status, 201);
   assert.equal(duplicateImport.data.imported, 0);
   assert.equal(duplicateImport.data.duplicates, 1);
-  assert.equal(duplicateImport.data.skipped[0].reason, "系统已有重复客户");
+  assert.equal(duplicateImport.data.skipped[0].reason, "系统已有该客户；如需创建增购机会，请填写意向产品");
   assert.ok(duplicateImport.data.reportUrl);
 
   const unitAdminLogin = await login("unitadmin", "123456", "10.0.0.12");

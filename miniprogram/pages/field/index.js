@@ -23,6 +23,8 @@ Page({
     nearbyPoints: [],
     radiusOptions: [5, 10, 20, 50],
     radiusIndex: 2,
+    softwareOptions: ["其他"],
+    softwareIndex: 0,
     routeSelectedIds: [],
     todayRoute: null,
     form: {}
@@ -30,8 +32,13 @@ Page({
 
   onShow() {
     if (!app.ensureLogin()) return;
-    app.loadRemoteState(() => {
-      this.setData({ currentUser: app.getCurrentUser(), visits: app.scopeVisits() });
+    app.loadRemoteState((remoteState) => {
+      const softwareOptions = (remoteState.competitors || app.getState().competitors || [])
+        .filter((item) => item.active !== false)
+        .map((item) => item.name)
+        .filter(Boolean);
+      if (!softwareOptions.includes("其他")) softwareOptions.push("其他");
+      this.setData({ currentUser: app.getCurrentUser(), visits: app.scopeVisits(), softwareOptions: softwareOptions.length ? softwareOptions : ["其他"] });
       this.centerOnSelf(() => this.refreshMapData());
     });
   },
@@ -136,8 +143,12 @@ Page({
   startVisitForPoint() {
     const point = this.data.selectedPoint;
     if (!point) return;
+    const software = point.competitor || point.software || "其他";
+    const matchedIndex = this.data.softwareOptions.indexOf(software);
+    const softwareIndex = matchedIndex >= 0 ? matchedIndex : Math.max(0, this.data.softwareOptions.indexOf("其他"));
     this.setData({
       form: { factory: point.name, phone: point.phone, software: point.competitor || point.software || "" },
+      softwareIndex,
       statusIndex: Math.max(0, this.data.statuses.indexOf(point.stage || "线索")),
       latitude: Number(point.latitude),
       longitude: Number(point.longitude),
@@ -221,6 +232,7 @@ Page({
   },
 
   onStatus(event) { this.setData({ statusIndex: Number(event.detail.value) }); },
+  onSoftware(event) { this.setData({ softwareIndex: Number(event.detail.value) }); },
 
   choosePhotos() {
     wx.chooseMedia({ count: 6 - this.data.photos.length, mediaType: ["image"], sourceType: ["album", "camera"], success: (res) => this.setData({ photos: [...this.data.photos, ...res.tempFiles.map((item) => item.tempFilePath)].slice(0, 6) }) });
@@ -258,6 +270,9 @@ Page({
   editVisit(event) {
     const visit = this.data.visits.find((item) => Number(item.id) === Number(event.currentTarget.dataset.id));
     if (!visit) return;
+    const software = visit.software || "其他";
+    const matchedIndex = this.data.softwareOptions.indexOf(software);
+    const softwareIndex = matchedIndex >= 0 ? matchedIndex : Math.max(0, this.data.softwareOptions.indexOf("其他"));
     this.setData({
       editingVisitId: Number(visit.id),
       statusIndex: Math.max(0, this.data.statuses.indexOf(visit.status || "线索")),
@@ -269,6 +284,7 @@ Page({
       currentAddress: visit.address || "",
       locationReady: Boolean(visit.latitude && visit.longitude),
       selectedPoint: this.data.points.find((item) => Number(item.customerId) === Number(visit.customerId)) || null,
+      softwareIndex,
       form: { factory: visit.factory || "", phone: visit.phone || "", cuttingDevice: visit.cuttingDevice || "", drillingDevice: visit.drillingDevice || "", software: visit.software || "", softwarePrice: visit.softwarePrice || "", lossReason: visit.lossReason || "", objections: visit.objections || "", result: visit.result || "" }
     });
     wx.pageScrollTo({ scrollTop: 980, duration: 220 });
@@ -277,7 +293,7 @@ Page({
   cancelEdit() { this.resetVisitForm(); },
 
   resetVisitForm() {
-    this.setData({ editingVisitId: 0, form: {}, photos: [], statusIndex: 1, currentCity: "", currentAddress: "", locationReady: false, selectedPoint: null });
+    this.setData({ editingVisitId: 0, form: {}, photos: [], statusIndex: 1, softwareIndex: 0, currentCity: "", currentAddress: "", locationReady: false, selectedPoint: null });
   },
 
   async submitVisit(event) {
@@ -295,7 +311,7 @@ Page({
         phone: form.phone,
         cuttingDevice: form.cuttingDevice || "",
         drillingDevice: form.drillingDevice || "",
-        software: form.software || "待补充",
+        software: this.data.softwareOptions[this.data.softwareIndex] || "其他",
         softwarePrice: form.softwarePrice || "待补充",
         lossReason: form.lossReason || "",
         objections: form.objections || "",

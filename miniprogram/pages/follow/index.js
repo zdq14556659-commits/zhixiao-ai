@@ -3,6 +3,7 @@ const app = getApp();
 Page({
   data: {
     id: "",
+    opportunityId: "",
     customer: null,
     history: [],
     nextFollow: "2026-06-05"
@@ -12,11 +13,13 @@ Page({
     if (!app.ensureLogin()) return;
     const id = Number(options.id);
     const customer = app.getState().customers.find((item) => item.id === id);
-    const history = [...(customer?.followUps || [])].reverse().map((item) => ({
+    const opportunityId = Number(options.opportunityId || 0);
+    const opportunity = app.getState().opportunities?.find((item) => Number(item.id) === opportunityId);
+    const history = [...(opportunity?.followUps || customer?.followUps || [])].reverse().map((item) => ({
       ...item,
       displayTime: this.formatFollowTime(item)
     }));
-    this.setData({ id, customer, history, nextFollow: customer?.nextFollow || app.globalData.today });
+    this.setData({ id, opportunityId, customer: { ...customer, ...(opportunity || {}) }, history, nextFollow: opportunity?.nextFollow || customer?.nextFollow || app.globalData.today });
   },
 
   formatFollowTime(item = {}) {
@@ -42,7 +45,7 @@ Page({
     }
     wx.showLoading({ title: "保存中" });
     app
-      .requestApi(`/customers/${this.data.id}/follow`, {
+      .requestApi(`/opportunities/${this.data.opportunityId}/follow`, {
         method: "POST",
         data: {
           date: app.globalData.today,

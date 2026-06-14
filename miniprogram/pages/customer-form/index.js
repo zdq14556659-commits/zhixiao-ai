@@ -17,6 +17,9 @@ Page({
     expectedDealDate: "",
     paymentDate: "",
     editingId: 0,
+    editingOpportunityId: 0,
+    products: [],
+    productIndex: 0,
     identityLocked: false,
     contacts: [],
     competitorProfiles: [],
@@ -32,7 +35,9 @@ Page({
     const currentUser = app.getCurrentUser();
     const currentRole = app.getRole(currentUser);
     const paymentOwners = currentRole.customerScope === "self" ? [currentUser] : app.visibleUsers();
-    const customer = options.id ? (state.customers || []).find((item) => Number(item.id) === Number(options.id)) : null;
+    const master = options.id ? (state.customers || []).find((item) => Number(item.id) === Number(options.id)) : null;
+    const opportunity = options.opportunityId ? (state.opportunities || []).find((item) => Number(item.id) === Number(options.opportunityId)) : null;
+    const customer = master ? { ...master, ...(opportunity || {}), id: master.id, customerId: master.id } : null;
     const stageIndex = Math.max(0, this.data.stages.indexOf(customer?.stage || options.stage || "名单"));
     const ownerIndex = Math.max(0, owners.indexOf(customer?.owner || customer?.followPerson || owners[0]));
     const channelSources = app.globalData.channelSources;
@@ -42,8 +47,15 @@ Page({
       ? customer.contacts.map((item) => ({ ...item }))
       : [{ name: "", phone: customer?.phone || "", position: "", wechat: "", decisionRole: "", note: "", isPrimary: true }];
     const competitorProfiles = customer?.competitorProfiles?.length
-      ? customer.competitorProfiles.map((item) => ({ ...item }))
-      : [];
+      ? customer.competitorProfiles.map((item, index) => ({ ...item, isPrimary: index === 0, expanded: false }))
+      : [{ competitorId: state.competitors?.[0]?.id || "", brand: state.competitors?.[0]?.name || "其他", isPrimary: true, expanded: false }];
+    const products = (state.products || []).filter((item) => item.active !== false).map((item) => ({ ...item }));
+    let productIndex = products.findIndex((item) => item.id === opportunity?.productId);
+    if (opportunity?.productId && productIndex < 0) {
+      products.push({ id: opportunity.productId, name: opportunity.productName || "历史产品（待补充）", active: true, legacy: true });
+      productIndex = products.length - 1;
+    }
+    productIndex = Math.max(0, productIndex);
     this.setData({
       owners,
       ownerUsers,
@@ -55,6 +67,9 @@ Page({
       channelSources,
       channelIndex,
       editingId: customer ? Number(customer.id) : 0,
+      editingOpportunityId: opportunity ? Number(opportunity.id) : 0,
+      products,
+      productIndex,
       identityLocked: Boolean(customer) && !app.canAdmin(),
       contacts,
       competitorProfiles,
@@ -78,6 +93,10 @@ Page({
 
   onChannel(event) {
     this.setData({ channelIndex: Number(event.detail.value) });
+  },
+
+  onProduct(event) {
+    this.setData({ productIndex: Number(event.detail.value) });
   },
 
   onPaymentOwner(event) {
@@ -139,6 +158,11 @@ Page({
     this.setData({ [`competitorProfiles[${index}].${field}`]: event.detail.value });
   },
 
+  toggleCompetitorDetails(event) {
+    const index = Number(event.currentTarget.dataset.index);
+    this.setData({ [`competitorProfiles[${index}].expanded`]: !this.data.competitorProfiles[index].expanded });
+  },
+
   onCompetitorBrand(event) {
     const index = Number(event.currentTarget.dataset.index);
     const competitor = app.getState().competitors?.[Number(event.detail.value)] || {};
@@ -150,7 +174,7 @@ Page({
 
   addCompetitorProfile() {
     const first = app.getState().competitors?.[0] || {};
-    this.setData({ competitorProfiles: [...this.data.competitorProfiles, { competitorId: first.id || "", brand: first.name || "其他", version: "", price: "", expiresAt: "", satisfaction: "", switchingBarrier: "", note: "", isPrimary: this.data.competitorProfiles.length === 0 }] });
+    this.setData({ competitorProfiles: [...this.data.competitorProfiles, { competitorId: first.id || "", brand: first.name || "其他", version: "", price: "", expiresAt: "", satisfaction: "", switchingBarrier: "", note: "", isPrimary: false, expanded: false }] });
   },
 
   removeCompetitorProfile(event) {
@@ -167,7 +191,7 @@ Page({
 
   openCustomerAi() {
     if (!this.data.editingId) return;
-    wx.navigateTo({ url: `/pages/assistant/index?customerId=${this.data.editingId}` });
+    wx.navigateTo({ url: `/pages/assistant/index?opportunityId=${this.data.editingOpportunityId}` });
   },
 
   archiveCustomer() {
@@ -224,10 +248,13 @@ Page({
       phone,
       contacts: this.data.contacts.map((item) => ({ ...item, phone: item.isPrimary ? phone : item.phone })).filter((item) => item.isPrimary || item.name || item.phone),
       competitorProfiles: this.data.competitorProfiles.filter((item) => item.brand),
+      opportunityId: this.data.editingOpportunityId || undefined,
+      productId: (this.data.products[this.data.productIndex] || {}).id || "",
       channelSource: this.data.channelSources[this.data.channelIndex] || "其他",
       createdBy: previous.createdBy || app.getCurrentUser().name || "未记录",
       followPerson: ownerUser.name || this.data.owners[this.data.ownerIndex],
       address: form.address || "",
+      city: form.city || previous.city || "",
       stage,
       owner: this.data.owners[this.data.ownerIndex],
       ownerId: ownerUser.id || "",
@@ -244,7 +271,6 @@ Page({
       paymentDate: this.data.paymentDate,
       paymentOwnerId: (this.data.paymentOwners[this.data.paymentOwnerIndex] || app.getCurrentUser()).id,
       lossReason: form.lossReason || "",
-      software: form.software || "待补充",
       createdAt: previous.createdAt || app.globalData.today,
       lastFollow: app.globalData.today,
       nextFollow: this.data.nextFollow,
