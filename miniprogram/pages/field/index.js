@@ -298,13 +298,14 @@ Page({
 
   async submitVisit(event) {
     const form = event.detail.value;
+    const user = this.data.currentUser || app.getCurrentUser();
+    if (!user || !user.id) return wx.showToast({ title: "登录信息已失效，请重新登录", icon: "none" });
     if (!form.factory || !String(form.phone || "").trim()) return wx.showToast({ title: "请填写工厂名称和电话", icon: "none" });
     if (!this.data.photos.length) return wx.showToast({ title: "请至少上传1张现场图片", icon: "none" });
     if (!this.data.locationReady || !this.data.currentAddress) return wx.showToast({ title: "请先选择工厂位置", icon: "none" });
     try {
       wx.showLoading({ title: "上传中" });
       const photoUrls = await this.uploadPhotos(this.data.photos);
-      const user = this.data.currentUser;
       const visit = {
         customerId: this.data.selectedPoint?.customerId || 0,
         factory: form.factory,
@@ -337,7 +338,9 @@ Page({
       await this.refreshMapData();
       wx.showToast({ title: isEditing ? "已更新" : "已上传", icon: "success" });
     } catch (error) {
-      wx.showModal({ title: "上传失败", content: error.message || "请稍后重试", showCancel: false });
+      const rawMessage = String(error.message || "");
+      const content = /Cannot read properties|undefined|null/i.test(rawMessage) ? "系统未能保存本次打卡，请稍后重试" : (rawMessage || "请稍后重试");
+      wx.showModal({ title: "上传失败", content, showCancel: false });
     } finally {
       wx.hideLoading();
     }

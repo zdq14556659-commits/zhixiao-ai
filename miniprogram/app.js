@@ -89,6 +89,7 @@ function formatMoney(value) {
 function migrateLocalState(state = seedState) {
   return {
     ...state,
+    version: "mini-v6",
     products: state.products?.length ? state.products : DEFAULT_PRODUCTS,
     units: (state.units || []).filter((unit) => unit && !LEGACY_DEMO_UNIT_IDS.includes(unit.id)),
     users: (state.users || []).map((user) => LEGACY_DEMO_UNIT_IDS.includes(user.unitId)
@@ -98,7 +99,7 @@ function migrateLocalState(state = seedState) {
 }
 
 const seedState = {
-  version: "mini-v5",
+  version: "mini-v6",
   currentUserId: 0,
   stages: ["名单", "线索", "商机", "成交"],
   zones: ZONES,

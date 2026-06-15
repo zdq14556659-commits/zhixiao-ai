@@ -180,6 +180,27 @@ async function run() {
   assert.equal(forgedVisit.data.unitId, "unit-a");
   assert.equal(forgedVisit.data.zone, "东部战区");
 
+  const newFactoryVisit = await request("/visits", { method: "POST", token: salesA, body: {
+    customerId: 0,
+    factory: "无锡新地推工厂",
+    phone: "13800000008",
+    status: "线索",
+    latitude: 31.4912,
+    longitude: 120.3119,
+    city: "无锡市",
+    address: "江苏省无锡市测试路8号",
+    photos: ["/uploads/new-factory.jpg"],
+    result: "首次现场拜访",
+    moneyUnit: "yuan"
+  } });
+  assert.equal(newFactoryVisit.status, 201, JSON.stringify(newFactoryVisit.data));
+  assert.ok(newFactoryVisit.data.customerId);
+  assert.ok(newFactoryVisit.data.opportunityId);
+  const boardAfterVisit = await request("/customer-board", { token: salesA });
+  const newFactoryOpportunity = boardAfterVisit.data.items.find((item) => item.customerId === newFactoryVisit.data.customerId);
+  assert.equal(newFactoryOpportunity.productName, "待确认产品");
+  assert.equal(newFactoryOpportunity.stage, "线索");
+
   const unauthorizedRoute = await request("/routes", { method: "POST", token: salesA, body: { date: "2026-06-14", stops: [{ customerId: 102 }] } });
   assert.equal(unauthorizedRoute.status, 403);
   const publicRoute = await request("/routes", { method: "POST", token: salesA, body: { date: "2026-06-14", stops: [{ customerId: 103, owner: "销售乙", phone: "13800000003" }] } });

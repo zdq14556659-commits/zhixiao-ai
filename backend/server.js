@@ -2362,12 +2362,15 @@ function syncVisitToCustomer(state, visit) {
       }]
     }, state);
     state.customers.unshift(customer);
+    const productName = visit.productName || "待确认产品";
+    const product = resolveProduct(state, visit.productId || "", productName)
+      || normalizeProduct({ id: stableId("product", productName), name: productName });
     const opportunity = normalizeOpportunity({
       ...opportunityFromLegacyCustomer(customer),
       id: Date.now() + 2,
       customerId: customer.id,
-      productId: resolveProduct(state, visit.productId || visit.productName || "待确认产品").id,
-      productName: resolveProduct(state, visit.productId || visit.productName || "待确认产品").name,
+      productId: product.id,
+      productName: product.name,
       stage,
       followUps: customer.followUps,
       effectiveFollowUpAt: new Date().toISOString(),

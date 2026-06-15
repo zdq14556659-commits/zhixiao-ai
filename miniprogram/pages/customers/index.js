@@ -41,6 +41,10 @@ Page({
     publicPoolError: "",
     customerBoardLoading: false,
     customerBoardError: "",
+    currentStageTotal: 0,
+    filteredOut: false,
+    hasActiveFilters: false,
+    canFilterOwner: false,
     advanceOpen: false,
     advanceItem: null,
     advanceTargetStage: "",
@@ -64,21 +68,28 @@ Page({
 
   onShow() {
     if (!app.ensureLogin()) return;
+    const preserveFilters = Boolean(this.preserveFiltersOnNextShow);
+    this.preserveFiltersOnNextShow = false;
     this.privateOpportunityItems = [];
     this.publicPoolItems = [];
     this.publicPoolCount = 0;
-    this.consumeDashboardDrilldown();
-    app.loadRemoteState(() => {
-      this.loadData();
-      this.loadCustomerBoard();
-    });
+    const drilldown = this.consumeDashboardDrilldown();
+    const next = {};
+    if (drilldown.stage) Object.assign(next, { currentStage: drilldown.stage, page: 1 });
+    if (!preserveFilters && !drilldown.hasDrilldown) {
+      this.dashboardCustomerIds = [];
+      Object.assign(next, this.emptyFilters(), { page: 1, filtered: [], paged: [], filteredOut: false, publicPoolFilteredOut: false });
+    }
+    const load = () => app.loadRemoteState(() => this.loadCustomerBoard());
+    if (Object.keys(next).length) this.setData(next, load);
+    else load();
   },
 
   consumeDashboardDrilldown() {
     const drilldown = wx.getStorageSync("zhixiao_dashboard_drilldown") || {};
-    if (drilldown.stage) this.setData({ currentStage: drilldown.stage, page: 1 });
     this.dashboardCustomerIds = Array.isArray(drilldown.customerIds) ? drilldown.customerIds.map(Number) : [];
     wx.removeStorageSync("zhixiao_dashboard_drilldown");
+    return { stage: drilldown.stage || "", hasDrilldown: Boolean(drilldown.stage || this.dashboardCustomerIds.length) };
   },
 
   loadData() {
@@ -90,7 +101,8 @@ Page({
       : app.scopeOpportunityRows();
     const customers = this.data.currentStage === "公海" ? (this.publicPoolItems || []) : privateCustomers;
     const channelSources = ["全部", ...app.globalData.channelSources];
-    const owners = role.customerScope === "self" ? [currentUser.name] : ["全部", ...app.visibleSales().map((user) => user.name)];
+    const canFilterOwner = role.customerScope !== "self" && this.data.currentStage !== "公海";
+    const owners = canFilterOwner ? ["全部", ...app.visibleSales().map((user) => user.name)] : ["全部"];
     const assignOwners = app.visibleSales();
     const regions = ["全部", ...Array.from(new Set(customers.map((item) => item.region).filter(Boolean)))];
     const cities = ["全部", ...Array.from(new Set(customers.map((item) => item.city).filter(Boolean)))];
@@ -104,6 +116,7 @@ Page({
         ? this.publicPoolCount || 0
         : privateCustomers.filter((customer) => customer.stage === stage).length
     }));
+    const currentStageTotal = stageTabs.find((item) => item.name === this.data.currentStage)?.count || 0;
     this.setData({
       customers,
       channelSources,
@@ -119,7 +132,9 @@ Page({
       stageTimeLabel: this.stageTimeConfig(this.data.currentStage).label,
       canAssign: this.canAssignCustomers(),
       canImportPublic: app.canAdmin(),
+      canFilterOwner,
       publicPoolTotal: this.publicPoolCount || 0,
+      currentStageTotal,
       stageTabs
     }, () => this.applyFilters());
   },
@@ -139,8 +154,7 @@ Page({
           publicPoolLoaded: true,
           publicPoolTotal: this.publicPoolCount,
           publicPoolError: ""
-        });
-        this.loadData();
+        }, () => this.loadData());
       })
       .catch((error) => {
         this.privateOpportunityItems = [];
@@ -153,8 +167,7 @@ Page({
           publicPoolLoaded: false,
           publicPoolTotal: 0,
           publicPoolError: error.message || "公海加载失败，请检查网络后重试"
-        });
-        this.loadData();
+        }, () => this.loadData());
       });
   },
 
@@ -169,11 +182,9 @@ Page({
   switchStage(event) {
     const currentStage = event.currentTarget.dataset.stage;
     this.dashboardCustomerIds = [];
-    const next = { currentStage, stageTimeLabel: this.stageTimeConfig(currentStage).label, page: 1 };
-    if (currentStage === "公海") Object.assign(next, this.emptyFilters());
+    const next = { currentStage, stageTimeLabel: this.stageTimeConfig(currentStage).label, page: 1, ...this.emptyFilters() };
     this.setData(next, () => {
       this.loadData();
-      if (currentStage === "公海") this.loadPublicPool();
     });
   },
 
@@ -293,7 +304,7 @@ Page({
       if (this.dashboardCustomerIds?.length && !this.dashboardCustomerIds.includes(Number(item.id)) && !this.dashboardCustomerIds.includes(Number(item.customerId))) return false;
       if (keyword && !source.includes(keyword)) return false;
       if (channel !== "全部" && itemChannel !== channel) return false;
-      if (this.data.currentStage !== "公海" && owner !== "全部" && item.owner !== owner) return false;
+      if (this.data.canFilterOwner && owner !== "全部" && item.owner !== owner) return false;
       if (region !== "全部" && item.region !== region) return false;
       if (city !== "全部" && item.city !== city) return false;
       if (!this.inDateRange(this.customerStageTime(item), this.data.stageStartDate, this.data.stageEndDate)) return false;
@@ -303,37 +314,61 @@ Page({
       if (status === "已逾期" && (!item.nextFollow || item.nextFollow >= app.globalData.today)) return false;
       if (status === "未设置" && item.nextFollow) return false;
       return true;
-    }).map((item) => ({
-      ...item,
-      isPublicPool: item.ownershipStatus === "public_pool",
-      canClaim: item.ownershipStatus === "public_pool" && role.customerScope === "self",
-      channelLabel: app.normalizeChannelSource(item.channelSource),
-      stageDate: this.customerStageTime(item),
-      ownershipLabel: item.ownershipStatus === "public_pool" || item.ownershipStatus === "claimable"
-        ? "公海客户"
-        : item.ownershipStatus === "pending_followup" ? `待有效跟进·${item.claimDaysRemaining || 0}天` : "",
-      canAssign: this.data.canAssign && app.canSeePrivateRecord(item) && this.isCustomerAssignable(item),
-      poolHint: role.customerScope === "self" ? "公海客户需先认领" : "不在您的分配范围",
-      photoCount: Array.isArray(item.photos) ? item.photos.length : 0,
-      firstPhoto: Array.isArray(item.photos) && item.photos.length ? item.photos[0] : "",
-      primarySoftware: primarySoftware || "软件待补充"
-    }));
+    }).map((item) => {
+      const primarySoftware = item.competitorProfiles?.find((profile) => profile.isPrimary)?.brand || item.software || "";
+      return {
+        ...item,
+        isPublicPool: item.ownershipStatus === "public_pool",
+        canClaim: item.ownershipStatus === "public_pool" && role.customerScope === "self",
+        channelLabel: app.normalizeChannelSource(item.channelSource),
+        stageDate: this.customerStageTime(item),
+        ownershipLabel: item.ownershipStatus === "public_pool" || item.ownershipStatus === "claimable"
+          ? "公海客户"
+          : item.ownershipStatus === "pending_followup" ? `待有效跟进·${item.claimDaysRemaining || 0}天` : "",
+        canAssign: this.data.canAssign && app.canSeePrivateRecord(item) && this.isCustomerAssignable(item),
+        poolHint: role.customerScope === "self" ? "公海客户需先认领" : "不在您的分配范围",
+        photoCount: Array.isArray(item.photos) ? item.photos.length : 0,
+        firstPhoto: Array.isArray(item.photos) && item.photos.length ? item.photos[0] : "",
+        primarySoftware: primarySoftware || "软件待补充"
+      };
+    });
     const totalPages = Math.max(Math.ceil(filtered.length / this.data.pageSize), 1);
     const page = Math.min(this.data.page, totalPages);
     const start = (page - 1) * this.data.pageSize;
+    const hasActiveFilters = this.hasActiveFilters();
+    const filteredOut = this.data.currentStageTotal > 0 && filtered.length === 0;
     this.setData({
       filtered,
       page,
       totalPages,
       paged: filtered.slice(start, start + this.data.pageSize),
-      publicPoolFilteredOut: this.data.currentStage === "公海" && this.data.publicPoolLoaded && this.data.publicPoolTotal > 0 && filtered.length === 0
+      hasActiveFilters,
+      filteredOut,
+      publicPoolFilteredOut: this.data.currentStage === "公海" && this.data.publicPoolLoaded && filteredOut
     });
+  },
+
+  hasActiveFilters() {
+    return Boolean(
+      this.dashboardCustomerIds?.length
+      || String(this.data.keyword || "").trim()
+      || this.data.channelIndex
+      || (this.data.canFilterOwner && this.data.ownerIndex)
+      || this.data.regionIndex
+      || this.data.cityIndex
+      || this.data.stageStartDate
+      || this.data.stageEndDate
+      || this.data.lastStartDate
+      || this.data.lastEndDate
+      || this.data.nextStartDate
+      || this.data.nextEndDate
+      || this.data.followStatusIndex
+    );
   },
 
   resetFilters() {
     this.dashboardCustomerIds = [];
-    this.setData({ ...this.emptyFilters(), page: 1 });
-    this.applyFilters();
+    this.setData({ ...this.emptyFilters(), page: 1 }, () => this.applyFilters());
   },
 
   prevPage() {
@@ -357,12 +392,14 @@ Page({
 
   goAdd() {
     const stage = ["名单", "线索", "商机", "成交"].includes(this.data.currentStage) ? this.data.currentStage : "名单";
+    this.preserveFiltersOnNextShow = true;
     wx.navigateTo({ url: `/pages/customer-form/index?stage=${stage}` });
   },
 
   goBatchImport() {
     const stage = ["名单", "线索", "商机", "成交"].includes(this.data.currentStage) ? this.data.currentStage : "名单";
     const target = this.data.currentStage === "公海" ? "&target=public_pool" : "";
+    this.preserveFiltersOnNextShow = true;
     wx.navigateTo({ url: `/pages/batch-import/index?stage=${stage}${target}` });
   },
 
@@ -373,6 +410,7 @@ Page({
       wx.showToast({ title: "请先认领公海客户", icon: "none" });
       return;
     }
+    this.preserveFiltersOnNextShow = true;
     wx.navigateTo({ url: `/pages/customer-form/index?id=${customer.customerId || id}&opportunityId=${id}` });
   },
 
@@ -391,6 +429,7 @@ Page({
   goFollow(event) {
     const opportunity = this.data.filtered.find((item) => Number(item.id) === Number(event.currentTarget.dataset.id));
     if (!opportunity) return;
+    this.preserveFiltersOnNextShow = true;
     wx.navigateTo({ url: `/pages/follow/index?id=${opportunity.customerId}&opportunityId=${opportunity.id}` });
   },
 
@@ -519,6 +558,7 @@ Page({
               this.loadCustomerBoard().then(() => {
                 wx.hideLoading();
                 wx.showToast({ title: "认领成功", icon: "success" });
+                this.preserveFiltersOnNextShow = true;
                 setTimeout(() => wx.navigateTo({ url: `/pages/follow/index?id=${customer.customerId}&opportunityId=${customer.id}` }), 500);
               });
             });

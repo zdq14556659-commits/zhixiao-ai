@@ -14,7 +14,7 @@
     <view class="filter-toggle" bindtap="toggleFilters">
       <view>
         <view class="filter-title">搜索筛选</view>
-        <text class="muted">{{keyword || channelSources[channelIndex] !== '全部' || owners[ownerIndex] !== '全部' || regions[regionIndex] !== '全部' || stageStartDate || stageEndDate || lastStartDate || lastEndDate || nextStartDate || nextEndDate || followStatuses[followStatusIndex] !== '全部' ? '已设置筛选条件' : '点击展开搜索客户'}}</text>
+        <text class="muted">{{hasActiveFilters ? '已设置筛选条件' : '点击展开搜索客户'}}</text>
       </view>
       <text class="filter-arrow">{{filtersOpen ? '⌃' : '⌄'}}</text>
     </view>
@@ -79,12 +79,13 @@
             <view class="picker-box">{{channelSources[channelIndex]}}</view>
           </picker>
         </view>
-        <view class="form-item">
+        <view wx:if="{{canFilterOwner}}" class="form-item">
           <text class="label">负责人</text>
           <picker range="{{owners}}" value="{{ownerIndex}}" bindchange="onOwner">
             <view class="picker-box">{{owners[ownerIndex]}}</view>
           </picker>
         </view>
+        <view wx:else class="form-item"></view>
       </view>
       <view class="filter-grid">
         <view class="form-item">
@@ -108,7 +109,7 @@
   </view>
 
   <view class="list-head">
-    <text class="muted list-count">{{currentStage === '公海' ? '公海共 ' + publicPoolTotal : '共 ' + filtered.length}} 个客户</text>
+    <text class="muted list-count">{{currentStage === '公海' ? '公海共 ' + publicPoolTotal : '共 ' + currentStageTotal}} 个客户</text>
     <view wx:if="{{currentStage !== '公海' || canImportPublic}}" class="head-actions">
       <button class="plain-btn mini-btn" bindtap="goBatchImport">{{currentStage === '公海' ? '导入公海' : '批量导入'}}</button>
       <button wx:if="{{currentStage !== '公海'}}" class="primary-btn mini-btn" bindtap="goAdd">单个添加</button>
@@ -165,7 +166,11 @@
     <text>公海共{{publicPoolTotal}}条，当前筛选后0条</text>
     <button class="plain-btn" bindtap="resetFilters">一键重置筛选</button>
   </view>
-  <view class="empty" wx:elif="{{currentStage !== '公海' && !customerBoardLoading && !customerBoardError && filtered.length === 0}}">暂无符合条件的客户</view>
+  <view class="pool-state" wx:elif="{{currentStage !== '公海' && !customerBoardLoading && !customerBoardError && filteredOut}}">
+    <text>当前阶段共{{currentStageTotal}}条，筛选后0条</text>
+    <button class="plain-btn" bindtap="resetFilters">一键重置筛选</button>
+  </view>
+  <view class="empty" wx:elif="{{currentStage !== '公海' && !customerBoardLoading && !customerBoardError && currentStageTotal === 0}}">当前阶段暂无客户</view>
   <view class="page-tools" wx:if="{{filtered.length}}">
     <picker range="{{pageSizes}}" value="{{pageSizeIndex}}" bindchange="onPageSize">
       <view class="page-size">每页 {{pageSize}} 条⌄</view>
