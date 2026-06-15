@@ -86,7 +86,9 @@ async function run() {
   const migrated = JSON.parse(fs.readFileSync(path.join(tempDir, "db.json"), "utf8"));
   assert.ok(migrated.units.some((unit) => unit.id === "org-staff" && unit.name === "参谋部"));
   assert.ok(migrated.units.some((unit) => unit.id === "org-war" && unit.name === "战区部"));
-  assert.ok(!migrated.roles.find((role) => role.id === "role-ops").permissions.includes("admin"));
+  const opsRole = migrated.roles.find((role) => role.id === "role-ops");
+  assert.ok(!opsRole.permissions.includes("admin"));
+  assert.ok(opsRole.permissions.includes("publicPoolImport"));
   assert.equal(migrated.users.find((user) => user.account === "admin").roleId, "role-admin");
   assert.equal(migrated.units.find((unit) => unit.id === "unit-east-parent").parentId, "org-zone-east");
   assert.equal(migrated.units.find((unit) => unit.id === "unit-east-child").path, "智销AI / 战区部 / 东部战区 / 杭州运营中心 / 杭州一部");

@@ -36,7 +36,9 @@ const loginFailuresByIp = new Map();
 let geocodeQueueRunning = false;
 const ADMIN_ROLES = ["总负责人", "运营", "管理员"];
 const DEFAULT_PERMISSIONS = ["dashboard", "customers", "field", "assistant"];
-const ADMIN_PERMISSIONS = [...DEFAULT_PERMISSIONS, "admin"];
+const PUBLIC_POOL_IMPORT_PERMISSION = "publicPoolImport";
+const OPS_PERMISSIONS = [...DEFAULT_PERMISSIONS, PUBLIC_POOL_IMPORT_PERMISSION];
+const ADMIN_PERMISSIONS = [...DEFAULT_PERMISSIONS, PUBLIC_POOL_IMPORT_PERMISSION, "admin"];
 const REASSIGN_DAYS = 30;
 const CUSTOMER_CLAIM_DAYS = 3;
 const OWNERSHIP_PENDING = "pending_followup";
@@ -58,7 +60,7 @@ const DEFAULT_ROLES = [
   { id: "role-region", name: "区域经理", customerScope: "zone", permissions: DEFAULT_PERMISSIONS },
   { id: "role-supervisor", name: "主管", customerScope: "unit", permissions: DEFAULT_PERMISSIONS },
   { id: "role-sales", name: "销售", customerScope: "self", permissions: DEFAULT_PERMISSIONS },
-  { id: "role-ops", name: "运营", customerScope: "all", permissions: DEFAULT_PERMISSIONS },
+  { id: "role-ops", name: "运营", customerScope: "all", permissions: OPS_PERMISSIONS },
   { id: "role-admin", name: "管理员", customerScope: "all", permissions: ADMIN_PERMISSIONS }
 ];
 const ORG_ROOT_ID = "org-root";
@@ -1046,7 +1048,7 @@ async function routeApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/import/customers") {
-    if (url.searchParams.get("target") === "public_pool" && !canUseAdmin(authState, authUser)) {
+    if (url.searchParams.get("target") === "public_pool" && !canImportPublicPool(authState, authUser)) {
       return sendJson(res, 403, { error: "仅运营、总负责人和管理员可以导入公海" });
     }
     const result = await importCustomers(req, authUser, url.searchParams.get("target") || "");
@@ -1568,11 +1570,15 @@ function normalizeRoles(roles) {
 
 function normalizeRole(role = {}) {
   const name = role.name || "自定义角色";
+  const id = role.id || stableId("role", name);
   const customerScope = ["self", "unit", "zone", "all"].includes(role.customerScope) ? role.customerScope : "self";
   let permissions = Array.isArray(role.permissions) && role.permissions.length ? role.permissions : DEFAULT_PERMISSIONS;
-  if (role.id === "role-ops" || name === "运营") permissions = permissions.filter((permission) => permission !== "admin");
+  const isOpsRole = id === "role-ops" || name === "运营";
+  const isAdminRole = ["role-owner", "role-admin"].includes(id) || ["总负责人", "管理员"].includes(name);
+  if (isOpsRole) permissions = permissions.filter((permission) => permission !== "admin");
+  if (isOpsRole || isAdminRole) permissions = [...permissions, PUBLIC_POOL_IMPORT_PERMISSION];
   return {
-    id: role.id || stableId("role", name),
+    id,
     name,
     customerScope,
     permissions: [...new Set(permissions)]
@@ -3150,6 +3156,13 @@ function canUseAdmin(state, user) {
   if (!user) return false;
   const role = findRole(state.roles, user.roleId, user.role);
   return (role.permissions || []).includes("admin");
+}
+
+function canImportPublicPool(state, user) {
+  if (!user) return false;
+  const role = findRole(state.roles, user.roleId, user.role);
+  const permissions = role.permissions || [];
+  return permissions.includes("admin") || permissions.includes(PUBLIC_POOL_IMPORT_PERMISSION);
 }
 
 function canManageTargets(state, user) {

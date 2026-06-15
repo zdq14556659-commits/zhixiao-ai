@@ -7,12 +7,12 @@ const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const CHANNEL_SOURCES = ["自媒体", "官网留言", "自主注册", "渠道介绍", "企查查", "客源汇", "公众号", "地推", "其他"];
 const ZONES = ["东部战区", "南部战区", "西部战区", "北部战区", "中部战区"];
 const DEFAULT_ROLES = [
-  { id: "role-owner", name: "总负责人", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] },
+  { id: "role-owner", name: "总负责人", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "publicPoolImport", "admin"] },
   { id: "role-region", name: "区域经理", customerScope: "zone", permissions: ["dashboard", "customers", "field", "assistant"] },
   { id: "role-supervisor", name: "主管", customerScope: "unit", permissions: ["dashboard", "customers", "field", "assistant"] },
   { id: "role-sales", name: "销售", customerScope: "self", permissions: ["dashboard", "customers", "field", "assistant"] },
-  { id: "role-ops", name: "运营", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant"] },
-  { id: "role-admin", name: "管理员", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] }
+  { id: "role-ops", name: "运营", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "publicPoolImport"] },
+  { id: "role-admin", name: "管理员", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "publicPoolImport", "admin"] }
 ];
 const ORG_ROOT_ID = "org-root";
 const ORG_STAFF_ID = "org-staff";
@@ -638,6 +638,10 @@ App({
 
   canAdmin() {
     return this.hasPermission("admin");
+  },
+
+  canImportPublicPool() {
+    return this.canAdmin() || this.hasPermission("publicPoolImport");
   },
 
   formatMoney(value) {

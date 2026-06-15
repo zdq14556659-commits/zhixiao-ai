@@ -7,14 +7,14 @@ const stages = ["名单", "线索", "商机", "成交"];
 const channelSources = ["自媒体", "官网留言", "自主注册", "渠道介绍", "企查查", "客源汇", "公众号", "地推", "其他"];
 const zones = ["东部战区", "南部战区", "西部战区", "北部战区", "中部战区"];
 const scopeLabels = { self: "仅本人客户", unit: "本单位客户", zone: "本战区客户", all: "全部客户" };
-const permissionLabels = { dashboard: "看板", customers: "客户管理", field: "地推地图", assistant: "AI话术", admin: "系统设置" };
+const permissionLabels = { dashboard: "看板", customers: "客户管理", field: "地推地图", assistant: "AI话术", publicPoolImport: "公海导入", admin: "系统设置" };
 const defaultRoles = [
-  { id: "role-owner", name: "总负责人", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] },
+  { id: "role-owner", name: "总负责人", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "publicPoolImport", "admin"] },
   { id: "role-region", name: "区域经理", customerScope: "zone", permissions: ["dashboard", "customers", "field", "assistant"] },
   { id: "role-supervisor", name: "主管", customerScope: "unit", permissions: ["dashboard", "customers", "field", "assistant"] },
   { id: "role-sales", name: "销售", customerScope: "self", permissions: ["dashboard", "customers", "field", "assistant"] },
-  { id: "role-ops", name: "运营", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant"] },
-  { id: "role-admin", name: "管理员", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] }
+  { id: "role-ops", name: "运营", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "publicPoolImport"] },
+  { id: "role-admin", name: "管理员", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "publicPoolImport", "admin"] }
 ];
 const orgRootId = "org-root";
 const orgTypeLabels = { root: "根节点", department: "一级部门", battle_zone: "战区", unit: "单位", team: "小组" };
@@ -548,6 +548,10 @@ function canAdmin() {
   return hasPermission(currentUser(), "admin");
 }
 
+function canImportPublicPool() {
+  return canAdmin() || hasPermission(currentUser(), "publicPoolImport");
+}
+
 function formatFollowTime(item = {}) {
   if (item.createdAt) {
     const time = new Date(item.createdAt);
@@ -735,7 +739,7 @@ function renderCustomers() {
   $("#newOpportunityProductSelect").innerHTML = productOptions;
   $("#batchAssignBtn").classList.toggle("hidden", !canAssignCustomers());
   $("#addCustomerBtn").classList.toggle("hidden", currentStage === "公海");
-  $("#batchImportBtn").classList.toggle("hidden", currentStage === "公海" && !canAdmin());
+  $("#batchImportBtn").classList.toggle("hidden", currentStage === "公海" && !canImportPublicPool());
   $("#batchImportBtn").textContent = currentStage === "公海" ? "导入公海" : "批量导入";
   $("#stageTimeHeader").textContent = stageTime.label;
   $("#stageTimeFilterLabel").textContent = stageTime.label;

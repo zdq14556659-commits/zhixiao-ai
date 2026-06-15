@@ -131,7 +131,7 @@ Page({
       products: (state.products || []).filter((item) => item.active !== false),
       stageTimeLabel: this.stageTimeConfig(this.data.currentStage).label,
       canAssign: this.canAssignCustomers(),
-      canImportPublic: app.canAdmin(),
+      canImportPublic: app.canImportPublicPool(),
       canFilterOwner,
       publicPoolTotal: this.publicPoolCount || 0,
       currentStageTotal,
