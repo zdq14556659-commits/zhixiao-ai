@@ -70,11 +70,11 @@ const DEFAULT_COMPETITORS = [
   { id: "competitor-other", name: "其他", color: "#64748b", active: true }
 ];
 const DEFAULT_PRODUCTS = [
-  { id: "product-v1", name: "V1", active: true },
-  { id: "product-v3-upgrade", name: "V3升级", active: true },
-  { id: "product-erp", name: "ERP", active: true },
-  { id: "product-render", name: "渲染软件", active: true },
-  { id: "product-other", name: "其他", active: true }
+  { id: "product-v1", name: "V1", price: 0, active: true },
+  { id: "product-v3-upgrade", name: "V3升级", price: 0, active: true },
+  { id: "product-erp", name: "ERP", price: 0, active: true },
+  { id: "product-render", name: "渲染软件", price: 0, active: true },
+  { id: "product-other", name: "其他", price: 0, active: true }
 ];
 const LEGACY_DEMO_UNIT_IDS = new Set([
   "unit-east-custom",
@@ -277,10 +277,34 @@ async function routeApi(req, res, url) {
     if ((state.products || []).some((item) => cleanText(item.name) === cleanText(name))) {
       return sendJson(res, 409, { error: "产品已存在" });
     }
-    const product = normalizeProduct({ id: body.id || stableId("product", name), name, active: body.active !== false });
+    const product = normalizeProduct({ id: body.id || stableId("product", name), name, price: body.price, active: body.active !== false });
     state.products.push(product);
     writeState(state);
     return sendJson(res, 201, product);
+  }
+
+  const productUpdate = url.pathname.match(/^\/api\/products\/([^/]+)$/);
+  if ((req.method === "PUT" || req.method === "PATCH") && productUpdate) {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无产品字典管理权限" });
+    const index = (state.products || []).findIndex((item) => item.id === productUpdate[1]);
+    if (index < 0) return sendJson(res, 404, { error: "产品不存在" });
+    const name = String(body.name || state.products[index].name || "").trim();
+    if (!name) return sendJson(res, 400, { error: "请填写产品名称" });
+    if ((state.products || []).some((item, itemIndex) => itemIndex !== index && cleanText(item.name) === cleanText(name))) {
+      return sendJson(res, 409, { error: "产品已存在" });
+    }
+    const product = normalizeProduct({
+      ...state.products[index],
+      name,
+      price: body.price,
+      active: body.active !== false
+    });
+    state.products[index] = product;
+    writeState(state);
+    return sendJson(res, 200, product);
   }
 
   if (req.method === "GET" && url.pathname === "/api/public-pool") {
@@ -445,7 +469,7 @@ async function routeApi(req, res, url) {
     const previous = state.opportunities[index];
     if (!canManageOpportunityAssignment(state, viewer, previous)) return sendJson(res, 403, { error: "不可分配权限范围外的销售机会" });
     const target = findAssignableSalesUser(state, viewer, body.ownerId, body.owner || body.followPerson);
-    if (!target) return sendJson(res, 400, { error: "请选择当前权限内的销售" });
+    if (!target) return sendJson(res, 400, { error: "请选择当前权限内的跟进人" });
     const next = assignOpportunity(state, previous, target, viewer);
     state.opportunities[index] = next;
     syncCustomerCompatibility(state, next.customerId);
@@ -460,7 +484,7 @@ async function routeApi(req, res, url) {
     if (!canAssignCustomers(state, viewer)) return sendJson(res, 403, { error: "无销售机会分配权限" });
     const ids = [...new Set((body.ids || body.opportunityIds || []).map(Number).filter(Boolean))];
     const target = findAssignableSalesUser(state, viewer, body.ownerId, body.owner || body.followPerson);
-    if (!target) return sendJson(res, 400, { error: "请选择当前权限内的销售" });
+    if (!target) return sendJson(res, 400, { error: "请选择当前权限内的跟进人" });
     const assigned = [];
     const failed = [];
     ids.forEach((id) => {
@@ -800,7 +824,7 @@ async function routeApi(req, res, url) {
     if (!canViewRecord(state, viewer, customer)) return sendJson(res, 403, { error: "不可分配不可见客户" });
     if (!isCustomerAssignable(customer)) return sendJson(res, 400, { error: "当前客户暂不满足分配条件" });
     const target = findAssignableSalesUser(state, viewer, body.ownerId, body.owner || body.followPerson);
-    if (!target) return sendJson(res, 400, { error: "请选择当前权限内的销售" });
+    if (!target) return sendJson(res, 400, { error: "请选择当前权限内的跟进人" });
     const { next, previousStage } = buildAssignedCustomer(state, viewer, customer, target, body);
     state.customers[index] = next;
     transferCustomerVisits(state, customer, next);
@@ -819,7 +843,7 @@ async function routeApi(req, res, url) {
     const ids = [...new Set((body.ids || body.customerIds || []).map((id) => Number(id)).filter(Boolean))];
     if (!ids.length) return sendJson(res, 400, { error: "请选择要分配的客户" });
     const target = findAssignableSalesUser(state, viewer, body.ownerId, body.owner || body.followPerson);
-    if (!target) return sendJson(res, 400, { error: "请选择当前权限内的销售" });
+    if (!target) return sendJson(res, 400, { error: "请选择当前权限内的跟进人" });
     const assignedCustomers = [];
     const failed = [];
     ids.forEach((id) => {
@@ -1422,6 +1446,7 @@ function normalizeProduct(product = {}) {
   return {
     id: product.id || stableId("product", name),
     name,
+    price: normalizeMoney(product.price),
     active: product.active !== false
   };
 }
@@ -1862,7 +1887,7 @@ function normalizeOpportunity(opportunity = {}, context = {}) {
     region: opportunity.region || customer.region || "待分区",
     createdBy: opportunity.createdBy || customer.createdBy || ownerUser.name || "未记录",
     createdAt,
-    amount: Number(opportunity.amount || customer.amount || DEFAULT_EXPECTED_AMOUNT),
+    amount: normalizeMoney(opportunity.amount) || normalizeMoney(customer.amount) || normalizeMoney(product.price) || DEFAULT_EXPECTED_AMOUNT,
     demoAt: opportunity.demoAt || "",
     quoteAmount: normalizeMoney(opportunity.quoteAmount),
     expectedDealDate: opportunity.expectedDealDate || "",
@@ -1961,6 +1986,7 @@ function resolveOpportunityOwner(state, viewer, customer, body = {}) {
   if (!requested.id) requested = viewer;
   const visible = visibleUsers(state, viewer).find((item) => Number(item.id) === Number(requested.id));
   if (!visible) return { error: "不能将销售机会分配到权限范围外", status: 403 };
+  if (!canOwnCustomerUser(state, visible)) return { error: "请选择销售、主管或区域经理作为跟进人", status: 400 };
   return { user: visible };
 }
 
@@ -2070,8 +2096,8 @@ function sanitizePublicPoolOpportunity(customer = {}, opportunity = {}) {
 function claimOpportunityAtIndex(res, state, viewer, index) {
   const previous = state.opportunities[index];
   if (!isOpportunityPublicPool(previous)) return sendJson(res, 409, { error: "该机会已被认领或不在公海", code: "DUPLICATE_CUSTOMER" });
-  if (findRole(state.roles, viewer.roleId, viewer.role).customerScope !== "self") {
-    return sendJson(res, 403, { error: "公海机会仅销售账号可认领" });
+  if (!canOwnCustomerUser(state, viewer)) {
+    return sendJson(res, 403, { error: "仅销售、主管和区域经理可以认领公海机会" });
   }
   const now = new Date().toISOString();
   const next = normalizeOpportunity({
@@ -2802,6 +2828,11 @@ function visibleUsers(state, viewer) {
   });
 }
 
+function canOwnCustomerUser(state, user = {}) {
+  const roleName = findRole(state.roles, user.roleId, user.role).name || user.role || "";
+  return ["销售", "主管", "区域经理"].includes(roleName);
+}
+
 function canViewRecord(state, viewer, record = {}) {
   const role = findRole(state.roles, viewer.roleId, viewer.role);
   if (role.customerScope === "all") return true;
@@ -3224,7 +3255,7 @@ function buildUnitRanking(state, viewer, selectedScope, range, scopedCustomers) 
 }
 
 function actionCustomer(item) {
-  return { id: item.id, name: item.name, stage: item.stage, owner: item.owner, nextFollow: item.nextFollow || "", amount: item.quoteAmount || item.amount || 0 };
+  return { id: item.id, name: item.name, stage: item.stage, owner: item.owner, nextFollow: item.nextFollow || "", amount: item.contractAmount || item.amount || 0 };
 }
 
 function buildActions(customers, range) {
@@ -3232,7 +3263,7 @@ function buildActions(customers, range) {
     { key: "today", label: "今日待跟进", test: (item) => item.nextFollow === today() },
     { key: "overdue", label: "逾期跟进", test: (item) => item.nextFollow && item.nextFollow < today() },
     { key: "highIntent", label: "高意向商机", test: (item) => item.stage === "商机" && Boolean(item.demoAt) },
-    { key: "quotePending", label: "待正式报价", test: (item) => item.stage === "商机" && Number(item.quoteAmount || 0) <= 0 },
+    { key: "contractPending", label: "待合同金额", test: (item) => item.stage === "成交" && Number(item.contractAmount || 0) <= 0 },
     { key: "paymentPending", label: "成交待进款", test: (item) => item.stage === "成交" && Number(item.paymentAmount || 0) < Number(item.contractAmount || 0) },
     { key: "stalled", label: "长期未推进", test: (item) => ["线索", "商机"].includes(item.stage) && daysBetween(item.lastFollow || item.createdAt, range.end) > (item.stage === "商机" ? 30 : 15) }
   ];
@@ -3403,10 +3434,7 @@ function daysSince(dateText) {
 }
 
 function findAssignableSalesUser(state, viewer, ownerId, ownerName) {
-  const candidates = visibleUsers(state, viewer).filter((user) => {
-    const role = findRole(state.roles, user.roleId, user.role);
-    return role.name === "销售" || user.role === "销售";
-  });
+  const candidates = visibleUsers(state, viewer).filter((user) => canOwnCustomerUser(state, user));
   return (
     candidates.find((user) => ownerId && Number(user.id) === Number(ownerId)) ||
     candidates.find((user) => ownerName && cleanText(user.name) === cleanText(ownerName)) ||
@@ -3699,6 +3727,9 @@ async function importCustomers(req, viewer, target = "") {
     if (requested.id && !visible) throw new Error("不能将客户导入到权限范围外");
     if (visible) ownerUser = visible;
   }
+  if (!importToPublicPool && !canOwnCustomerUser(state, ownerUser)) {
+    throw new Error("请选择销售、主管或区域经理作为默认跟进人");
+  }
   const file = multipart.files[0];
   const defaults = {
     stage,
@@ -3789,7 +3820,7 @@ async function importCustomers(req, viewer, target = "") {
       region: row.region,
       createdBy: viewer.name,
       createdAt: today(),
-      amount: row.amount,
+      amount: row.amountProvided ? row.amount : normalizeMoney(product.price) || DEFAULT_EXPECTED_AMOUNT,
       ownershipStatus: importToPublicPool ? OWNERSHIP_PUBLIC : OWNERSHIP_PENDING,
       claimUntil: importToPublicPool ? "" : addDaysToIso(now, CUSTOMER_CLAIM_DAYS),
       effectiveFollowUpAt: "",
@@ -3876,6 +3907,7 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
       if (!hasHeader) {
         const third = String(row[2] || "").trim();
         const thirdLooksLikeChannel = isKnownChannelText(third) || row.length >= 6;
+        const amountValue = thirdLooksLikeChannel ? row[5] : row[3];
         return {
           name: row[0] || "",
           phone: row[1] || "待补充",
@@ -3891,7 +3923,8 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
           unit: defaults.unit || "",
           zone: defaults.zone || "",
           region: thirdLooksLikeChannel ? row[3] || defaults.zone || "待分区" : third || defaults.zone || "待分区",
-          amount: normalizeImportedAmount(thirdLooksLikeChannel ? row[5] : row[3], inputMoneyUnit),
+          amount: normalizeImportedAmount(amountValue, inputMoneyUnit),
+          amountProvided: String(amountValue || "").trim() !== "",
           software: thirdLooksLikeChannel ? row[4] || "待补充" : row[4] || "待补充",
           productName: row[6] || "",
           lastNote: "名单文件导入。",
@@ -3907,6 +3940,7 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
       });
       const stageCell = row[headers.findIndex((header) => header === "stage")];
       const stage = STAGES.includes(stageCell) ? stageCell : stageHeader || defaults.stage || "名单";
+      const amountProvided = String(record.amount || "").trim() !== "";
       return {
         name: record.name || "",
         phone: record.phone || "待补充",
@@ -3923,6 +3957,7 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
         zone: defaults.zone || "",
         region: record.region || record.address || defaults.zone || "待分区",
         amount: normalizeImportedAmount(record.amount, inputMoneyUnit),
+        amountProvided,
         software: record.software || "待补充",
         productName: record.productName || "",
         lastNote: record.lastNote || record.followRecord || "名单文件导入。",

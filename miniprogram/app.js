@@ -1,4 +1,4 @@
-const STORAGE_KEY = "zhixiao_ai_mini_state_v5";
+const STORAGE_KEY = "zhixiao_ai_mini_state_v6";
 const AUTH_KEY = "zhixiao_ai_auth_v1";
 const API_BASE_OVERRIDE_KEY = "zhixiao_ai_api_base_override";
 const PROD_API_BASE = "https://zhixiaoai1.onrender.com/api";
@@ -16,11 +16,11 @@ const DEFAULT_ROLES = [
 ];
 const DEFAULT_UNITS = [];
 const DEFAULT_PRODUCTS = [
-  { id: "product-v1", name: "V1", active: true },
-  { id: "product-v3-upgrade", name: "V3升级", active: true },
-  { id: "product-erp", name: "ERP", active: true },
-  { id: "product-render", name: "渲染软件", active: true },
-  { id: "product-other", name: "其他", active: true }
+  { id: "product-v1", name: "V1", price: 0, active: true },
+  { id: "product-v3-upgrade", name: "V3升级", price: 0, active: true },
+  { id: "product-erp", name: "ERP", price: 0, active: true },
+  { id: "product-render", name: "渲染软件", price: 0, active: true },
+  { id: "product-other", name: "其他", price: 0, active: true }
 ];
 const LEGACY_DEMO_UNIT_IDS = [
   "unit-east-custom",
@@ -505,6 +505,22 @@ App({
 
   visibleSales() {
     return this.visibleUsers().filter((user) => this.getRole(user).name === "销售" || user.role === "销售");
+  },
+
+  canOwnCustomer(user = this.getCurrentUser()) {
+    const roleName = this.getRole(user).name || user.role || "";
+    return ["销售", "主管", "区域经理"].includes(roleName);
+  },
+
+  visibleFollowUsers() {
+    return this.visibleUsers().filter((user) => this.canOwnCustomer(user));
+  },
+
+  productDefaultAmount(productId) {
+    const state = this.getState();
+    const product = (state.products || DEFAULT_PRODUCTS).find((item) => item.id === productId) || {};
+    const price = Number(product.price || 0);
+    return Number.isFinite(price) && price > 0 ? price : 150000;
   },
 
   scopeCustomers() {

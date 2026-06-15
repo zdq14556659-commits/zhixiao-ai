@@ -102,8 +102,8 @@ Page({
     const customers = this.data.currentStage === "公海" ? (this.publicPoolItems || []) : privateCustomers;
     const channelSources = ["全部", ...app.globalData.channelSources];
     const canFilterOwner = role.customerScope !== "self" && this.data.currentStage !== "公海";
-    const owners = canFilterOwner ? ["全部", ...app.visibleSales().map((user) => user.name)] : ["全部"];
-    const assignOwners = app.visibleSales();
+    const owners = canFilterOwner ? ["全部", ...app.visibleFollowUsers().map((user) => user.name)] : ["全部"];
+    const assignOwners = app.visibleFollowUsers();
     const regions = ["全部", ...Array.from(new Set(customers.map((item) => item.region).filter(Boolean)))];
     const cities = ["全部", ...Array.from(new Set(customers.map((item) => item.city).filter(Boolean)))];
     const channelIndex = Math.min(this.data.channelIndex, channelSources.length - 1);
@@ -319,14 +319,14 @@ Page({
       return {
         ...item,
         isPublicPool: item.ownershipStatus === "public_pool",
-        canClaim: item.ownershipStatus === "public_pool" && role.customerScope === "self",
+        canClaim: item.ownershipStatus === "public_pool" && app.canOwnCustomer(currentUser),
         channelLabel: app.normalizeChannelSource(item.channelSource),
         stageDate: this.customerStageTime(item),
         ownershipLabel: item.ownershipStatus === "public_pool" || item.ownershipStatus === "claimable"
           ? "公海客户"
           : item.ownershipStatus === "pending_followup" ? `待有效跟进·${item.claimDaysRemaining || 0}天` : "",
         canAssign: this.data.canAssign && app.canSeePrivateRecord(item) && this.isCustomerAssignable(item),
-        poolHint: role.customerScope === "self" ? "公海客户需先认领" : "不在您的分配范围",
+        poolHint: app.canOwnCustomer(currentUser) ? "公海客户需先认领" : "不在您的分配范围",
         photoCount: Array.isArray(item.photos) ? item.photos.length : 0,
         firstPhoto: Array.isArray(item.photos) && item.photos.length ? item.photos[0] : "",
         primarySoftware: primarySoftware || "软件待补充"
@@ -515,7 +515,7 @@ Page({
     if (!note) return wx.showToast({ title: "请填写首次跟进备注", icon: "none" });
     if (!this.data.newOpportunityNextFollow) return wx.showToast({ title: "请选择下次跟进时间", icon: "none" });
     wx.showLoading({ title: "创建中" });
-    app.requestApi(`/customers/${this.data.newOpportunityCustomerId}/opportunities`, { method: "POST", data: { productId: product.id, note, nextFollow: this.data.newOpportunityNextFollow } })
+    app.requestApi(`/customers/${this.data.newOpportunityCustomerId}/opportunities`, { method: "POST", data: { productId: product.id, amount: app.productDefaultAmount(product.id), note, nextFollow: this.data.newOpportunityNextFollow } })
       .then(() => app.loadRemoteState(() => {
         this.setData({ newOpportunityOpen: false, currentStage: "线索", page: 1 });
         this.loadCustomerBoard().then(() => {

@@ -31,7 +31,7 @@ Page({
   onLoad(options) {
     if (!app.ensureLogin()) return;
     const state = app.getState();
-    const ownerUsers = app.visibleSales();
+    const ownerUsers = app.visibleFollowUsers();
     const owners = ownerUsers.map((user) => user.name);
     const currentUser = app.getCurrentUser();
     const currentRole = app.getRole(currentUser);
@@ -57,6 +57,8 @@ Page({
       productIndex = products.length - 1;
     }
     productIndex = Math.max(0, productIndex);
+    const formData = customer || {};
+    if (!customer && products[productIndex]?.id) formData.amount = app.productDefaultAmount(products[productIndex].id);
     this.setData({
       owners,
       ownerUsers,
@@ -80,7 +82,7 @@ Page({
       demoAt: customer?.demoAt || "",
       expectedDealDate: customer?.expectedDealDate || "",
       paymentDate: customer?.paymentDate || "",
-      form: customer || {}
+      form: formData
     });
     wx.setNavigationBarTitle({ title: customer ? "编辑客户" : "新增客户" });
   },
@@ -98,7 +100,12 @@ Page({
   },
 
   onProduct(event) {
-    this.setData({ productIndex: Number(event.detail.value) });
+    const productIndex = Number(event.detail.value);
+    const product = this.data.products[productIndex] || {};
+    this.setData({
+      productIndex,
+      form: { ...this.data.form, amount: app.productDefaultAmount(product.id) }
+    });
   },
 
   onPaymentOwner(event) {
@@ -268,9 +275,8 @@ Page({
       unit: ownerUser.unit || "",
       zone: ownerUser.zone || "",
       region: form.region || "待分区",
-      amount: Number(form.amount) || 150000,
+      amount: Number(form.amount) || app.productDefaultAmount((this.data.products[this.data.productIndex] || {}).id),
       demoAt,
-      quoteAmount: Number(form.quoteAmount || 0),
       expectedDealDate: this.data.expectedDealDate,
       contractAmount,
       paymentAmount,

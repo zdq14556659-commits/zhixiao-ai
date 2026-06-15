@@ -19,7 +19,7 @@ Page({
 
   onLoad(options) {
     if (!app.ensureLogin()) return;
-    const ownerUsers = app.visibleSales();
+    const ownerUsers = app.visibleFollowUsers();
     const owners = ownerUsers.map((user) => user.name);
     const stageIndex = Math.max(0, this.data.stages.indexOf(options.stage || "名单"));
     this.setData({ owners, ownerUsers, stageIndex, channelSources: app.globalData.channelSources, targetPublicPool: options.target === "public_pool" });

@@ -80,7 +80,7 @@
           </picker>
         </view>
         <view wx:if="{{canFilterOwner}}" class="form-item">
-          <text class="label">负责人</text>
+          <text class="label">跟进人</text>
           <picker range="{{owners}}" value="{{ownerIndex}}" bindchange="onOwner">
             <view class="picker-box">{{owners[ownerIndex]}}</view>
           </picker>
@@ -204,6 +204,7 @@
       <view class="modal-title">新增销售机会</view>
       <view class="muted">成交机会保留，新产品从线索重新轮转</view>
       <view class="form-item"><text class="label">意向产品 <text class="required-mark">*</text></text><picker range="{{products}}" range-key="name" value="{{productIndex}}" bindchange="onProduct"><view class="picker-box">{{products[productIndex].name || '请选择'}}</view></picker></view>
+      <view class="form-item"><text class="label">预计金额（元）</text><input value="{{products[productIndex].price || 150000}}" disabled /></view>
       <view class="form-item"><text class="label">首次跟进备注 <text class="required-mark">*</text></text><textarea value="{{newOpportunityNote}}" data-field="newOpportunityNote" bindinput="onNewOpportunityField"></textarea></view>
       <view class="form-item"><text class="label">下次跟进 <text class="required-mark">*</text></text><picker mode="date" value="{{newOpportunityNextFollow}}" bindchange="onNewOpportunityNextFollow"><view class="picker-box">{{newOpportunityNextFollow || '请选择'}}</view></picker></view>
       <view class="modal-actions"><button class="plain-btn" bindtap="closeNewOpportunity">取消</button><button class="primary-btn" bindtap="submitNewOpportunity">创建线索</button></view>

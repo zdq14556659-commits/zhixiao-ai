@@ -264,6 +264,7 @@
               <div class="panel-title"><h2>产品字典</h2><span>用于同一工厂的多产品销售机会轮转</span></div>
               <form class="form-stack" id="productForm">
                 <label>产品名称<input name="name" required placeholder="例如：续费服务" /></label>
+                <label>产品价格（元）<input name="price" type="number" min="0" step="0.01" placeholder="例如：80000" /></label>
                 <button class="primary" type="submit">添加产品</button>
               </form>
               <div class="user-list compact-list" id="productList"></div>
@@ -320,14 +321,12 @@
         <label>意向产品<select name="productId" id="customerProductSelect"></select></label>
         <label>渠道来源<select name="channelSource" id="customerChannelSelect"></select></label>
         <label>阶段<select name="stage" id="customerStageSelect"></select></label>
-        <label>负责人<select name="owner" id="customerOwnerSelect"></select></label>
+        <label>跟进人<select name="owner" id="customerOwnerSelect"></select></label>
         <label>录入人<input name="createdBy" /></label>
-        <label>跟进人<input name="followPerson" /></label>
         <label>客户地址<input name="address" /></label>
         <label>预计金额（元）<input name="amount" type="number" min="0" step="0.01" /></label>
         <div class="dialog-section-title">经营信息</div>
         <label>有效演示时间<input name="demoAt" type="date" /></label>
-        <label>正式报价金额（元）<input name="quoteAmount" type="number" min="0" step="0.01" /></label>
         <label>预计成交日期<input name="expectedDealDate" type="date" /></label>
         <label>合同金额（元）<input name="contractAmount" type="number" min="0" step="0.01" /></label>
         <label>实际进款（元）<input name="paymentAmount" type="number" min="0" step="0.01" /></label>
@@ -370,7 +369,8 @@
         <input type="hidden" name="customerId" />
         <p class="muted" id="newOpportunitySummary"></p>
         <label>意向产品 <span class="required-mark">*</span><select name="productId" id="newOpportunityProductSelect"></select></label>
-        <label>负责人 <span class="required-mark">*</span><select name="ownerId" id="newOpportunityOwnerSelect"></select></label>
+        <label>预计金额（元）<input name="amount" type="number" min="0" step="0.01" /></label>
+        <label>跟进人 <span class="required-mark">*</span><select name="ownerId" id="newOpportunityOwnerSelect"></select></label>
         <label>首次跟进备注 <span class="required-mark">*</span><textarea name="note" rows="3"></textarea></label>
         <label>下次跟进 <span class="required-mark">*</span><input name="nextFollow" type="date" /></label>
         <div class="button-row"><button type="button" data-close-dialog="newOpportunityDialog">取消</button><button class="primary" type="submit">创建线索</button></div>
@@ -395,7 +395,7 @@
         <h2>批量导入客户</h2>
         <p class="muted">下载样表后按表头填写，支持 xlsx / csv / txt 上传，也可继续粘贴导入。</p>
         <a class="template-link" id="downloadTemplateLink" href="/api/import/customers/template" target="_blank" rel="noreferrer">下载样表</a>
-        <label>默认负责人<select name="owner" id="batchOwnerSelect"></select></label>
+        <label>默认跟进人<select name="owner" id="batchOwnerSelect"></select></label>
         <label>上传名单文件<input name="file" type="file" accept=".xlsx,.csv,.txt" /></label>
         <textarea name="rows" rows="8" placeholder="佛山柜体门板厂,13900139000,地推,广东省佛山市,酷家乐+手工报价,26"></textarea>
         <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">导入</button></div>

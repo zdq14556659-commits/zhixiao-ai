@@ -36,7 +36,7 @@
           </picker>
         </view>
         <view class="form-item">
-          <text class="label">负责人</text>
+          <text class="label">跟进人</text>
           <picker range="{{owners}}" value="{{ownerIndex}}" bindchange="onOwner">
             <view class="picker-box">{{owners[ownerIndex]}}</view>
           </picker>
@@ -120,13 +120,10 @@
       </view>
       <view class="grid-2">
         <view class="form-item">
-          <text class="label">报价金额（元）</text>
-          <input name="quoteAmount" type="digit" value="{{form.quoteAmount}}" placeholder="0" />
-        </view>
-        <view class="form-item">
           <text class="label">合同金额（元）</text>
           <input name="contractAmount" type="digit" value="{{form.contractAmount}}" placeholder="成交时必填" />
         </view>
+        <view class="form-item"></view>
       </view>
       <view class="grid-2">
         <view class="form-item">
