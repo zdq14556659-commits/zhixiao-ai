@@ -130,7 +130,7 @@ const seedState = {
     { id: 2, name: "周扬", account: "zhouyang", role: "销售", roleId: "role-sales", unitId: "unit-south-custom", unit: "华南定制产业带", zone: "南部战区", region: "南部战区" },
     { id: 3, name: "陈主管", account: "chen", role: "主管", roleId: "role-supervisor", unitId: "unit-east-custom", unit: "华东定制产业带", zone: "东部战区", region: "东部战区" },
     { id: 4, name: "王区域", account: "wang", role: "区域经理", roleId: "role-region", unitId: "unit-central-channel", unit: "中部渠道一部", zone: "中部战区", region: "中部战区" },
-    { id: 5, name: "运营小组", account: "admin", role: "运营", roleId: "role-ops", unitId: "unit-hq-growth", unit: "总部增长运营", zone: "中部战区", region: "中部战区" }
+    { id: 5, name: "管理员", account: "admin", role: "管理员", roleId: "role-admin", unitId: "org-staff", unit: "参谋部", zone: "", region: "参谋部", orgPath: "智销AI / 参谋部" }
   ],
   customers: [
     {

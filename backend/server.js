@@ -1462,11 +1462,11 @@ function migrateState(state) {
   const units = normalizeUnits(source.units || [], source);
   const competitors = normalizeCompetitors(source.competitors || []);
   const products = normalizeProducts(source.products || []);
-  const users = normalizeUsers(source.users || [], {
+  const users = ensureSystemAdminUser(normalizeUsers(source.users || [], {
     roles,
     units,
     resetAdminPassword: !["backend-v3", "backend-v4", "backend-v5", "backend-v6", "backend-v7", "backend-v8", "backend-v9"].includes(source.version)
-  });
+  }), roles, units);
   const activities = source.activities || [];
   const context = { roles, units, users, activities, competitors, products, legacyOwnership };
   const customers = (source.customers || []).map((customer) => normalizeCustomer(customer, context));
@@ -1788,6 +1788,36 @@ function normalizeUser(user = {}, index = 0, context = {}) {
     status: user.status || "启用",
     createdAt: user.createdAt || today()
   };
+}
+
+function ensureSystemAdminUser(users = [], roles = DEFAULT_ROLES, units = DEFAULT_UNITS) {
+  const adminRole = findRole(roles, "role-admin", "管理员");
+  const adminUnit = unitById(units, ORG_STAFF_ID) || unitById(units, ORG_ROOT_ID) || units[0] || {};
+  const index = users.findIndex((user) => cleanAccount(user.account || user.username || user.phone) === "admin");
+  if (index >= 0) {
+    users[index] = applyUnitToUser({
+      ...users[index],
+      name: users[index].name === "运营小组" ? "管理员" : (users[index].name || "管理员"),
+      role: adminRole.name,
+      roleId: adminRole.id,
+      status: users[index].status || "启用"
+    }, adminUnit);
+    return users;
+  }
+  users.unshift(normalizeUser({
+    id: Math.max(0, ...users.map((user) => Number(user.id || 0))) + 1,
+    name: "管理员",
+    account: "admin",
+    phone: "admin",
+    password: DEFAULT_ADMIN_PASSWORD,
+    role: adminRole.name,
+    roleId: adminRole.id,
+    unitId: adminUnit.id,
+    unit: adminUnit.name,
+    region: adminUnit.zone || adminUnit.name,
+    status: "启用"
+  }, 0, { roles, units }));
+  return users;
 }
 
 function normalizeKnowledge(item = {}, index = 0) {
