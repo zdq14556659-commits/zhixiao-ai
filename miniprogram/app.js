@@ -14,7 +14,26 @@ const DEFAULT_ROLES = [
   { id: "role-ops", name: "运营", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] },
   { id: "role-admin", name: "管理员", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] }
 ];
-const DEFAULT_UNITS = [];
+const ORG_ROOT_ID = "org-root";
+const ORG_STAFF_ID = "org-staff";
+const ORG_WAR_ID = "org-war";
+const ORG_ZONE_IDS = {
+  "东部战区": "org-zone-east",
+  "南部战区": "org-zone-south",
+  "西部战区": "org-zone-west",
+  "北部战区": "org-zone-north",
+  "中部战区": "org-zone-central"
+};
+const DEFAULT_UNITS = [
+  { id: ORG_ROOT_ID, name: "智销AI", parentId: "", type: "root", sort: 0, level: 0, path: "智销AI", active: true },
+  { id: ORG_STAFF_ID, name: "参谋部", parentId: ORG_ROOT_ID, type: "department", sort: 10, level: 1, path: "智销AI / 参谋部", active: true },
+  { id: ORG_WAR_ID, name: "战区部", parentId: ORG_ROOT_ID, type: "department", sort: 20, level: 1, path: "智销AI / 战区部", active: true },
+  { id: ORG_ZONE_IDS["东部战区"], name: "东部战区", parentId: ORG_WAR_ID, type: "battle_zone", zone: "东部战区", sort: 10, level: 2, path: "智销AI / 战区部 / 东部战区", active: true },
+  { id: ORG_ZONE_IDS["南部战区"], name: "南部战区", parentId: ORG_WAR_ID, type: "battle_zone", zone: "南部战区", sort: 20, level: 2, path: "智销AI / 战区部 / 南部战区", active: true },
+  { id: ORG_ZONE_IDS["西部战区"], name: "西部战区", parentId: ORG_WAR_ID, type: "battle_zone", zone: "西部战区", sort: 30, level: 2, path: "智销AI / 战区部 / 西部战区", active: true },
+  { id: ORG_ZONE_IDS["北部战区"], name: "北部战区", parentId: ORG_WAR_ID, type: "battle_zone", zone: "北部战区", sort: 40, level: 2, path: "智销AI / 战区部 / 北部战区", active: true },
+  { id: ORG_ZONE_IDS["中部战区"], name: "中部战区", parentId: ORG_WAR_ID, type: "battle_zone", zone: "中部战区", sort: 50, level: 2, path: "智销AI / 战区部 / 中部战区", active: true }
+];
 const DEFAULT_PRODUCTS = [
   { id: "product-v1", name: "V1", price: 0, active: true },
   { id: "product-v3-upgrade", name: "V3升级", price: 0, active: true },
@@ -457,6 +476,56 @@ App({
     return state.units && state.units.length ? state.units : DEFAULT_UNITS;
   },
 
+  unitLabel(unit = {}) {
+    return unit.path || [unit.zone, unit.name].filter(Boolean).join(" / ") || unit.name || "待分配";
+  },
+
+  selectableUnits() {
+    return this.getUnits().filter((unit) => unit.active !== false && unit.type !== "root");
+  },
+
+  unitById(unitId) {
+    return this.getUnits().find((unit) => String(unit.id) === String(unitId)) || {};
+  },
+
+  unitDescendantIds(unitId) {
+    const ids = new Set();
+    if (!unitId) return ids;
+    ids.add(String(unitId));
+    let changed = true;
+    while (changed) {
+      changed = false;
+      this.getUnits().forEach((unit) => {
+        if (!ids.has(String(unit.id)) && ids.has(String(unit.parentId || ""))) {
+          ids.add(String(unit.id));
+          changed = true;
+        }
+      });
+    }
+    return ids;
+  },
+
+  battleZoneForUser(user = {}) {
+    let unit = this.unitById(user.unitId);
+    while (unit && unit.id) {
+      if (unit.type === "battle_zone") return unit;
+      unit = this.unitById(unit.parentId);
+    }
+    return this.getUnits().find((item) => item.type === "battle_zone" && item.zone === user.zone) || {};
+  },
+
+  managedUnitIds(user = this.getCurrentUser()) {
+    const role = this.getRole(user);
+    if (role.customerScope === "all") return new Set(this.getUnits().map((unit) => String(unit.id)));
+    if (role.customerScope === "unit") return this.unitDescendantIds(user.unitId);
+    if (role.customerScope === "zone") {
+      const zoneUnit = this.battleZoneForUser(user);
+      if (zoneUnit.id) return this.unitDescendantIds(zoneUnit.id);
+      return new Set(this.getUnits().filter((unit) => unit.zone === user.zone).map((unit) => String(unit.id)));
+    }
+    return new Set();
+  },
+
   getRole(user = this.getCurrentUser()) {
     return this.getRoles().find((role) => role.id === user.roleId) || this.getRoles().find((role) => role.name === user.role) || DEFAULT_ROLES.find((role) => role.name === "销售");
   },
@@ -481,6 +550,8 @@ App({
     const owner = this.getRecordOwner(record);
     const unitId = record.unitId || owner.unitId;
     const zone = record.zone || owner.zone;
+    const managed = this.managedUnitIds(user);
+    if (managed.has(String(unitId))) return true;
     if (role.customerScope === "zone") return zone && zone === user.zone;
     if (role.customerScope === "unit") return unitId && unitId === user.unitId;
     return false;
@@ -495,8 +566,10 @@ App({
     const currentUser = this.getCurrentUser();
     const role = this.getRole(currentUser);
     if (role.customerScope === "all") return state.users || [];
+    const managed = this.managedUnitIds(currentUser);
     return (state.users || []).filter((user) => {
       if (Number(user.id) === Number(currentUser.id)) return true;
+      if (managed.has(String(user.unitId))) return true;
       if (role.customerScope === "zone") return user.zone === currentUser.zone;
       if (role.customerScope === "unit") return user.unitId === currentUser.unitId;
       return false;

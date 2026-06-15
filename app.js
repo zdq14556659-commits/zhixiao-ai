@@ -16,6 +16,14 @@ const defaultRoles = [
   { id: "role-ops", name: "运营", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] },
   { id: "role-admin", name: "管理员", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "admin"] }
 ];
+const orgRootId = "org-root";
+const orgTypeLabels = { root: "根节点", department: "一级部门", battle_zone: "战区", unit: "单位", team: "小组" };
+const orgTypeOptions = [
+  { value: "department", label: "一级部门" },
+  { value: "battle_zone", label: "战区" },
+  { value: "unit", label: "单位" },
+  { value: "team", label: "小组" }
+];
 
 let state = { users: [], customers: [], opportunities: [], products: [], visits: [], knowledge: [], stages, roles: defaultRoles, units: [], competitors: [], routes: [] };
 let currentStage = "名单";
@@ -105,6 +113,59 @@ function unitForUser(user = {}) {
   return unitForId(user.unitId) || {};
 }
 
+function unitLabel(unit = {}) {
+  return unit.path || [unit.zone, unit.name].filter(Boolean).join(" / ") || unit.name || "待分配";
+}
+
+function selectableUnits() {
+  return (state.units || []).filter((unit) => unit.active !== false && unit.type !== "root");
+}
+
+function unitDescendantIds(unitId) {
+  const ids = new Set();
+  if (!unitId) return ids;
+  ids.add(String(unitId));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    (state.units || []).forEach((unit) => {
+      if (!ids.has(String(unit.id)) && ids.has(String(unit.parentId || ""))) {
+        ids.add(String(unit.id));
+        changed = true;
+      }
+    });
+  }
+  return ids;
+}
+
+function battleZoneForUser(user = {}) {
+  let unit = unitForId(user.unitId);
+  while (unit && unit.id) {
+    if (unit.type === "battle_zone") return unit;
+    unit = unitForId(unit.parentId);
+  }
+  return (state.units || []).find((unit) => unit.type === "battle_zone" && unit.zone === user.zone) || null;
+}
+
+function managedUnitIdsFor(user = currentUser()) {
+  const role = roleForUser(user);
+  if (role.customerScope === "all") return new Set((state.units || []).map((unit) => String(unit.id)));
+  if (role.customerScope === "unit") return unitDescendantIds(user.unitId);
+  if (role.customerScope === "zone") {
+    const zoneUnit = battleZoneForUser(user);
+    if (zoneUnit) return unitDescendantIds(zoneUnit.id);
+    return new Set((state.units || []).filter((unit) => unit.zone === user.zone).map((unit) => String(unit.id)));
+  }
+  return new Set();
+}
+
+function renderUnitOptions(selectedId = "", options = {}) {
+  const units = (options.includeRoot ? state.units || [] : selectableUnits()).filter((unit) => !options.excludeIds?.has(String(unit.id)));
+  return units
+    .map((unit) => `<option value="${escapeHtml(unit.id)}" ${String(unit.id) === String(selectedId) ? "selected" : ""}>${escapeHtml(unitLabel(unit))}</option>`)
+    .join("");
+}
+
 function recordOwner(record = {}) {
   return state.users.find((user) => user.id === record.ownerId) || state.users.find((user) => user.name === record.owner) || {};
 }
@@ -116,6 +177,8 @@ function canSeePrivateRecord(record = {}, user = currentUser()) {
   const owner = recordOwner(record);
   const unitId = record.unitId || owner.unitId;
   const zone = record.zone || owner.zone;
+  const managed = managedUnitIdsFor(user);
+  if (managed.has(String(unitId))) return true;
   if (role.customerScope === "zone") return zone && zone === user.zone;
   if (role.customerScope === "unit") return unitId && unitId === user.unitId;
   return false;
@@ -129,8 +192,10 @@ function visibleUsers() {
   const user = currentUser();
   const role = roleForUser(user);
   if (role.customerScope === "all") return state.users;
+  const managed = managedUnitIdsFor(user);
   return state.users.filter((item) => {
     if (item.id === user.id) return true;
+    if (managed.has(String(item.unitId))) return true;
     if (role.customerScope === "zone") return item.zone === user.zone;
     if (role.customerScope === "unit") return item.unitId === user.unitId;
     return false;
@@ -1565,18 +1630,22 @@ function renderAdmin() {
     .join("");
   const roleSelect = $("#userRoleSelect");
   const unitSelect = $("#userUnitSelect");
-  const zoneSelect = $("#unitZoneSelect");
+  const unitParentSelect = $("#unitParentSelect");
+  const unitTypeSelect = $("#unitTypeSelect");
   if (roleSelect) {
     roleSelect.innerHTML = roles().map((role) => `<option value="${role.id}">${role.name}</option>`).join("");
   }
   if (unitSelect) {
-    unitSelect.innerHTML = (state.units || []).map((unit) => `<option value="${unit.id}">${unit.name} · ${unit.zone}</option>`).join("");
+    unitSelect.innerHTML = renderUnitOptions(unitSelect.value);
   }
-  if (zoneSelect) {
-    zoneSelect.innerHTML = zones.map((zone) => `<option>${zone}</option>`).join("");
+  if (unitParentSelect) {
+    unitParentSelect.innerHTML = renderUnitOptions(unitParentSelect.value || orgRootId, { includeRoot: true });
+  }
+  if (unitTypeSelect) {
+    unitTypeSelect.innerHTML = orgTypeOptions.map((item) => `<option value="${item.value}">${item.label}</option>`).join("");
   }
   $("#userList").innerHTML = visibleUsers()
-    .map((user) => `<article><b>${escapeHtml(user.name)}</b><span>${user.status || "启用"}</span><p>${escapeHtml(user.role)} · ${escapeHtml(user.unit || "待分配")} · ${escapeHtml(user.zone || "未分战区")} · 账号：${escapeHtml(user.account || user.username || user.phone || "-")}</p><div class="user-actions">${Number(user.id) === Number(currentUser().id) ? "" : `<button data-action="reset-password" data-id="${user.id}">重置密码</button><button data-action="offboard-user" data-id="${user.id}">离职交接</button><button data-action="delete-user" data-id="${user.id}">删除员工</button>`}</div></article>`)
+    .map((user) => `<article><b>${escapeHtml(user.name)}</b><span>${user.status || "启用"}</span><p>${escapeHtml(user.role)} · ${escapeHtml(user.orgPath || user.unit || "待分配")} · ${escapeHtml(user.zone || "未分战区")} · 账号：${escapeHtml(user.account || user.username || user.phone || "-")}</p><div class="user-actions">${Number(user.id) === Number(currentUser().id) ? "" : `<button data-action="reset-password" data-id="${user.id}">重置密码</button><button data-action="offboard-user" data-id="${user.id}">离职交接</button><button data-action="delete-user" data-id="${user.id}">删除员工</button>`}</div></article>`)
     .join("");
   $("#competitorList").innerHTML = (state.competitors || []).map((item) => `<article><b><i class="competitor-swatch" style="background:${escapeHtml(item.color)}"></i>${escapeHtml(item.name)}</b><span>${item.active === false ? "停用" : "启用"}</span></article>`).join("");
   $("#productList").innerHTML = (state.products || []).map((item) => `
@@ -1592,7 +1661,18 @@ function renderAdmin() {
     .map((role) => `<article><b>${role.name}</b><span>${scopeLabels[role.customerScope] || role.customerScope}</span><p>${(role.permissions || []).map((permission) => permissionLabels[permission] || permission).join(" · ")}</p></article>`)
     .join("");
   $("#unitList").innerHTML = (state.units || [])
-    .map((unit) => `<article><b>${escapeHtml(unit.name)}</b><span>${escapeHtml(unit.zone)}</span><p>销售选择该单位后，客户自动归属到该单位和战区。</p><button data-action="delete-unit" data-id="${escapeHtml(unit.id)}">删除单位</button></article>`)
+    .map((unit) => `<article class="org-node ${unit.active === false ? "inactive" : ""}" style="--level:${Number(unit.level || 0)}">
+      <div>
+        <b>${escapeHtml(unit.name)}</b>
+        <span>${escapeHtml(orgTypeLabels[unit.type] || unit.type || "单位")}${unit.active === false ? " · 停用" : ""}</span>
+        <p>${escapeHtml(unit.path || unit.name)}${unit.zone ? ` · ${escapeHtml(unit.zone)}` : ""}</p>
+      </div>
+      <div class="inline-actions">
+        <button data-action="edit-unit" data-id="${escapeHtml(unit.id)}">编辑</button>
+        <button data-action="add-child-unit" data-id="${escapeHtml(unit.id)}">新增下级</button>
+        ${unit.id === orgRootId ? "" : `<button data-action="delete-unit" data-id="${escapeHtml(unit.id)}">删除</button>`}
+      </div>
+    </article>`)
     .join("");
 }
 
@@ -1653,18 +1733,53 @@ async function addUnit(event) {
   const formNode = event.currentTarget;
   const form = new FormData(formNode);
   const name = String(form.get("name") || "").trim();
-  const zone = String(form.get("zone") || "");
-  setFormSubmitting(formNode, true, "添加中...");
+  const id = String(form.get("id") || "").trim();
+  const parentId = String(form.get("parentId") || orgRootId);
+  const type = String(form.get("type") || "unit");
+  const sort = Number(form.get("sort") || 100);
+  const active = form.get("active") === "on";
+  setFormSubmitting(formNode, true, "保存中...");
   try {
-    await api("/units", { method: "POST", body: { name, zone } });
-    formNode.reset();
+    await api(id ? `/units/${encodeURIComponent(id)}` : "/units", {
+      method: id ? "PUT" : "POST",
+      body: { name, parentId, type, sort, active }
+    });
+    resetUnitForm();
     await loadState();
-    showSuccessFeedback("单位添加成功", `${name}已归入${zone}，单位列表和员工单位选项已自动更新。`);
+    showSuccessFeedback(id ? "组织节点已更新" : "组织节点添加成功", `${name}已保存，组织树和员工单位选项已自动更新。`);
   } catch (error) {
-    toast(error.message || "单位添加失败");
+    toast(error.message || "组织节点保存失败");
   } finally {
-    setFormSubmitting(formNode, false, "添加中...");
+    setFormSubmitting(formNode, false, "保存中...");
   }
+}
+
+function resetUnitForm(parentId = orgRootId) {
+  const form = $("#unitForm");
+  if (!form) return;
+  form.reset();
+  form.elements.id.value = "";
+  form.elements.parentId.value = parentId;
+  form.elements.type.value = "unit";
+  form.elements.sort.value = "100";
+  form.elements.active.checked = true;
+  $("#unitFormMode").textContent = parentId && parentId !== orgRootId ? `在 ${unitLabel(unitForId(parentId))} 下新增` : "新建组织节点";
+}
+
+function editUnit(id) {
+  const unit = unitForId(id);
+  const form = $("#unitForm");
+  if (!unit.id || !form) return;
+  const excluded = unitDescendantIds(unit.id);
+  form.elements.id.value = unit.id;
+  form.elements.name.value = unit.name || "";
+  $("#unitParentSelect").innerHTML = renderUnitOptions(unit.parentId || orgRootId, { includeRoot: true, excludeIds: excluded });
+  form.elements.parentId.value = unit.parentId || orgRootId;
+  form.elements.type.value = unit.type === "root" ? "department" : (unit.type || "unit");
+  form.elements.sort.value = Number(unit.sort || 100);
+  form.elements.active.checked = unit.active !== false;
+  $("#unitFormMode").textContent = `编辑：${unitLabel(unit)}`;
+  form.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 async function addCompetitor(event) {
@@ -1750,10 +1865,14 @@ async function deleteUser(id) {
 
 async function deleteUnit(id) {
   const unit = (state.units || []).find((item) => item.id === id);
-  if (!unit || !confirm(`确认删除单位：${unit.name}？`)) return;
-  await api(`/units/${encodeURIComponent(id)}`, { method: "DELETE" });
-  await loadState();
-  toast("单位已删除");
+  if (!unit || !confirm(`确认删除组织节点：${unitLabel(unit)}？`)) return;
+  try {
+    await api(`/units/${encodeURIComponent(id)}`, { method: "DELETE" });
+    await loadState();
+    showSuccessFeedback("组织节点已删除", "组织树和员工单位选项已自动更新。");
+  } catch (error) {
+    toast(error.message || "组织节点删除失败");
+  }
 }
 
 function clearCustomerFilters() {
@@ -1988,6 +2107,7 @@ function wireEvents() {
   $("#userForm").addEventListener("submit", addUser);
   $("#roleForm").addEventListener("submit", addRole);
   $("#unitForm").addEventListener("submit", addUnit);
+  $("#resetUnitFormBtn").addEventListener("click", () => resetUnitForm());
   $("#competitorForm").addEventListener("submit", addCompetitor);
   $("#productForm").addEventListener("submit", addProduct);
   $("#customerProductSelect").addEventListener("change", (event) => fillAmountFromProduct($("#customerForm"), event.target.value));
@@ -2003,8 +2123,11 @@ function wireEvents() {
     if (button.dataset.action === "offboard-user") openOffboardDialog(button.dataset.id);
   });
   $("#unitList").addEventListener("click", (event) => {
-    const button = event.target.closest("button[data-action='delete-unit']");
-    if (button) deleteUnit(button.dataset.id);
+    const button = event.target.closest("button[data-action]");
+    if (!button) return;
+    if (button.dataset.action === "delete-unit") deleteUnit(button.dataset.id);
+    if (button.dataset.action === "edit-unit") editUnit(button.dataset.id);
+    if (button.dataset.action === "add-child-unit") resetUnitForm(button.dataset.id);
   });
   $("#productList").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-action='update-product-price']");

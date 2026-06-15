@@ -47,7 +47,7 @@ const PUBLIC_POOL_DAYS = 30;
 const LIFECYCLE_ACTIVE = "active";
 const LIFECYCLE_ARCHIVED = "archived";
 const DEFAULT_ADMIN_PASSWORD = "778899";
-const BACKEND_VERSION = "backend-v8";
+const BACKEND_VERSION = "backend-v9";
 const MONEY_UNIT = "yuan";
 const LEGACY_MONEY_MULTIPLIER = 10000;
 const DEFAULT_EXPECTED_AMOUNT = 150000;
@@ -61,7 +61,27 @@ const DEFAULT_ROLES = [
   { id: "role-ops", name: "运营", customerScope: "all", permissions: ADMIN_PERMISSIONS },
   { id: "role-admin", name: "管理员", customerScope: "all", permissions: ADMIN_PERMISSIONS }
 ];
-const DEFAULT_UNITS = [];
+const ORG_ROOT_ID = "org-root";
+const ORG_STAFF_ID = "org-staff";
+const ORG_WAR_ID = "org-war";
+const ORG_ZONE_IDS = {
+  "东部战区": "org-zone-east",
+  "南部战区": "org-zone-south",
+  "西部战区": "org-zone-west",
+  "北部战区": "org-zone-north",
+  "中部战区": "org-zone-central"
+};
+const ORG_TYPES = ["root", "department", "battle_zone", "unit", "team"];
+const DEFAULT_UNITS = [
+  { id: ORG_ROOT_ID, name: "智销AI", parentId: "", type: "root", sort: 0, active: true },
+  { id: ORG_STAFF_ID, name: "参谋部", parentId: ORG_ROOT_ID, type: "department", sort: 10, active: true },
+  { id: ORG_WAR_ID, name: "战区部", parentId: ORG_ROOT_ID, type: "department", sort: 20, active: true },
+  { id: ORG_ZONE_IDS["东部战区"], name: "东部战区", parentId: ORG_WAR_ID, type: "battle_zone", zone: "东部战区", sort: 10, active: true },
+  { id: ORG_ZONE_IDS["南部战区"], name: "南部战区", parentId: ORG_WAR_ID, type: "battle_zone", zone: "南部战区", sort: 20, active: true },
+  { id: ORG_ZONE_IDS["西部战区"], name: "西部战区", parentId: ORG_WAR_ID, type: "battle_zone", zone: "西部战区", sort: 30, active: true },
+  { id: ORG_ZONE_IDS["北部战区"], name: "北部战区", parentId: ORG_WAR_ID, type: "battle_zone", zone: "北部战区", sort: 40, active: true },
+  { id: ORG_ZONE_IDS["中部战区"], name: "中部战区", parentId: ORG_WAR_ID, type: "battle_zone", zone: "中部战区", sort: 50, active: true }
+];
 const DEFAULT_COMPETITORS = [
   { id: "competitor-3vjia", name: "三维家", color: "#4f7cff", active: true },
   { id: "competitor-yunxi", name: "云熙", color: "#8b5cf6", active: true },
@@ -97,7 +117,7 @@ ensureDataFile();
 try {
   readState();
 } catch (error) {
-  console.error("智销AI backend-v8 数据迁移失败，服务已停止启动，原数据库和备份文件均未删除。", error);
+  console.error("智销AI backend-v9 数据迁移失败，服务已停止启动，原数据库和备份文件均未删除。", error);
   throw error;
 }
 
@@ -1192,6 +1212,89 @@ async function routeApi(req, res, url) {
     return sendJson(res, 201, role);
   }
 
+  const unitNodeRoute = url.pathname.match(/^\/api\/units(?:\/([^/]+))?$/);
+  if (unitNodeRoute && req.method === "POST" && !unitNodeRoute[1]) {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无组织架构管理权限" });
+    const parent = unitById(state.units, body.parentId || ORG_ROOT_ID);
+    if (!parent) return sendJson(res, 400, { error: "上级组织不存在" });
+    const unit = normalizeUnit({
+      id: body.id || stableId("unit", body.name || Date.now()),
+      name: body.name,
+      parentId: parent.id,
+      type: body.type || "unit",
+      sort: body.sort,
+      active: body.active !== false,
+      zone: body.zone || parent.zone || body.region
+    });
+    if (!unit.name) return sendJson(res, 400, { error: "组织名称必填" });
+    if (state.units.some((item) => cleanText(item.name) === cleanText(unit.name) && String(item.parentId || "") === String(parent.id))) {
+      return sendJson(res, 409, { error: "同级组织已存在" });
+    }
+    state.units = normalizeUnits([...state.units, unit]);
+    writeState(state);
+    return sendJson(res, 201, unitById(state.units, unit.id) || unit);
+  }
+
+  if (unitNodeRoute && (req.method === "PUT" || req.method === "PATCH") && unitNodeRoute[1]) {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无组织架构管理权限" });
+    const id = decodeURIComponent(unitNodeRoute[1]);
+    const index = state.units.findIndex((unit) => unit.id === id);
+    if (index < 0) return sendJson(res, 404, { error: "组织节点不存在" });
+    if (id === ORG_ROOT_ID && body.parentId) return sendJson(res, 400, { error: "根节点不能移动" });
+    const previous = state.units[index];
+    const parentId = body.parentId !== undefined ? String(body.parentId || "") : previous.parentId;
+    if (id !== ORG_ROOT_ID) {
+      const parent = unitById(state.units, parentId);
+      if (!parent) return sendJson(res, 400, { error: "上级组织不存在" });
+      if (unitDescendantIds(state.units, id).has(String(parentId))) return sendJson(res, 400, { error: "不能移动到自己的下级组织" });
+    }
+    const next = normalizeUnit({
+      ...previous,
+      name: body.name !== undefined ? body.name : previous.name,
+      parentId: id === ORG_ROOT_ID ? "" : parentId,
+      type: id === ORG_ROOT_ID ? "root" : (body.type || previous.type || "unit"),
+      sort: body.sort !== undefined ? body.sort : previous.sort,
+      active: body.active !== undefined ? body.active : previous.active,
+      zone: body.zone || previous.zone
+    });
+    if (!next.name) return sendJson(res, 400, { error: "组织名称必填" });
+    if (state.units.some((unit) => unit.id !== id && cleanText(unit.name) === cleanText(next.name) && String(unit.parentId || "") === String(next.parentId || ""))) {
+      return sendJson(res, 409, { error: "同级组织已存在" });
+    }
+    state.units[index] = next;
+    state.units = normalizeUnits(state.units);
+    syncUnitReferences(state, id);
+    writeState(state);
+    return sendJson(res, 200, unitById(state.units, id) || next);
+  }
+
+  if (unitNodeRoute && req.method === "DELETE" && unitNodeRoute[1]) {
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无组织架构删除权限" });
+    const id = decodeURIComponent(unitNodeRoute[1]);
+    if (id === ORG_ROOT_ID) return sendJson(res, 400, { error: "根节点不能删除" });
+    const unit = unitById(state.units, id);
+    if (!unit) return sendJson(res, 404, { error: "组织节点不存在" });
+    const childCount = state.units.filter((item) => String(item.parentId || "") === String(id)).length;
+    const userCount = state.users.filter((user) => String(user.unitId || "") === String(id)).length;
+    const customerCount = state.customers.filter((customer) => String(customer.unitId || "") === String(id)).length;
+    const opportunityCount = state.opportunities.filter((opportunity) => String(opportunity.unitId || "") === String(id)).length;
+    const visitCount = state.visits.filter((visit) => String(visit.unitId || "") === String(id)).length;
+    if (childCount || userCount || customerCount || opportunityCount || visitCount) {
+      return sendJson(res, 409, { error: "该组织仍有关联数据，请先转移或停用", childCount, userCount, customerCount, opportunityCount, visitCount });
+    }
+    state.units = normalizeUnits(state.units.filter((unit) => unit.id !== id));
+    writeState(state);
+    return sendJson(res, 200, { ok: true });
+  }
+
   if (req.method === "POST" && url.pathname === "/api/units") {
     const body = await readBody(req);
     const state = readState();
@@ -1354,7 +1457,7 @@ function mergeUsers(incomingUsers, existingUsers) {
 
 function migrateState(state) {
   const source = migrateMoneyToYuan(state);
-  const legacyOwnership = !["backend-v4", "backend-v5", "backend-v6", "backend-v7", "backend-v8"].includes(source.version);
+  const legacyOwnership = !["backend-v4", "backend-v5", "backend-v6", "backend-v7", "backend-v8", "backend-v9"].includes(source.version);
   const roles = normalizeRoles(source.roles || []);
   const units = normalizeUnits(source.units || [], source);
   const competitors = normalizeCompetitors(source.competitors || []);
@@ -1362,7 +1465,7 @@ function migrateState(state) {
   const users = normalizeUsers(source.users || [], {
     roles,
     units,
-    resetAdminPassword: !["backend-v3", "backend-v4", "backend-v5", "backend-v6", "backend-v7", "backend-v8"].includes(source.version)
+    resetAdminPassword: !["backend-v3", "backend-v4", "backend-v5", "backend-v6", "backend-v7", "backend-v8", "backend-v9"].includes(source.version)
   });
   const activities = source.activities || [];
   const context = { roles, units, users, activities, competitors, products, legacyOwnership };
@@ -1476,24 +1579,78 @@ function normalizeRole(role = {}) {
 }
 
 function normalizeUnits(units) {
-  const merged = [...DEFAULT_UNITS];
+  const merged = new Map(DEFAULT_UNITS.map((unit) => [unit.id, normalizeUnit(unit)]));
   const sources = (Array.isArray(units) ? units : []).filter((unit) => unit && unit.name && !LEGACY_DEMO_UNIT_IDS.has(unit.id));
   sources.forEach((unit) => {
     const normalized = normalizeUnit(unit);
-    const index = merged.findIndex((item) => item.id === normalized.id || cleanText(item.name) === cleanText(normalized.name));
-    if (index >= 0) merged[index] = { ...merged[index], ...normalized };
-    else merged.push(normalized);
+    if (!normalized.name) return;
+    if (!normalized.parentId && normalized.id !== ORG_ROOT_ID) {
+      normalized.parentId = zoneUnitId(normalized.zone) || ORG_WAR_ID;
+    }
+    if (merged.has(normalized.id)) {
+      merged.set(normalized.id, { ...merged.get(normalized.id), ...normalized });
+      return;
+    }
+    const duplicate = [...merged.values()].find((item) => cleanText(item.name) === cleanText(normalized.name) && String(item.parentId || "") === String(normalized.parentId || ""));
+    if (duplicate) merged.set(duplicate.id, { ...duplicate, ...normalized, id: duplicate.id });
+    else merged.set(normalized.id, normalized);
   });
-  return merged;
+  return buildUnitHierarchy([...merged.values()]);
 }
 
 function normalizeUnit(unit = {}) {
-  const name = unit.name || unit.unit || unit.region || "";
+  const name = String(unit.name || unit.unit || unit.region || "").trim();
+  const type = ORG_TYPES.includes(unit.type) ? unit.type : (unit.parentId ? "unit" : "unit");
   return {
-    id: unit.id || stableId("unit", name),
+    id: String(unit.id || stableId("unit", name || Date.now())),
     name,
-    zone: normalizeZone(unit.zone || unit.region || name)
+    parentId: unit.id === ORG_ROOT_ID ? "" : String(unit.parentId || ""),
+    type,
+    level: Number(unit.level || 0),
+    path: unit.path || name,
+    zone: unit.zone || (type === "battle_zone" ? name : normalizeZone(unit.region || unit.zone || name)),
+    sort: Number.isFinite(Number(unit.sort)) ? Number(unit.sort) : 100,
+    active: unit.active !== false
   };
+}
+
+function buildUnitHierarchy(units = []) {
+  const map = new Map(units.map((unit) => [String(unit.id), { ...unit }]));
+  if (!map.has(ORG_ROOT_ID)) map.set(ORG_ROOT_ID, normalizeUnit(DEFAULT_UNITS[0]));
+  map.forEach((unit) => {
+    if (unit.id === ORG_ROOT_ID) {
+      unit.parentId = "";
+      unit.type = "root";
+      unit.zone = "";
+      return;
+    }
+    if (!unit.parentId || !map.has(unit.parentId) || unit.parentId === unit.id) unit.parentId = ORG_ROOT_ID;
+  });
+  const children = new Map();
+  map.forEach((unit) => {
+    if (!children.has(unit.parentId)) children.set(unit.parentId, []);
+    children.get(unit.parentId).push(unit);
+  });
+  const result = [];
+  const visit = (unit, ancestry = []) => {
+    const parentPath = ancestry.map((item) => item.name).filter(Boolean);
+    const zoneAncestor = [...ancestry, unit].find((item) => item.type === "battle_zone");
+    const next = {
+      ...unit,
+      level: ancestry.length,
+      path: [...parentPath, unit.name].filter(Boolean).join(" / "),
+      zone: unit.type === "root" ? "" : (zoneAncestor?.zone || (unit.type === "battle_zone" ? unit.name : ""))
+    };
+    result.push(next);
+    (children.get(unit.id) || [])
+      .sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0) || String(left.name).localeCompare(String(right.name), "zh-Hans-CN"))
+      .forEach((child) => visit(child, [...ancestry, next]));
+  };
+  visit(map.get(ORG_ROOT_ID), []);
+  map.forEach((unit) => {
+    if (!result.some((item) => item.id === unit.id)) visit(unit, []);
+  });
+  return result;
 }
 
 function normalizeCompetitors(competitors = []) {
@@ -1626,6 +1783,7 @@ function normalizeUser(user = {}, index = 0, context = {}) {
     unit: unit.name || user.unit || user.region || "待分配",
     zone: unit.zone || normalizeZone(user.zone || user.region || user.unit),
     region: user.region || unit.zone || unit.name || "待分区",
+    orgPath: unit.path || user.orgPath || unit.name || "",
     status: user.status || "启用",
     createdAt: user.createdAt || today()
   };
@@ -1717,8 +1875,90 @@ function findUnit(units = DEFAULT_UNITS, unitId, unitName) {
   return (
     units.find((unit) => unitId && unit.id === unitId) ||
     units.find((unit) => cleanText(unit.name) === cleanText(name)) ||
-    { id: stableId("unit", name || "待分配"), name: name || "待分配", zone: normalizeZone(name) }
+    { id: stableId("unit", name || "待分配"), name: name || "待分配", zone: normalizeZone(name), parentId: zoneUnitId(normalizeZone(name)) || ORG_WAR_ID, path: name || "待分配", level: 0, active: true, type: "unit" }
   );
+}
+
+function zoneUnitId(zone) {
+  return ORG_ZONE_IDS[normalizeZone(zone)] || "";
+}
+
+function unitById(units = [], unitId) {
+  return (units || []).find((unit) => String(unit.id) === String(unitId)) || null;
+}
+
+function unitDescendantIds(units = [], unitId) {
+  const root = unitById(units, unitId);
+  if (!root) return new Set();
+  const ids = new Set([String(root.id)]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    (units || []).forEach((unit) => {
+      if (!ids.has(String(unit.id)) && ids.has(String(unit.parentId || ""))) {
+        ids.add(String(unit.id));
+        changed = true;
+      }
+    });
+  }
+  return ids;
+}
+
+function battleZoneUnitForUser(units = [], user = {}) {
+  const unit = unitById(units, user.unitId);
+  if (unit) {
+    const pathIds = [];
+    let cursor = unit;
+    while (cursor && cursor.id) {
+      pathIds.push(String(cursor.id));
+      cursor = unitById(units, cursor.parentId);
+    }
+    const zoneUnit = pathIds.map((id) => unitById(units, id)).find((item) => item?.type === "battle_zone");
+    if (zoneUnit) return zoneUnit;
+  }
+  const fallbackId = zoneUnitId(user.zone || user.region || user.unit);
+  return fallbackId ? unitById(units, fallbackId) : null;
+}
+
+function managedOrgUnitIds(state, viewer = {}) {
+  const role = findRole(state.roles, viewer.roleId, viewer.role);
+  if (role.customerScope === "all") return new Set((state.units || []).map((unit) => String(unit.id)));
+  if (role.customerScope === "unit") return unitDescendantIds(state.units || [], viewer.unitId);
+  if (role.customerScope === "zone") {
+    const zoneUnit = battleZoneUnitForUser(state.units || [], viewer);
+    if (zoneUnit) return unitDescendantIds(state.units || [], zoneUnit.id);
+    const zone = viewer.zone || normalizeZone(viewer.region || viewer.unit);
+    return new Set((state.units || []).filter((unit) => unit.zone === zone).map((unit) => String(unit.id)));
+  }
+  return new Set();
+}
+
+function applyUnitToUser(user = {}, unit = {}) {
+  return {
+    ...user,
+    unitId: unit.id || "",
+    unit: unit.name || user.unit || "待分配",
+    zone: unit.zone || normalizeZone(user.zone || user.region || unit.name),
+    region: unit.zone || user.region || "待分区",
+    orgPath: unit.path || unit.name || ""
+  };
+}
+
+function syncUnitReferences(state, unitId) {
+  const unit = unitById(state.units || [], unitId);
+  if (!unit) return;
+  const applyRecordUnit = (record) => {
+    if (String(record.unitId || "") !== String(unitId)) return;
+    record.unit = unit.name || record.unit || "";
+    record.zone = unit.zone || record.zone || "";
+    record.region = unit.zone || record.region || "";
+    record.orgPath = unit.path || record.orgPath || "";
+  };
+  state.users = (state.users || []).map((user) => String(user.unitId || "") === String(unitId) ? applyUnitToUser(user, unit) : user);
+  (state.customers || []).forEach(applyRecordUnit);
+  (state.opportunities || []).forEach(applyRecordUnit);
+  (state.visits || []).forEach(applyRecordUnit);
+  (state.routes || []).forEach(applyRecordUnit);
 }
 
 function findUser(users = [], userId, userName) {
@@ -1782,6 +2022,7 @@ function normalizeCustomer(customer, context = {}) {
     unitId: customer.unitId || ownerUser.unitId || unit.id || "",
     unit: customer.unit || ownerUser.unit || unit.name || "",
     zone: customer.zone || ownerUser.zone || unit.zone || normalizeZone(customer.region),
+    orgPath: customer.orgPath || ownerUser.orgPath || unit.path || "",
     region: customer.region || ownerUser.zone || unit.zone || "待分区",
     amount: Number(customer.amount || DEFAULT_EXPECTED_AMOUNT),
     demoAt: customer.demoAt || customer.effectiveDemoAt || "",
@@ -1884,6 +2125,7 @@ function normalizeOpportunity(opportunity = {}, context = {}) {
     unitId: opportunity.unitId || ownerUser.unitId || customer.unitId || "",
     unit: opportunity.unit || ownerUser.unit || customer.unit || "",
     zone: opportunity.zone || ownerUser.zone || customer.zone || "",
+    orgPath: opportunity.orgPath || ownerUser.orgPath || customer.orgPath || "",
     region: opportunity.region || customer.region || "待分区",
     createdBy: opportunity.createdBy || customer.createdBy || ownerUser.name || "未记录",
     createdAt,
@@ -1924,7 +2166,7 @@ function syncCustomerCompatibility(state, customerId) {
   const customer = findCustomer(state.customers || [], customerId);
   const opportunity = primaryOpportunity(state, customerId);
   if (!customer || !opportunity) return customer;
-  ["stage", "owner", "ownerId", "followPerson", "unitId", "unit", "zone", "region", "amount", "demoAt", "quoteAmount", "expectedDealDate", "contractAmount", "paymentAmount", "paymentDate", "paymentOwnerId", "paymentOwner", "lossReason", "ownershipStatus", "claimUntil", "effectiveFollowUpAt", "publicPoolAt", "publicPoolReason", "ownershipHistory", "leadAt", "opportunityAt", "dealAt", "followUps"].forEach((field) => {
+  ["stage", "owner", "ownerId", "followPerson", "unitId", "unit", "zone", "region", "orgPath", "amount", "demoAt", "quoteAmount", "expectedDealDate", "contractAmount", "paymentAmount", "paymentDate", "paymentOwnerId", "paymentOwner", "lossReason", "ownershipStatus", "claimUntil", "effectiveFollowUpAt", "publicPoolAt", "publicPoolReason", "ownershipHistory", "leadAt", "opportunityAt", "dealAt", "followUps"].forEach((field) => {
     customer[field] = opportunity[field];
   });
   return customer;
@@ -2292,6 +2534,7 @@ function normalizeVisit(visit = {}, context = {}) {
     unitId: visit.unitId || ownerUser.unitId || unit.id || "",
     unit: visit.unit || ownerUser.unit || unit.name || "",
     zone: visit.zone || ownerUser.zone || unit.zone || "",
+    orgPath: visit.orgPath || ownerUser.orgPath || unit.path || "",
     photos: Array.isArray(visit.photos) ? visit.photos : [],
     date: visit.date || today()
   };
@@ -2819,9 +3062,11 @@ function scopeStateForUser(state, viewer = null) {
 function visibleUsers(state, viewer) {
   const role = findRole(state.roles, viewer.roleId, viewer.role);
   if (role.customerScope === "all") return state.users || [];
+  const managedUnits = managedOrgUnitIds(state, viewer);
   return (state.users || []).filter((user) => {
     if (Number(user.id) === Number(viewer.id)) return true;
     if (Array.isArray(viewer.managedUnitIds) && viewer.managedUnitIds.includes(user.unitId)) return true;
+    if (managedUnits.has(String(user.unitId))) return true;
     if (role.customerScope === "zone") return user.zone === viewer.zone;
     if (role.customerScope === "unit") return user.unitId === viewer.unitId;
     return false;
@@ -2840,7 +3085,9 @@ function canViewRecord(state, viewer, record = {}) {
   const owner = findUser(state.users, record.ownerId, record.owner);
   const unitId = record.unitId || owner.unitId;
   const zone = record.zone || owner.zone || normalizeZone(record.region || record.city || record.unit);
+  const managedUnits = managedOrgUnitIds(state, viewer);
   if (Array.isArray(viewer.managedUnitIds) && viewer.managedUnitIds.includes(unitId)) return true;
+  if (managedUnits.has(String(unitId))) return true;
   if (role.customerScope === "zone") return zone && zone === viewer.zone;
   if (role.customerScope === "unit") return unitId && unitId === viewer.unitId;
   return false;
@@ -2903,15 +3150,17 @@ function canManageTargetScope(state, viewer, target = {}) {
   if (role.customerScope === "all") return true;
   if (target.scopeType === "company") return false;
   if (role.customerScope === "zone") {
+    const managed = managedOrgUnitIds(state, viewer);
     if (target.scopeType === "zone") return target.scopeId === viewer.zone;
-    if (target.scopeType === "unit") return findUnit(state.units, target.scopeId, target.scopeName).zone === viewer.zone;
+    if (target.scopeType === "unit") return managed.has(String(target.scopeId));
     const user = findUser(state.users, target.scopeId, target.scopeName);
-    return target.scopeType === "user" && user.zone === viewer.zone;
+    return target.scopeType === "user" && (managed.has(String(user.unitId)) || user.zone === viewer.zone);
   }
   if (role.customerScope === "unit") {
-    if (target.scopeType === "unit") return String(target.scopeId) === String(viewer.unitId);
+    const managed = managedOrgUnitIds(state, viewer);
+    if (target.scopeType === "unit") return managed.has(String(target.scopeId));
     const user = findUser(state.users, target.scopeId, target.scopeName);
-    return target.scopeType === "user" && String(user.unitId) === String(viewer.unitId);
+    return target.scopeType === "user" && managed.has(String(user.unitId));
   }
   return false;
 }
@@ -2962,8 +3211,8 @@ function dashboardScopeOptions(state, viewer) {
   if (role.customerScope === "all") options.unshift({ type: "company", id: "company", name: "全公司" });
   const visible = visibleUsers(state, viewer);
   const units = (state.units || []).filter((unit) => visible.some((user) => String(user.unitId) === String(unit.id)));
-  if (["zone", "all"].includes(role.customerScope)) {
-    units.forEach((unit) => options.push({ type: "unit", id: String(unit.id), name: unit.name }));
+  if (["unit", "zone", "all"].includes(role.customerScope)) {
+    units.forEach((unit) => options.push({ type: "unit", id: String(unit.id), name: unit.path || unit.name }));
   }
   if (role.customerScope === "all") {
     [...new Set(visible.map((user) => user.zone).filter(Boolean))].forEach((zone) => options.push({ type: "zone", id: zone, name: zone }));
@@ -2988,7 +3237,7 @@ function recordMatchesScope(state, record, scope) {
   const zone = record.zone || owner.zone || normalizeZone(record.region || record.city || record.unit);
   if (scope.type === "company") return true;
   if (scope.type === "zone") return zone === scope.id;
-  if (scope.type === "unit") return String(unitId) === String(scope.id);
+  if (scope.type === "unit") return unitDescendantIds(state.units || [], scope.id).has(String(unitId));
   return Number(record.ownerId || owner.id) === Number(scope.id);
 }
 

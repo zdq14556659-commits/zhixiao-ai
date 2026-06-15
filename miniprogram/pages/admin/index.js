@@ -9,9 +9,15 @@ Page({
     scopeValues: ["self", "unit", "zone", "all"],
     roleIndex: 0,
     unitIndex: 0,
+    parentIndex: 0,
+    unitTypeIndex: 2,
+    unitTypes: ["department", "battle_zone", "unit", "team"],
+    unitTypeNames: ["一级部门", "战区", "单位", "小组"],
     zoneIndex: 0,
     scopeIndex: 1,
     users: [],
+    orgUnits: [],
+    parentUnits: [],
     knowledge: [],
     knowledgeFile: null,
     unitPickerText: "请先添加单位",
@@ -52,13 +58,17 @@ Page({
   reload(callback) {
     app.loadRemoteState(() => {
       const state = app.getState();
+      const units = app.selectableUnits();
+      const parentUnits = app.getUnits();
       this.setData({
         users: app.visibleUsers(),
         currentUserId: Number(app.getCurrentUser()?.id || 0),
         roles: app.getRoles(),
-        units: app.getUnits(),
+        units,
+        orgUnits: app.getUnits(),
+        parentUnits,
         knowledge: state.knowledge || [],
-        unitPickerText: this.formatUnitPicker(app.getUnits(), this.data.unitIndex)
+        unitPickerText: this.formatUnitPicker(units, this.data.unitIndex)
       });
       if (callback) callback();
     });
@@ -77,6 +87,14 @@ Page({
     this.setData({ zoneIndex: Number(event.detail.value) });
   },
 
+  onParentUnit(event) {
+    this.setData({ parentIndex: Number(event.detail.value) });
+  },
+
+  onUnitType(event) {
+    this.setData({ unitTypeIndex: Number(event.detail.value) });
+  },
+
   onScope(event) {
     this.setData({ scopeIndex: Number(event.detail.value) });
   },
@@ -87,7 +105,7 @@ Page({
 
   formatUnitPicker(units = [], index = 0) {
     const unit = units[index];
-    return unit ? `${unit.name} · ${unit.zone}` : "请先添加单位";
+    return unit ? app.unitLabel(unit) : "请选择单位";
   },
 
   flashSuccess(title, detail) {
@@ -201,22 +219,23 @@ Page({
   },
 
   submitUnit(event) {
-    const name = String(event.detail.value.name || "").trim();
-    const zone = this.data.zones[this.data.zoneIndex];
-    if (!name) {
-      wx.showToast({ title: "请填写单位名称", icon: "none" });
+    const nextName = String(event.detail.value.name || "").trim();
+    const parent = this.data.parentUnits[this.data.parentIndex] || {};
+    const type = this.data.unitTypes[this.data.unitTypeIndex] || "unit";
+    if (!nextName) {
+      wx.showToast({ title: "请填写组织名称", icon: "none" });
       return;
     }
     this.setData({ savingUnit: true });
     app
       .requestApi("/units", {
         method: "POST",
-        data: { name, zone }
+        data: { name: nextName, parentId: parent.id || "org-root", type, active: true, sort: 100 }
       })
       .then(() => {
         this.reload(() => {
-          this.setData({ zoneIndex: 0, unitName: "" });
-          this.flashSuccess("单位添加成功", `${name}已归入${zone}，单位列表和员工单位选项已自动更新。`);
+          this.setData({ parentIndex: 0, unitTypeIndex: 2, unitName: "" });
+          this.flashSuccess("组织节点添加成功", `${nextName}已保存，组织树和员工单位选项已自动更新。`);
         });
       })
       .catch((error) => wx.showToast({ title: error.message || "添加失败", icon: "none" }))
@@ -339,7 +358,7 @@ Page({
 
   deleteUnit(event) {
     const id = event.currentTarget.dataset.id;
-    const unit = this.data.units.find((item) => item.id === id);
+    const unit = (this.data.orgUnits || this.data.units).find((item) => item.id === id);
     if (!unit) return;
     wx.showModal({
       title: "删除单位",

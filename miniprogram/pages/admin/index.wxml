@@ -90,12 +90,18 @@
         <input name="name" value="{{unitName}}" bindinput="onUnitName" placeholder="例如：东部战区杭州一部" />
       </view>
       <view class="form-item">
-        <text class="label">所属战区</text>
-        <picker range="{{zones}}" value="{{zoneIndex}}" bindchange="onZone">
-          <view class="picker-box">{{zones[zoneIndex]}}</view>
+        <text class="label">上级组织</text>
+        <picker range="{{parentUnits}}" range-key="path" value="{{parentIndex}}" bindchange="onParentUnit">
+          <view class="picker-box">{{parentUnits[parentIndex].path || parentUnits[parentIndex].name || '智销AI'}}</view>
         </picker>
       </view>
-      <button class="plain-btn" form-type="submit" loading="{{savingUnit}}" disabled="{{savingUnit}}">{{savingUnit ? '添加中' : '添加单位'}}</button>
+      <view class="form-item">
+        <text class="label">组织类型</text>
+        <picker range="{{unitTypeNames}}" value="{{unitTypeIndex}}" bindchange="onUnitType">
+          <view class="picker-box">{{unitTypeNames[unitTypeIndex]}}</view>
+        </picker>
+      </view>
+      <button class="plain-btn" form-type="submit" loading="{{savingUnit}}" disabled="{{savingUnit}}">{{savingUnit ? '保存中' : '添加组织'}}</button>
     </view>
   </form>
 
@@ -104,7 +110,7 @@
     <view class="user-row {{deletingUserId === item.id ? 'removing' : ''}}" wx:for="{{users}}" wx:key="id">
       <view class="row-main">
         <view class="name">{{item.name}}</view>
-        <view class="muted">{{item.role}} · {{item.unit || '未填单位'}} · {{item.zone || item.region || '未分战区'}}</view>
+        <view class="muted">{{item.role}} · {{item.orgPath || item.unit || '未填单位'}} · {{item.zone || item.region || '未分战区'}}</view>
         <view class="muted">账号：{{item.account || item.username}}</view>
       </view>
       <view wx:if="{{currentUserId !== item.id}}" class="user-row-actions">
@@ -116,12 +122,12 @@
 
   <view class="card">
     <view class="section-title">单位列表</view>
-    <view class="user-row {{deletingUnitId === item.id ? 'removing' : ''}}" wx:for="{{units}}" wx:key="id">
+    <view class="user-row {{deletingUnitId === item.id ? 'removing' : ''}}" wx:for="{{orgUnits}}" wx:key="id" style="padding-left: {{item.level * 24}}rpx;">
       <view class="row-main">
         <view class="name">{{item.name}}</view>
-        <view class="muted">{{item.zone}}</view>
+        <view class="muted">{{item.path || item.zone}}</view>
       </view>
-      <button class="mini-danger" data-id="{{item.id}}" bindtap="deleteUnit">删除</button>
+      <button wx:if="{{item.type !== 'root'}}" class="mini-danger" data-id="{{item.id}}" bindtap="deleteUnit">删除</button>
     </view>
   </view>
   </view>

@@ -99,7 +99,7 @@ async function run() {
   assert.equal(pool.data.items[0].productName, "ERP");
   const customerBoard = await request("/customer-board", { token: sales });
   assert.equal(customerBoard.status, 200);
-  assert.equal(customerBoard.data.backendVersion, "backend-v8");
+  assert.equal(customerBoard.data.backendVersion, "backend-v9");
   assert.ok(customerBoard.data.items.some((item) => item.productName === "V1" && item.stage === "成交"));
   assert.equal(customerBoard.data.publicPool.count, 1);
   const stateWithPool = await request("/state", { token: sales });
@@ -121,7 +121,7 @@ async function run() {
   const wonPoint = map.data.points.find((item) => Number(item.customerId) === Number(wonV1.data.customerId));
   assert.equal(wonPoint?.pointStatus, "sold");
   const persisted = JSON.parse(fs.readFileSync(path.join(tempDir, "db.json"), "utf8"));
-  assert.equal(persisted.version, "backend-v8");
+  assert.equal(persisted.version, "backend-v9");
   assert.equal(persisted.customers.length, 2);
   assert.equal(persisted.opportunities.length, 4);
 }

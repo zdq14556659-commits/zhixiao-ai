@@ -89,7 +89,7 @@ async function run() {
   startServer();
   await waitForServer();
   const health = await request("/health");
-  assert.equal(health.data.backendVersion, "backend-v8");
+  assert.equal(health.data.backendVersion, "backend-v9");
   assert.equal(health.data.moneyUnit, "yuan");
 
   const migrated = JSON.parse(fs.readFileSync(path.join(tempDir, "db.json"), "utf8"));
@@ -106,7 +106,7 @@ async function run() {
 
   const adminBoard = await request("/customer-board", { token: admin });
   assert.equal(adminBoard.status, 200);
-  assert.equal(adminBoard.data.backendVersion, "backend-v8");
+  assert.equal(adminBoard.data.backendVersion, "backend-v9");
   assert.ok(adminBoard.data.items.some((item) => item.customerId === 101));
   assert.ok(adminBoard.data.items.some((item) => item.customerId === 102));
   assert.equal(adminBoard.data.publicPool.count, 1);
@@ -147,7 +147,7 @@ async function run() {
   assert.equal(validLeadAdvance.data.stage, "线索");
 
   const pool = await request("/public-pool", { token: salesA });
-  assert.equal(pool.data.backendVersion, "backend-v8");
+  assert.equal(pool.data.backendVersion, "backend-v9");
   assert.equal(pool.data.count, 1);
   assert.equal(pool.data.items[0].phone, "认领后可见");
 

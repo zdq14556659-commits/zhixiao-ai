@@ -895,6 +895,45 @@ button:disabled {
   margin-top: 16px;
 }
 
+.form-subtitle {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f8fafc;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.checkbox-line {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.checkbox-line input {
+  width: auto;
+}
+
+.org-tree-list article.org-node {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-left: calc(var(--level, 0) * 18px);
+  border-left: 3px solid #dbeafe;
+}
+
+.org-tree-list article.org-node.inactive {
+  opacity: 0.58;
+}
+
+.org-tree-list article.org-node b {
+  display: inline-block;
+  margin-right: 8px;
+}
+
 .visit-list article img {
   width: 72px;
   height: 72px;

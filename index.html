@@ -293,13 +293,21 @@
               <div class="user-list compact-list" id="roleList"></div>
             </section>
             <section class="panel">
-              <div class="panel-title"><h2>单位管理</h2><span>单位归属战区，决定主管和区域经理可见范围</span></div>
+              <div class="panel-title"><h2>组织架构管理</h2><span>支持参谋部、战区部及多级单位树</span></div>
               <form class="form-stack" id="unitForm">
-                <label>单位名称<input name="name" required placeholder="例如：东部战区杭州一部" /></label>
-                <label>所属战区<select name="zone" id="unitZoneSelect"></select></label>
-                <button class="primary" type="submit">添加单位</button>
+                <input type="hidden" name="id" />
+                <div class="form-subtitle" id="unitFormMode">新建组织节点</div>
+                <label>组织名称<input name="name" required placeholder="例如：杭州运营中心 / 数据组" /></label>
+                <label>上级组织<select name="parentId" id="unitParentSelect"></select></label>
+                <label>组织类型<select name="type" id="unitTypeSelect"></select></label>
+                <label>排序<input name="sort" type="number" value="100" min="0" step="1" /></label>
+                <label class="checkbox-line"><input name="active" type="checkbox" checked />启用该组织节点</label>
+                <div class="inline-actions">
+                  <button class="primary" type="submit">保存组织节点</button>
+                  <button id="resetUnitFormBtn" type="button">新建</button>
+                </div>
               </form>
-              <div class="user-list compact-list" id="unitList"></div>
+              <div class="user-list compact-list org-tree-list" id="unitList"></div>
             </section>
             <section class="panel">
               <div class="panel-title"><h2>员工列表</h2><span>密码不会返回到前端</span></div>
