@@ -58,7 +58,7 @@ const DEFAULT_ROLES = [
   { id: "role-region", name: "区域经理", customerScope: "zone", permissions: DEFAULT_PERMISSIONS },
   { id: "role-supervisor", name: "主管", customerScope: "unit", permissions: DEFAULT_PERMISSIONS },
   { id: "role-sales", name: "销售", customerScope: "self", permissions: DEFAULT_PERMISSIONS },
-  { id: "role-ops", name: "运营", customerScope: "all", permissions: ADMIN_PERMISSIONS },
+  { id: "role-ops", name: "运营", customerScope: "all", permissions: DEFAULT_PERMISSIONS },
   { id: "role-admin", name: "管理员", customerScope: "all", permissions: ADMIN_PERMISSIONS }
 ];
 const ORG_ROOT_ID = "org-root";
@@ -1569,7 +1569,8 @@ function normalizeRoles(roles) {
 function normalizeRole(role = {}) {
   const name = role.name || "自定义角色";
   const customerScope = ["self", "unit", "zone", "all"].includes(role.customerScope) ? role.customerScope : "self";
-  const permissions = Array.isArray(role.permissions) && role.permissions.length ? role.permissions : DEFAULT_PERMISSIONS;
+  let permissions = Array.isArray(role.permissions) && role.permissions.length ? role.permissions : DEFAULT_PERMISSIONS;
+  if (role.id === "role-ops" || name === "运营") permissions = permissions.filter((permission) => permission !== "admin");
   return {
     id: role.id || stableId("role", name),
     name,
