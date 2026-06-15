@@ -62,12 +62,12 @@ async function run() {
   assert.equal(wonV1.data.productName, "V1");
   assert.equal(wonV1.data.software, "三维家");
 
-  const v3 = await request(`/customers/${wonV1.data.customerId}/opportunities`, { method: "POST", token: sales, body: { productId: "product-v3-upgrade" } });
+  const v3 = await request(`/customers/${wonV1.data.customerId}/opportunities`, { method: "POST", token: sales, body: { productId: "product-v3-upgrade", note: "客户希望了解V3升级", nextFollow: "2026-06-16" } });
   assert.equal(v3.status, 201);
   assert.equal(v3.data.stage, "线索");
-  const erp = await request(`/customers/${wonV1.data.customerId}/opportunities`, { method: "POST", token: sales, body: { productId: "product-erp" } });
+  const erp = await request(`/customers/${wonV1.data.customerId}/opportunities`, { method: "POST", token: sales, body: { productId: "product-erp", note: "客户同时评估ERP", nextFollow: "2026-06-17" } });
   assert.equal(erp.status, 201);
-  const duplicateV3 = await request(`/customers/${wonV1.data.customerId}/opportunities`, { method: "POST", token: sales, body: { productId: "product-v3-upgrade" } });
+  const duplicateV3 = await request(`/customers/${wonV1.data.customerId}/opportunities`, { method: "POST", token: sales, body: { productId: "product-v3-upgrade", note: "重复机会测试", nextFollow: "2026-06-18" } });
   assert.equal(duplicateV3.status, 409);
   assert.equal(duplicateV3.data.code, "DUPLICATE_ACTIVE_OPPORTUNITY");
   const duplicateProductEdit = await request(`/opportunities/${erp.data.id}`, { method: "PUT", token: sales, body: { productId: "product-v3-upgrade" } });
@@ -97,6 +97,11 @@ async function run() {
   assert.equal(pool.data.items[0].phone, "认领后可见");
   assert.equal(pool.data.items[0].city, "宁波市");
   assert.equal(pool.data.items[0].productName, "ERP");
+  const customerBoard = await request("/customer-board", { token: sales });
+  assert.equal(customerBoard.status, 200);
+  assert.equal(customerBoard.data.backendVersion, "backend-v8");
+  assert.ok(customerBoard.data.items.some((item) => item.productName === "V1" && item.stage === "成交"));
+  assert.equal(customerBoard.data.publicPool.count, 1);
   const stateWithPool = await request("/state", { token: sales });
   const sanitizedStateOpportunity = stateWithPool.data.opportunities.find((item) => Number(item.id) === Number(pool.data.items[0].id));
   assert.equal(sanitizedStateOpportunity.phone, "认领后可见");

@@ -115,6 +115,12 @@
     </view>
   </view>
 
+  <view class="pool-state" wx:if="{{currentStage !== '公海' && customerBoardLoading && !paged.length}}">正在加载最新客户数据...</view>
+  <view class="pool-state pool-error" wx:elif="{{currentStage !== '公海' && customerBoardError}}">
+    <text>{{customerBoardError}}</text>
+    <button class="plain-btn" bindtap="loadCustomerBoard">重新加载</button>
+  </view>
+
   <view class="customer-strip" wx:for="{{paged}}" wx:key="id" data-id="{{item.id}}" bindtap="editCustomer">
     <view class="strip-main">
       <view class="strip-top">
@@ -159,7 +165,7 @@
     <text>公海共{{publicPoolTotal}}条，当前筛选后0条</text>
     <button class="plain-btn" bindtap="resetFilters">一键重置筛选</button>
   </view>
-  <view class="empty" wx:elif="{{currentStage !== '公海' && filtered.length === 0}}">暂无符合条件的客户</view>
+  <view class="empty" wx:elif="{{currentStage !== '公海' && !customerBoardLoading && !customerBoardError && filtered.length === 0}}">暂无符合条件的客户</view>
   <view class="page-tools" wx:if="{{filtered.length}}">
     <picker range="{{pageSizes}}" value="{{pageSizeIndex}}" bindchange="onPageSize">
       <view class="page-size">每页 {{pageSize}} 条⌄</view>
@@ -176,14 +182,14 @@
     <view class="modal-card">
       <view class="modal-title">推进为{{advanceTargetStage}}</view>
       <view class="muted">{{advanceItem.name}} · {{advanceItem.productName}}</view>
-      <view wx:if="{{advanceTargetStage === '商机'}}" class="form-item"><text class="label">有效演示日期</text><picker mode="date" value="{{advanceDemoAt}}" bindchange="onAdvanceDemoAt"><view class="picker-box">{{advanceDemoAt || '请选择'}}</view></picker></view>
+      <view wx:if="{{advanceTargetStage === '商机'}}" class="form-item"><text class="label">有效演示日期 <text class="required-mark">*</text></text><picker mode="date" value="{{advanceDemoAt}}" bindchange="onAdvanceDemoAt"><view class="picker-box">{{advanceDemoAt || '请选择'}}</view></picker></view>
       <block wx:if="{{advanceTargetStage === '成交'}}">
-        <view class="form-item"><text class="label">合同金额（元）</text><input type="digit" value="{{advanceContractAmount}}" data-field="advanceContractAmount" bindinput="onAdvanceField" /></view>
+        <view class="form-item"><text class="label">合同金额（元） <text class="required-mark">*</text></text><input type="digit" value="{{advanceContractAmount}}" data-field="advanceContractAmount" bindinput="onAdvanceField" /></view>
         <view class="form-item"><text class="label">实际进款（元，可后补）</text><input type="digit" value="{{advancePaymentAmount}}" data-field="advancePaymentAmount" bindinput="onAdvanceField" /></view>
         <view class="form-item"><text class="label">进款日期</text><picker mode="date" value="{{advancePaymentDate}}" bindchange="onAdvancePaymentDate"><view class="picker-box">{{advancePaymentDate || '未进款'}}</view></picker></view>
       </block>
-      <view class="form-item"><text class="label">本次跟进内容</text><textarea value="{{advanceNote}}" data-field="advanceNote" bindinput="onAdvanceField"></textarea></view>
-      <view class="form-item"><text class="label">下次跟进</text><picker mode="date" value="{{advanceNextFollow}}" bindchange="onAdvanceNextFollow"><view class="picker-box">{{advanceNextFollow || '未设置'}}</view></picker></view>
+      <view class="form-item"><text class="label">本次跟进内容 <text class="required-mark">*</text></text><textarea value="{{advanceNote}}" data-field="advanceNote" bindinput="onAdvanceField"></textarea></view>
+      <view class="form-item"><text class="label">下次跟进 <text class="required-mark">*</text></text><picker mode="date" value="{{advanceNextFollow}}" bindchange="onAdvanceNextFollow"><view class="picker-box">{{advanceNextFollow || '未设置'}}</view></picker></view>
       <view class="modal-actions"><button class="plain-btn" bindtap="closeAdvance">取消</button><button class="primary-btn" bindtap="submitAdvanceForm">确认推进</button></view>
     </view>
   </view>
@@ -192,7 +198,9 @@
     <view class="modal-card">
       <view class="modal-title">新增销售机会</view>
       <view class="muted">成交机会保留，新产品从线索重新轮转</view>
-      <view class="form-item"><text class="label">意向产品</text><picker range="{{products}}" range-key="name" value="{{productIndex}}" bindchange="onProduct"><view class="picker-box">{{products[productIndex].name || '请选择'}}</view></picker></view>
+      <view class="form-item"><text class="label">意向产品 <text class="required-mark">*</text></text><picker range="{{products}}" range-key="name" value="{{productIndex}}" bindchange="onProduct"><view class="picker-box">{{products[productIndex].name || '请选择'}}</view></picker></view>
+      <view class="form-item"><text class="label">首次跟进备注 <text class="required-mark">*</text></text><textarea value="{{newOpportunityNote}}" data-field="newOpportunityNote" bindinput="onNewOpportunityField"></textarea></view>
+      <view class="form-item"><text class="label">下次跟进 <text class="required-mark">*</text></text><picker mode="date" value="{{newOpportunityNextFollow}}" bindchange="onNewOpportunityNextFollow"><view class="picker-box">{{newOpportunityNextFollow || '请选择'}}</view></picker></view>
       <view class="modal-actions"><button class="plain-btn" bindtap="closeNewOpportunity">取消</button><button class="primary-btn" bindtap="submitNewOpportunity">创建线索</button></view>
     </view>
   </view>

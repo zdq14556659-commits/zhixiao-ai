@@ -21,6 +21,7 @@ Page({
     products: [],
     productIndex: 0,
     identityLocked: false,
+    metadataLocked: false,
     contacts: [],
     competitorProfiles: [],
     competitorNames: [],
@@ -71,6 +72,7 @@ Page({
       products,
       productIndex,
       identityLocked: Boolean(customer) && !app.canAdmin(),
+      metadataLocked: Boolean(customer) && !app.canAdmin(),
       contacts,
       competitorProfiles,
       competitorNames: (state.competitors || []).map((item) => item.name),
@@ -250,8 +252,12 @@ Page({
       competitorProfiles: this.data.competitorProfiles.filter((item) => item.brand),
       opportunityId: this.data.editingOpportunityId || undefined,
       productId: (this.data.products[this.data.productIndex] || {}).id || "",
-      channelSource: this.data.channelSources[this.data.channelIndex] || "其他",
-      createdBy: previous.createdBy || app.getCurrentUser().name || "未记录",
+      channelSource: this.data.metadataLocked
+        ? previous.channelSource
+        : this.data.channelSources[this.data.channelIndex] || "其他",
+      createdBy: this.data.metadataLocked
+        ? previous.createdBy
+        : String(form.createdBy || previous.createdBy || app.getCurrentUser().name || "未记录").trim(),
       followPerson: ownerUser.name || this.data.owners[this.data.ownerIndex],
       address: form.address || "",
       city: form.city || previous.city || "",

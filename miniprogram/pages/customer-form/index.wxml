@@ -7,18 +7,22 @@
   <form bindsubmit="submitForm">
     <view class="card">
       <view class="form-item">
-        <text class="label">客户名称</text>
+        <text class="label">客户名称 <text class="required-mark">*</text></text>
         <input class="{{identityLocked ? 'locked-input' : ''}}" name="name" value="{{form.name}}" disabled="{{identityLocked}}" placeholder="例：佛山柜体门板厂" />
       </view>
       <view class="form-item">
-        <text class="label">主联系人手机号</text>
+        <text class="label">主联系人手机号 <text class="required-mark">*</text></text>
         <input class="{{identityLocked ? 'locked-input' : ''}}" name="phone" type="number" value="{{form.phone}}" disabled="{{identityLocked}}" placeholder="客户手机号" />
       </view>
       <view class="form-item">
         <text class="label">渠道来源</text>
-        <picker range="{{channelSources}}" value="{{channelIndex}}" bindchange="onChannel">
-          <view class="picker-box">{{channelSources[channelIndex]}}</view>
+        <picker range="{{channelSources}}" value="{{channelIndex}}" bindchange="onChannel" disabled="{{metadataLocked}}">
+          <view class="picker-box {{metadataLocked ? 'locked-input' : ''}}">{{channelSources[channelIndex]}}</view>
         </picker>
+      </view>
+      <view class="form-item">
+        <text class="label">录入人</text>
+        <input class="{{metadataLocked ? 'locked-input' : ''}}" name="createdBy" value="{{form.createdBy || ''}}" disabled="{{metadataLocked}}" placeholder="录入员工姓名" />
       </view>
       <view class="grid-2">
         <view class="form-item"><text class="label">意向产品</text><picker range="{{products}}" range-key="name" value="{{productIndex}}" bindchange="onProduct"><view class="picker-box">{{products[productIndex].name || '请选择'}}</view></picker></view>

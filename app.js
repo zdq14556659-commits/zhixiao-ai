@@ -870,10 +870,16 @@ function openCustomerDialog(customer = null) {
   form.note.value = "";
   form.nextFollow.value = customer?.nextFollow || today;
   const identityLocked = Boolean(customer) && !canAdmin();
+  form.dataset.originalChannelSource = normalizeChannelSource(customer?.channelSource || "其他");
+  form.dataset.originalCreatedBy = customer?.createdBy || currentUser().name || "";
   form.name.readOnly = identityLocked;
   form.phone.readOnly = identityLocked;
+  form.channelSource.disabled = identityLocked;
+  form.createdBy.readOnly = identityLocked;
   form.name.classList.toggle("locked-input", identityLocked);
   form.phone.classList.toggle("locked-input", identityLocked);
+  form.channelSource.classList.toggle("locked-input", identityLocked);
+  form.createdBy.classList.toggle("locked-input", identityLocked);
   renderContactsEditor(customer?.contacts || []);
   renderCompetitorProfilesEditor(customer?.competitorProfiles || []);
   $("#customerAiBtn").classList.toggle("hidden", !customer);
@@ -910,6 +916,7 @@ async function saveCustomer(event) {
   const contacts = readContactsEditor();
   const primaryContact = contacts.find((item) => item.isPrimary) || contacts[0] || {};
   const competitorProfiles = readCompetitorProfilesEditor();
+  const metadataLocked = Boolean(id) && !canAdmin();
   const customer = {
     id: id || Date.now(),
     name: String(form.get("name")).trim(),
@@ -918,8 +925,12 @@ async function saveCustomer(event) {
     competitorProfiles,
     opportunityId: opportunityId || undefined,
     productId: String(form.get("productId") || ""),
-    channelSource: normalizeChannelSource(form.get("channelSource") || "其他"),
-    createdBy: String(form.get("createdBy") || currentUser().name || "未记录"),
+    channelSource: metadataLocked
+      ? event.currentTarget.dataset.originalChannelSource
+      : normalizeChannelSource(form.get("channelSource") || "其他"),
+    createdBy: metadataLocked
+      ? event.currentTarget.dataset.originalCreatedBy
+      : String(form.get("createdBy") || currentUser().name || "未记录"),
     followPerson: String(form.get("followPerson") || form.get("owner") || "未分配"),
     address: String(form.get("address") || ""),
     city: String(form.get("city") || ""),
@@ -1002,14 +1013,6 @@ async function advanceCustomer(id) {
   const index = stages.indexOf(customer.stage);
   if (index >= stages.length - 1) return;
   const nextStage = stages[index + 1];
-  if (nextStage === "线索") {
-    if (!window.confirm(`确认将“${customer.name} · ${customer.productName || "待确认产品"}”推进为线索？`)) return;
-    await api(`/opportunities/${id}/advance`, { method: "POST", body: {} });
-    currentStage = nextStage;
-    customerPage = 1;
-    await loadState();
-    return toast("已推进至线索");
-  }
   const form = $("#advanceForm");
   form.reset();
   form.opportunityId.value = id;
@@ -1018,7 +1021,7 @@ async function advanceCustomer(id) {
   form.paymentAmount.value = customer.paymentAmount || "";
   form.paymentDate.value = customer.paymentDate || "";
   form.nextFollow.value = customer.nextFollow || "";
-  $("#advanceDialogTitle").textContent = nextStage === "商机" ? "推进为商机" : "推进为成交";
+  $("#advanceDialogTitle").textContent = `推进为${nextStage}`;
   $("#advanceDialogSummary").textContent = `${customer.name} · ${customer.productName || "待确认产品"}`;
   $$(".advance-demo-field").forEach((node) => node.classList.toggle("hidden", nextStage !== "商机"));
   $$(".advance-deal-field").forEach((node) => node.classList.toggle("hidden", nextStage !== "成交"));
@@ -1035,16 +1038,26 @@ async function submitAdvance(event) {
   const opportunity = scopeOpportunityRows().find((item) => Number(item.id) === id);
   if (!opportunity) return toast("销售机会不存在");
   const nextStage = stages[stages.indexOf(opportunity.stage) + 1];
+  const note = String(form.get("note") || "").trim();
+  const nextFollow = String(form.get("nextFollow") || "");
+  const demoAt = String(form.get("demoAt") || "");
+  const contractAmount = Number(form.get("contractAmount") || 0);
+  const paymentOwnerId = Number(form.get("paymentOwnerId") || 0);
+  if (!note) return toast("请填写：本次跟进内容");
+  if (nextStage === "商机" && !demoAt) return toast("请填写：有效演示日期");
+  if (nextStage === "成交" && contractAmount <= 0) return toast("请填写：合同金额");
+  if (nextStage === "成交" && !paymentOwnerId) return toast("请选择：业绩归属人");
+  if (!nextFollow) return toast("请选择：下次跟进时间");
   await api(`/opportunities/${id}/advance`, {
     method: "POST",
     body: {
-      demoAt: String(form.get("demoAt") || ""),
-      contractAmount: Number(form.get("contractAmount") || 0),
+      demoAt,
+      contractAmount,
       paymentAmount: Number(form.get("paymentAmount") || 0),
       paymentDate: String(form.get("paymentDate") || ""),
-      paymentOwnerId: Number(form.get("paymentOwnerId") || currentUser().id),
-      note: String(form.get("note") || "").trim(),
-      nextFollow: String(form.get("nextFollow") || "")
+      paymentOwnerId: paymentOwnerId || Number(currentUser().id),
+      note,
+      nextFollow
     }
   });
   $("#advanceDialog").close();
@@ -1063,6 +1076,7 @@ function openNewOpportunityDialog(opportunityId) {
   $("#newOpportunitySummary").textContent = `${row.name}已有成交机会，新产品将从线索阶段重新轮转。`;
   $("#newOpportunityOwnerSelect").innerHTML = visibleSales().map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
   $("#newOpportunityOwnerSelect").value = String(row.ownerId || currentUser().id || "");
+  form.nextFollow.value = today;
   $("#newOpportunityDialog").showModal();
 }
 
@@ -1070,9 +1084,17 @@ async function submitNewOpportunity(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const customerId = Number(form.get("customerId"));
+  const productId = String(form.get("productId") || "");
+  const ownerId = Number(form.get("ownerId") || 0);
+  const note = String(form.get("note") || "").trim();
+  const nextFollow = String(form.get("nextFollow") || "");
+  if (!productId) return toast("请选择：意向产品");
+  if (!ownerId) return toast("请选择：负责人");
+  if (!note) return toast("请填写：首次跟进备注");
+  if (!nextFollow) return toast("请选择：下次跟进时间");
   await api(`/customers/${customerId}/opportunities`, {
     method: "POST",
-    body: { productId: form.get("productId"), ownerId: Number(form.get("ownerId") || currentUser().id), note: String(form.get("note") || "").trim() }
+    body: { productId, ownerId, note, nextFollow }
   });
   $("#newOpportunityDialog").close();
   currentStage = "线索";

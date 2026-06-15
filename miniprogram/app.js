@@ -1,4 +1,4 @@
-const STORAGE_KEY = "zhixiao_ai_mini_state_v4";
+const STORAGE_KEY = "zhixiao_ai_mini_state_v5";
 const AUTH_KEY = "zhixiao_ai_auth_v1";
 const API_BASE_OVERRIDE_KEY = "zhixiao_ai_api_base_override";
 const PROD_API_BASE = "https://zhixiaoai1.onrender.com/api";
@@ -98,7 +98,7 @@ function migrateLocalState(state = seedState) {
 }
 
 const seedState = {
-  version: "mini-v4",
+  version: "mini-v5",
   currentUserId: 0,
   stages: ["名单", "线索", "商机", "成交"],
   zones: ZONES,

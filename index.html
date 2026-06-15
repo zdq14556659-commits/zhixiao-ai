@@ -314,8 +314,8 @@
         <h2 id="customerDialogTitle">新增客户</h2>
         <input type="hidden" name="id" />
         <input type="hidden" name="opportunityId" />
-        <label>客户名称<input name="name" required /></label>
-        <label>手机号<input name="phone" required /></label>
+        <label>客户名称 <span class="required-mark">*</span><input name="name" required /></label>
+        <label>手机号 <span class="required-mark">*</span><input name="phone" required /></label>
         <label>城市<input name="city" placeholder="可从客户地址自动识别" /></label>
         <label>意向产品<select name="productId" id="customerProductSelect"></select></label>
         <label>渠道来源<select name="channelSource" id="customerChannelSelect"></select></label>
@@ -353,13 +353,13 @@
         <h2 id="advanceDialogTitle">推进销售机会</h2>
         <input type="hidden" name="opportunityId" />
         <p class="muted" id="advanceDialogSummary"></p>
-        <label class="advance-demo-field">有效演示日期<input name="demoAt" type="date" /></label>
-        <label class="advance-deal-field">合同金额（元）<input name="contractAmount" type="number" min="0" step="0.01" /></label>
+        <label class="advance-demo-field">有效演示日期 <span class="required-mark">*</span><input name="demoAt" type="date" /></label>
+        <label class="advance-deal-field">合同金额（元） <span class="required-mark">*</span><input name="contractAmount" type="number" min="0" step="0.01" /></label>
         <label class="advance-deal-field">实际进款（元，可后补）<input name="paymentAmount" type="number" min="0" step="0.01" /></label>
         <label class="advance-deal-field">进款日期<input name="paymentDate" type="date" /></label>
-        <label class="advance-deal-field">业绩归属人<select name="paymentOwnerId" id="advancePaymentOwnerSelect"></select></label>
-        <label>本次跟进内容<textarea name="note" rows="3"></textarea></label>
-        <label>下次跟进<input name="nextFollow" type="date" /></label>
+        <label class="advance-deal-field">业绩归属人 <span class="required-mark">*</span><select name="paymentOwnerId" id="advancePaymentOwnerSelect"></select></label>
+        <label>本次跟进内容 <span class="required-mark">*</span><textarea name="note" rows="3"></textarea></label>
+        <label>下次跟进 <span class="required-mark">*</span><input name="nextFollow" type="date" /></label>
         <div class="button-row"><button type="button" data-close-dialog="advanceDialog">取消</button><button class="primary" type="submit">确认推进</button></div>
       </form>
     </dialog>
@@ -369,9 +369,10 @@
         <h2>新增销售机会</h2>
         <input type="hidden" name="customerId" />
         <p class="muted" id="newOpportunitySummary"></p>
-        <label>意向产品<select name="productId" id="newOpportunityProductSelect" required></select></label>
-        <label>负责人<select name="ownerId" id="newOpportunityOwnerSelect"></select></label>
-        <label>首次跟进备注<textarea name="note" rows="3"></textarea></label>
+        <label>意向产品 <span class="required-mark">*</span><select name="productId" id="newOpportunityProductSelect"></select></label>
+        <label>负责人 <span class="required-mark">*</span><select name="ownerId" id="newOpportunityOwnerSelect"></select></label>
+        <label>首次跟进备注 <span class="required-mark">*</span><textarea name="note" rows="3"></textarea></label>
+        <label>下次跟进 <span class="required-mark">*</span><input name="nextFollow" type="date" /></label>
         <div class="button-row"><button type="button" data-close-dialog="newOpportunityDialog">取消</button><button class="primary" type="submit">创建线索</button></div>
       </form>
     </dialog>

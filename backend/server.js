@@ -291,6 +291,10 @@ async function routeApi(req, res, url) {
     return sendJson(res, 200, { count: items.length, items, backendVersion: BACKEND_VERSION, moneyUnit: MONEY_UNIT });
   }
 
+  if (req.method === "GET" && url.pathname === "/api/customer-board") {
+    return sendJson(res, 200, buildCustomerBoard(authState, authUser));
+  }
+
   const customerOpportunityCreate = url.pathname.match(/^\/api\/customers\/(\d+)\/opportunities$/);
   if (req.method === "POST" && customerOpportunityCreate) {
     const body = await readBody(req);
@@ -300,6 +304,9 @@ async function routeApi(req, res, url) {
     if (!customer || !canViewRecord(state, viewer, customer)) return sendJson(res, 404, { error: "客户不存在" });
     const product = resolveProduct(state, body.productId, body.productName);
     if (!product) return sendJson(res, 400, { error: "请选择意向产品" });
+    const note = String(body.note || "").trim();
+    if (!note) return sendJson(res, 400, { error: "请填写首次跟进备注", field: "note" });
+    if (!String(body.nextFollow || "").trim()) return sendJson(res, 400, { error: "请选择下次跟进时间", field: "nextFollow" });
     if (hasActiveProductOpportunity(state, customer.id, product.id)) {
       return sendJson(res, 409, { error: "该客户已有相同产品的进行中机会", code: "DUPLICATE_ACTIVE_OPPORTUNITY" });
     }
@@ -322,10 +329,11 @@ async function routeApi(req, res, url) {
       createdAt: today(),
       ownershipStatus: OWNERSHIP_PENDING,
       claimUntil: addDaysToIso(new Date().toISOString(), CUSTOMER_CLAIM_DAYS),
-      followUps: [normalizeFollowUp({ date: today(), author: viewer.name, note: String(body.note || "").trim() || `新增${product.name}销售机会。`, isSystem: !String(body.note || "").trim() }, customer)],
-      effectiveFollowUpAt: String(body.note || "").trim() ? new Date().toISOString() : ""
+      nextFollow: String(body.nextFollow || ""),
+      followUps: [normalizeFollowUp({ date: today(), author: viewer.name, note, nextFollow: body.nextFollow, isSystem: false }, customer)],
+      effectiveFollowUpAt: new Date().toISOString()
     }, state);
-    if (String(body.note || "").trim()) lockOpportunityOwnership(opportunity, viewer, "创建销售机会时提交有效跟进");
+    lockOpportunityOwnership(opportunity, viewer, "创建销售机会时提交有效跟进");
     state.opportunities.unshift(opportunity);
     state.activities.push({ date: today(), owner: opportunity.owner, type: opportunity.stage, customerId: customer.id, opportunityId: opportunity.id });
     syncCustomerCompatibility(state, customer.id);
@@ -374,6 +382,8 @@ async function routeApi(req, res, url) {
     const stageIndex = STAGES.indexOf(previous.stage);
     if (stageIndex < 0 || stageIndex >= STAGES.length - 1) return sendJson(res, 409, { error: "该销售机会已成交" });
     const nextStage = STAGES[stageIndex + 1];
+    const requiredError = validateOpportunityAdvance(previous, nextStage, body);
+    if (requiredError) return sendJson(res, 400, requiredError);
     const validationError = validateOpportunityBusinessUpdate(previous, { ...body, stage: nextStage });
     if (validationError) return sendJson(res, 400, { error: validationError });
     const followNote = String(body.note || `客户推进至${nextStage}阶段。`).trim();
@@ -858,8 +868,10 @@ async function routeApi(req, res, url) {
     if (!canUseAdmin(state, viewer)) {
       const changesName = body.name !== undefined && String(body.name).trim() !== String(previous.name || "").trim();
       const changesPhone = body.phone !== undefined && normalizePhone(body.phone) !== normalizePhone(previous.phone);
-      if (changesName || changesPhone) {
-        return sendJson(res, 403, { error: "当前角色无权修改已有客户的名称和手机号" });
+      const changesChannel = body.channelSource !== undefined && normalizeChannelSource(body.channelSource) !== normalizeChannelSource(previous.channelSource);
+      const changesCreatedBy = body.createdBy !== undefined && cleanText(body.createdBy) !== cleanText(previous.createdBy);
+      if (changesName || changesPhone || changesChannel || changesCreatedBy) {
+        return sendJson(res, 403, { error: "已有客户的名称、手机号、渠道来源和录入人仅总负责人、运营、管理员可修改" });
       }
     }
     if (body.contacts !== undefined) {
@@ -1966,6 +1978,24 @@ function validateOpportunityBusinessUpdate(previous = {}, body = {}) {
   return "";
 }
 
+function validateOpportunityAdvance(previous = {}, nextStage, body = {}) {
+  const note = String(body.note || "").trim();
+  if (!note) return { error: "请填写本次跟进内容", field: "note" };
+  if (nextStage === "商机" && !String(body.demoAt || previous.demoAt || "").trim()) {
+    return { error: "请填写有效演示日期", field: "demoAt" };
+  }
+  if (nextStage === "成交" && normalizeMoney(body.contractAmount ?? previous.contractAmount) <= 0) {
+    return { error: "请填写合同金额", field: "contractAmount" };
+  }
+  if (nextStage === "成交" && !Number(body.paymentOwnerId || previous.paymentOwnerId)) {
+    return { error: "请选择业绩归属人", field: "paymentOwnerId" };
+  }
+  if (!String(body.nextFollow || "").trim()) {
+    return { error: "请选择下次跟进时间", field: "nextFollow" };
+  }
+  return null;
+}
+
 function lockOpportunityOwnership(opportunity, actor, reason) {
   opportunity.ownershipStatus = OWNERSHIP_LOCKED;
   opportunity.claimUntil = "";
@@ -2699,6 +2729,25 @@ function publicState(state, viewer = null) {
   };
 }
 
+function buildCustomerBoard(state, viewer) {
+  const privateOpportunities = (state.opportunities || [])
+    .filter((item) => !isOpportunityPublicPool(item) && canViewOpportunity(state, viewer, item))
+    .filter((item) => findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED)
+    .map((item) => opportunityView(state, item));
+  const publicItems = visiblePublicPoolOpportunities(state, viewer).map((opportunity) => {
+    const customer = findCustomer(state.customers || [], opportunity.customerId);
+    return sanitizePublicPoolOpportunity(customer, opportunity);
+  });
+  return {
+    backendVersion: BACKEND_VERSION,
+    moneyUnit: MONEY_UNIT,
+    stages: state.stages || STAGES,
+    items: privateOpportunities,
+    counts: Object.fromEntries((state.stages || STAGES).map((stage) => [stage, privateOpportunities.filter((item) => item.stage === stage).length])),
+    publicPool: { count: publicItems.length, items: publicItems }
+  };
+}
+
 function publicUser(user = {}) {
   const { password, initialPassword, passwordHash, passwordSalt, ...safe } = user;
   return safe;
@@ -2706,11 +2755,13 @@ function publicUser(user = {}) {
 
 function toMiniState(state, viewer = null) {
   const next = publicState(state, viewer);
-  const privateOpportunities = (next.opportunities || []).filter((item) => !isOpportunityPublicPool(item));
+  const privateOpportunities = (state.opportunities || [])
+    .filter((item) => !isOpportunityPublicPool(item) && canViewOpportunity(state, viewer, item))
+    .filter((item) => findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED);
   const privateCustomerIds = new Set(privateOpportunities.map((item) => Number(item.customerId)));
   return {
     ...next,
-    customers: next.customers.filter((item) => privateCustomerIds.has(Number(item.id)) || canViewRecord(state, viewer, item)).map(toMiniCustomer),
+    customers: (state.customers || []).filter((item) => privateCustomerIds.has(Number(item.id))).map(toMiniCustomer),
     opportunities: privateOpportunities.map((item) => opportunityView(state, item))
   };
 }

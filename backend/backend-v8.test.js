@@ -104,12 +104,47 @@ async function run() {
   const supervisor = await login("supervisor");
   const region = await login("region");
 
+  const adminBoard = await request("/customer-board", { token: admin });
+  assert.equal(adminBoard.status, 200);
+  assert.equal(adminBoard.data.backendVersion, "backend-v8");
+  assert.ok(adminBoard.data.items.some((item) => item.customerId === 101));
+  assert.ok(adminBoard.data.items.some((item) => item.customerId === 102));
+  assert.equal(adminBoard.data.publicPool.count, 1);
+  const salesBoard = await request("/customer-board", { token: salesA });
+  assert.equal(salesBoard.status, 200);
+  assert.deepEqual(salesBoard.data.items.map((item) => item.customerId), [101]);
+  assert.equal(salesBoard.data.publicPool.count, 1);
+  const adminMiniState = await request("/state?client=mini", { token: admin });
+  assert.ok(adminMiniState.data.opportunities.some((item) => item.customerId === 101));
+  assert.ok(adminMiniState.data.opportunities.some((item) => item.customerId === 102));
+  const salesMiniState = await request("/state?client=mini", { token: salesA });
+  assert.deepEqual(salesMiniState.data.opportunities.map((item) => item.customerId), [101]);
+  assert.deepEqual(salesMiniState.data.customers.map((item) => item.id), [101]);
+
+  const forbiddenMetadataEdit = await request("/customers/101", { method: "PUT", token: salesA, body: { channelSource: "地推", createdBy: "销售甲", moneyUnit: "yuan" } });
+  assert.equal(forbiddenMetadataEdit.status, 403);
+  assert.match(forbiddenMetadataEdit.data.error, /渠道来源和录入人/);
+  const allowedMetadataEdit = await request("/customers/101", { method: "PUT", token: admin, body: { channelSource: "地推", createdBy: "管理员", moneyUnit: "yuan" } });
+  assert.equal(allowedMetadataEdit.status, 200);
+
   const oldClientCustomer = await request("/customers", { method: "POST", token: salesA, body: { name: "旧客户端金额工厂", phone: "13800000005", productId: "product-v1", stage: "成交", demoAt: "2026-06-10", contractAmount: 8 } });
   assert.equal(oldClientCustomer.status, 201);
   assert.equal(oldClientCustomer.data.contractAmount, 80000);
   const yuanClientCustomer = await request("/customers", { method: "POST", token: salesA, body: { name: "元单位客户端工厂", phone: "13800000006", productId: "product-v1", stage: "成交", demoAt: "2026-06-10", contractAmount: 80000, moneyUnit: "yuan" } });
   assert.equal(yuanClientCustomer.status, 201);
   assert.equal(yuanClientCustomer.data.contractAmount, 80000);
+
+  const listCustomer = await request("/customers", { method: "POST", token: salesA, body: { name: "推进必填测试工厂", phone: "13800000007", productId: "product-v1", stage: "名单", moneyUnit: "yuan" } });
+  assert.equal(listCustomer.status, 201);
+  const missingAdvanceNote = await request(`/opportunities/${listCustomer.data.id}/advance`, { method: "POST", token: salesA, body: { nextFollow: "2026-06-20", moneyUnit: "yuan" } });
+  assert.equal(missingAdvanceNote.status, 400);
+  assert.equal(missingAdvanceNote.data.field, "note");
+  const missingNextFollow = await request(`/opportunities/${listCustomer.data.id}/advance`, { method: "POST", token: salesA, body: { note: "确认客户有明确需求", moneyUnit: "yuan" } });
+  assert.equal(missingNextFollow.status, 400);
+  assert.equal(missingNextFollow.data.field, "nextFollow");
+  const validLeadAdvance = await request(`/opportunities/${listCustomer.data.id}/advance`, { method: "POST", token: salesA, body: { note: "确认客户有明确需求", nextFollow: "2026-06-20", moneyUnit: "yuan" } });
+  assert.equal(validLeadAdvance.status, 200);
+  assert.equal(validLeadAdvance.data.stage, "线索");
 
   const pool = await request("/public-pool", { token: salesA });
   assert.equal(pool.data.backendVersion, "backend-v8");

@@ -39,6 +39,8 @@ Page({
     publicPoolTotal: 0,
     publicPoolFilteredOut: false,
     publicPoolError: "",
+    customerBoardLoading: false,
+    customerBoardError: "",
     advanceOpen: false,
     advanceItem: null,
     advanceTargetStage: "",
@@ -50,6 +52,8 @@ Page({
     advanceNextFollow: "",
     newOpportunityOpen: false,
     newOpportunityCustomerId: 0,
+    newOpportunityNote: "",
+    newOpportunityNextFollow: "",
     products: [],
     productIndex: 0
   },
@@ -60,12 +64,13 @@ Page({
 
   onShow() {
     if (!app.ensureLogin()) return;
+    this.privateOpportunityItems = [];
     this.publicPoolItems = [];
     this.publicPoolCount = 0;
     this.consumeDashboardDrilldown();
     app.loadRemoteState(() => {
       this.loadData();
-      this.loadPublicPool();
+      this.loadCustomerBoard();
     });
   },
 
@@ -80,7 +85,9 @@ Page({
     const state = app.getState();
     const currentUser = app.getCurrentUser();
     const role = app.getRole(currentUser);
-    const privateCustomers = app.scopeOpportunityRows();
+    const privateCustomers = Array.isArray(this.privateOpportunityItems)
+      ? this.privateOpportunityItems
+      : app.scopeOpportunityRows();
     const customers = this.data.currentStage === "公海" ? (this.publicPoolItems || []) : privateCustomers;
     const channelSources = ["全部", ...app.globalData.channelSources];
     const owners = role.customerScope === "self" ? [currentUser.name] : ["全部", ...app.visibleSales().map((user) => user.name)];
@@ -117,20 +124,17 @@ Page({
     }, () => this.applyFilters());
   },
 
-  loadPublicPool() {
-    this.setData({ publicPoolLoading: true, publicPoolLoaded: false, publicPoolError: "", publicPoolFilteredOut: false });
-    return app.requestApi("/health")
-      .then((health) => {
-        if (health.backendVersion !== "backend-v8" || health.moneyUnit !== "yuan") {
-          throw new Error("后端版本尚未更新，请等待部署完成后重试");
-        }
-        return app.requestApi("/public-pool");
-      })
+  loadCustomerBoard() {
+    this.setData({ customerBoardLoading: true, customerBoardError: "", publicPoolLoading: true, publicPoolLoaded: false, publicPoolError: "", publicPoolFilteredOut: false });
+    return app.requestApi("/customer-board")
       .then((result) => {
         if (result.backendVersion !== "backend-v8") throw new Error("后端版本尚未更新，请等待部署完成后重试");
-        this.publicPoolItems = Array.isArray(result.items) ? result.items : [];
-        this.publicPoolCount = Number(result.count ?? this.publicPoolItems.length);
+        this.privateOpportunityItems = Array.isArray(result.items) ? result.items : [];
+        this.publicPoolItems = Array.isArray(result.publicPool?.items) ? result.publicPool.items : [];
+        this.publicPoolCount = Number(result.publicPool?.count ?? this.publicPoolItems.length);
         this.setData({
+          customerBoardLoading: false,
+          customerBoardError: "",
           publicPoolLoading: false,
           publicPoolLoaded: true,
           publicPoolTotal: this.publicPoolCount,
@@ -139,9 +143,12 @@ Page({
         this.loadData();
       })
       .catch((error) => {
+        this.privateOpportunityItems = [];
         this.publicPoolItems = [];
         this.publicPoolCount = 0;
         this.setData({
+          customerBoardLoading: false,
+          customerBoardError: error.message || "客户数据加载失败，请重新加载",
           publicPoolLoading: false,
           publicPoolLoaded: false,
           publicPoolTotal: 0,
@@ -149,6 +156,10 @@ Page({
         });
         this.loadData();
       });
+  },
+
+  loadPublicPool() {
+    return this.loadCustomerBoard();
   },
 
   retryPublicPool() {
@@ -394,14 +405,6 @@ Page({
       return;
     }
     const nextStage = stages[stageIndex + 1];
-    if (nextStage === "线索") {
-      wx.showModal({
-        title: "推进为线索",
-        content: `${customer.name} · ${customer.productName || "待确认产品"}`,
-        success: (result) => result.confirm && this.submitAdvanceRequest(customer, nextStage, {})
-      });
-      return;
-    }
     this.setData({
       advanceOpen: true,
       advanceItem: customer,
@@ -424,14 +427,23 @@ Page({
   submitAdvanceForm() {
     const item = this.data.advanceItem;
     if (!item) return;
+    const nextStage = this.data.advanceTargetStage;
+    const note = String(this.data.advanceNote || "").trim();
+    const nextFollow = String(this.data.advanceNextFollow || "");
+    const contractAmount = Number(this.data.advanceContractAmount || 0);
+    if (!note) return wx.showToast({ title: "请填写本次跟进内容", icon: "none" });
+    if (nextStage === "商机" && !this.data.advanceDemoAt) return wx.showToast({ title: "请选择有效演示日期", icon: "none" });
+    if (nextStage === "成交" && contractAmount <= 0) return wx.showToast({ title: "请填写合同金额", icon: "none" });
+    if (!nextFollow) return wx.showToast({ title: "请选择下次跟进时间", icon: "none" });
+    if (Number(this.data.advancePaymentAmount || 0) > 0 && !this.data.advancePaymentDate) return wx.showToast({ title: "请选择进款日期", icon: "none" });
     this.submitAdvanceRequest(item, this.data.advanceTargetStage, {
       demoAt: this.data.advanceDemoAt,
-      contractAmount: Number(this.data.advanceContractAmount || 0),
+      contractAmount,
       paymentAmount: Number(this.data.advancePaymentAmount || 0),
       paymentDate: this.data.advancePaymentDate,
       paymentOwnerId: app.getCurrentUser().id,
-      note: this.data.advanceNote,
-      nextFollow: this.data.advanceNextFollow
+      note,
+      nextFollow
     });
   },
 
@@ -439,11 +451,11 @@ Page({
     wx.showLoading({ title: "推进中" });
     app.requestApi(`/opportunities/${item.id}/advance`, { method: "POST", data })
       .then(() => app.loadRemoteState(() => {
-        wx.hideLoading();
         this.setData({ currentStage: nextStage, page: 1, advanceOpen: false, advanceItem: null });
-        this.loadPublicPool();
-        this.loadData();
-        wx.showToast({ title: `已推进至${nextStage}`, icon: "success" });
+        this.loadCustomerBoard().then(() => {
+          wx.hideLoading();
+          wx.showToast({ title: `已推进至${nextStage}`, icon: "success" });
+        });
       }))
       .catch((error) => { wx.hideLoading(); wx.showToast({ title: error.message || "推进失败", icon: "none" }); });
   },
@@ -451,20 +463,26 @@ Page({
   openNewOpportunity(event) {
     const item = this.data.filtered.find((row) => Number(row.id) === Number(event.currentTarget.dataset.id));
     if (!item) return;
-    this.setData({ newOpportunityOpen: true, newOpportunityCustomerId: item.customerId, productIndex: 0 });
+    this.setData({ newOpportunityOpen: true, newOpportunityCustomerId: item.customerId, productIndex: 0, newOpportunityNote: "", newOpportunityNextFollow: app.globalData.today });
   },
   closeNewOpportunity() { this.setData({ newOpportunityOpen: false }); },
   onProduct(event) { this.setData({ productIndex: Number(event.detail.value) }); },
+  onNewOpportunityField(event) { this.setData({ [event.currentTarget.dataset.field]: event.detail.value }); },
+  onNewOpportunityNextFollow(event) { this.setData({ newOpportunityNextFollow: event.detail.value }); },
   submitNewOpportunity() {
     const product = this.data.products[this.data.productIndex];
     if (!product) return wx.showToast({ title: "请选择产品", icon: "none" });
+    const note = String(this.data.newOpportunityNote || "").trim();
+    if (!note) return wx.showToast({ title: "请填写首次跟进备注", icon: "none" });
+    if (!this.data.newOpportunityNextFollow) return wx.showToast({ title: "请选择下次跟进时间", icon: "none" });
     wx.showLoading({ title: "创建中" });
-    app.requestApi(`/customers/${this.data.newOpportunityCustomerId}/opportunities`, { method: "POST", data: { productId: product.id } })
+    app.requestApi(`/customers/${this.data.newOpportunityCustomerId}/opportunities`, { method: "POST", data: { productId: product.id, note, nextFollow: this.data.newOpportunityNextFollow } })
       .then(() => app.loadRemoteState(() => {
-        wx.hideLoading();
         this.setData({ newOpportunityOpen: false, currentStage: "线索", page: 1 });
-        this.loadData();
-        wx.showToast({ title: "新机会已创建", icon: "success" });
+        this.loadCustomerBoard().then(() => {
+          wx.hideLoading();
+          wx.showToast({ title: "新机会已创建", icon: "success" });
+        });
       }))
       .catch((error) => { wx.hideLoading(); wx.showToast({ title: error.message || "创建失败", icon: "none" }); });
   },
@@ -497,16 +515,17 @@ Page({
         app.requestApi(`/opportunities/${id}/claim`, { method: "POST" })
           .then((customer) => {
             app.loadRemoteState(() => {
-              wx.hideLoading();
               this.setData({ currentStage: customer.stage || "名单", page: 1 });
-              this.loadData();
-              wx.showToast({ title: "认领成功", icon: "success" });
-              setTimeout(() => wx.navigateTo({ url: `/pages/follow/index?id=${customer.customerId}&opportunityId=${customer.id}` }), 500);
+              this.loadCustomerBoard().then(() => {
+                wx.hideLoading();
+                wx.showToast({ title: "认领成功", icon: "success" });
+                setTimeout(() => wx.navigateTo({ url: `/pages/follow/index?id=${customer.customerId}&opportunityId=${customer.id}` }), 500);
+              });
             });
           })
           .catch((error) => {
             wx.hideLoading();
-            app.loadRemoteState(() => this.loadData());
+            app.loadRemoteState(() => this.loadCustomerBoard());
             wx.showToast({ title: error.message || "客户可能已被他人认领", icon: "none" });
           });
       }
@@ -532,9 +551,10 @@ Page({
           })
           .then(() => {
             app.loadRemoteState(() => {
-              wx.hideLoading();
-              this.loadData();
-              wx.showToast({ title: "已分配", icon: "success" });
+              this.loadCustomerBoard().then(() => {
+                wx.hideLoading();
+                wx.showToast({ title: "已分配", icon: "success" });
+              });
             });
           })
           .catch((error) => {

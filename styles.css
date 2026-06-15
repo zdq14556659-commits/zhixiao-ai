@@ -576,6 +576,11 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.required-mark {
+  color: #e5484d;
+  font-weight: 700;
+}
+
 .history-dialog-form {
   max-height: min(720px, calc(100vh - 48px));
   overflow: hidden;

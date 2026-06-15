@@ -6,6 +6,11 @@
   background: #f5f7fa;
 }
 
+.required-mark {
+  color: #e5484d;
+  font-weight: 700;
+}
+
 .section-divider {
   margin: 26rpx 0 18rpx;
   padding-top: 24rpx;
