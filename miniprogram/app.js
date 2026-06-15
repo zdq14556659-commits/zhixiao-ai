@@ -1,4 +1,4 @@
-const STORAGE_KEY = "zhixiao_ai_mini_state_v6";
+const STORAGE_KEY = "zhixiao_ai_mini_state_v7";
 const AUTH_KEY = "zhixiao_ai_auth_v1";
 const API_BASE_OVERRIDE_KEY = "zhixiao_ai_api_base_override";
 const PROD_API_BASE = "https://zhixiaoai1.onrender.com/api";
@@ -108,7 +108,7 @@ function formatMoney(value) {
 function migrateLocalState(state = seedState) {
   return {
     ...state,
-    version: "mini-v6",
+    version: "mini-v7",
     products: state.products?.length ? state.products : DEFAULT_PRODUCTS,
     units: (state.units || []).filter((unit) => unit && !LEGACY_DEMO_UNIT_IDS.includes(unit.id)),
     users: (state.users || []).map((user) => LEGACY_DEMO_UNIT_IDS.includes(user.unitId)

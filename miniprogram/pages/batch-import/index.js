@@ -50,20 +50,25 @@ Page({
     wx.showLoading({ title: "导入中" });
     try {
       const endpoint = this.data.targetPublicPool ? "/import/customers?target=public_pool" : "/import/customers";
-      const result = await app.requestApi(endpoint, {
-        method: "POST",
-        data: {
-          rows,
-          stage,
+      const data = {
+        rows,
+        stage,
+        createdBy: app.getCurrentUser().name || "未记录",
+        channelSource: this.data.channelSources[this.data.channelIndex] || "其他"
+      };
+      if (!this.data.targetPublicPool) {
+        Object.assign(data, {
           owner,
           ownerId: ownerUser.id || "",
           unitId: ownerUser.unitId || "",
           unit: ownerUser.unit || "",
           zone: ownerUser.zone || "",
-          createdBy: app.getCurrentUser().name || "未记录",
-          followPerson: owner,
-          channelSource: this.data.channelSources[this.data.channelIndex] || "其他"
-        }
+          followPerson: owner
+        });
+      }
+      const result = await app.requestApi(endpoint, {
+        method: "POST",
+        data
       });
       await new Promise((resolve) => app.loadRemoteState(resolve));
       wx.hideLoading();
@@ -93,23 +98,28 @@ Page({
     this.setData({ importing: true, importResult: null });
     wx.showLoading({ title: "导入中" });
     const session = app.getSession();
-    wx.uploadFile({
-      url: `${app.globalData.apiBase}/import/customers${this.data.targetPublicPool ? '?target=public_pool' : ''}`,
-      filePath,
-      name: "file",
-      header: session && session.token ? { Authorization: `Bearer ${session.token}` } : {},
-      formData: {
-        stage: this.data.stages[this.data.stageIndex],
+    const formData = {
+      stage: this.data.stages[this.data.stageIndex],
+      createdBy: app.getCurrentUser().name || "未记录",
+      channelSource: this.data.channelSources[this.data.channelIndex] || "其他",
+      moneyUnit: "yuan"
+    };
+    if (!this.data.targetPublicPool) {
+      Object.assign(formData, {
         owner: this.data.owners[this.data.ownerIndex],
         ownerId: (this.data.ownerUsers[this.data.ownerIndex] || {}).id || "",
         unitId: (this.data.ownerUsers[this.data.ownerIndex] || {}).unitId || "",
         unit: (this.data.ownerUsers[this.data.ownerIndex] || {}).unit || "",
         zone: (this.data.ownerUsers[this.data.ownerIndex] || {}).zone || "",
-        createdBy: app.getCurrentUser().name || "未记录",
-        followPerson: this.data.owners[this.data.ownerIndex],
-        channelSource: this.data.channelSources[this.data.channelIndex] || "其他",
-        moneyUnit: "yuan"
-      },
+        followPerson: this.data.owners[this.data.ownerIndex]
+      });
+    }
+    wx.uploadFile({
+      url: `${app.globalData.apiBase}/import/customers${this.data.targetPublicPool ? '?target=public_pool' : ''}`,
+      filePath,
+      name: "file",
+      header: session && session.token ? { Authorization: `Bearer ${session.token}` } : {},
+      formData,
       success: (res) => {
         wx.hideLoading();
         try {

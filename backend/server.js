@@ -473,11 +473,12 @@ async function routeApi(req, res, url) {
 
   const opportunityClaim = url.pathname.match(/^\/api\/opportunities\/(\d+)\/claim$/);
   if (req.method === "POST" && opportunityClaim) {
+    const body = await readBody(req);
     const state = readState();
     const viewer = getAuthUser(req, state);
     const index = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunityClaim[1]));
     if (index < 0) return sendJson(res, 404, { error: "公海机会不存在" });
-    return claimOpportunityAtIndex(res, state, viewer, index);
+    return claimOpportunityAtIndex(res, state, viewer, index, body);
   }
 
   const opportunityAssign = url.pathname.match(/^\/api\/opportunities\/(\d+)\/assign$/);
@@ -2250,6 +2251,17 @@ function resolveProduct(state, productId, productName) {
     || (productName ? normalizeProduct({ id: stableId("product", productName), name: productName }) : null);
 }
 
+function isPlaceholderProductName(productName = "") {
+  return !String(productName || "").trim() || cleanText(productName) === cleanText("待确认产品");
+}
+
+function resolveSelectableProduct(state, productId, productName) {
+  const products = (state.products || DEFAULT_PRODUCTS).filter((item) => item.active !== false && !isPlaceholderProductName(item.name));
+  return products.find((item) => productId && item.id === productId)
+    || products.find((item) => productName && cleanText(item.name) === cleanText(productName))
+    || null;
+}
+
 function hasActiveProductOpportunity(state, customerId, productId, excludeOpportunityId = 0) {
   return (state.opportunities || []).some((item) => Number(item.customerId) === Number(customerId)
     && item.productId === productId
@@ -2295,7 +2307,7 @@ function validateOpportunityAdvance(previous = {}, nextStage, body = {}) {
   if (nextStage === "成交" && !Number(body.paymentOwnerId || previous.paymentOwnerId)) {
     return { error: "请选择业绩归属人", field: "paymentOwnerId" };
   }
-  if (!String(body.nextFollow || "").trim()) {
+  if (nextStage !== "成交" && !String(body.nextFollow || "").trim()) {
     return { error: "请选择下次跟进时间", field: "nextFollow" };
   }
   return null;
@@ -2372,15 +2384,30 @@ function sanitizePublicPoolOpportunity(customer = {}, opportunity = {}) {
   };
 }
 
-function claimOpportunityAtIndex(res, state, viewer, index) {
+function claimOpportunityAtIndex(res, state, viewer, index, body = {}) {
   const previous = state.opportunities[index];
   if (!isOpportunityPublicPool(previous)) return sendJson(res, 409, { error: "该机会已被认领或不在公海", code: "DUPLICATE_CUSTOMER" });
   if (!canOwnCustomerUser(state, viewer)) {
     return sendJson(res, 403, { error: "仅销售、主管和区域经理可以认领公海机会" });
   }
+  const allowPlaceholderProduct = body.allowPlaceholderProduct === true;
+  const currentProduct = resolveSelectableProduct(state, previous.productId, previous.productName);
+  const selectedProduct = resolveSelectableProduct(state, body.productId, body.productName);
+  const needsProduct = !currentProduct || isPlaceholderProductName(previous.productName);
+  if (needsProduct && !selectedProduct && !allowPlaceholderProduct) return sendJson(res, 400, { error: "请选择意向产品", field: "productId" });
+  const product = selectedProduct || currentProduct || (allowPlaceholderProduct ? resolveProduct(state, previous.productId, previous.productName) : null);
+  if (product && hasActiveProductOpportunity(state, previous.customerId, product.id, previous.id)) {
+    return sendJson(res, 409, { error: "该客户已有相同产品的进行中机会", code: "DUPLICATE_ACTIVE_OPPORTUNITY" });
+  }
   const now = new Date().toISOString();
+  const productPrice = normalizeMoney(product?.price);
+  const previousAmount = normalizeMoney(previous.amount);
+  const shouldUseProductPrice = needsProduct && productPrice > 0 && (!previousAmount || previousAmount === DEFAULT_EXPECTED_AMOUNT);
   const next = normalizeOpportunity({
     ...previous,
+    productId: product?.id || previous.productId,
+    productName: product?.name || previous.productName,
+    amount: shouldUseProductPrice ? productPrice : previous.amount,
     owner: viewer.name,
     ownerId: viewer.id,
     followPerson: viewer.name,
@@ -2915,7 +2942,7 @@ function lockCustomerOwnership(customer, operator, reason) {
 function claimCustomerAtIndex(res, state, viewer, index) {
   const customerId = state.customers[index]?.id;
   const opportunityIndex = state.opportunities.findIndex((item) => Number(item.customerId) === Number(customerId) && isOpportunityPublicPool(item));
-  if (opportunityIndex >= 0) return claimOpportunityAtIndex(res, state, viewer, opportunityIndex);
+  if (opportunityIndex >= 0) return claimOpportunityAtIndex(res, state, viewer, opportunityIndex, { allowPlaceholderProduct: true });
   const role = findRole(state.roles, viewer.roleId, viewer.role);
   if (role.customerScope !== "self" && role.name !== "销售") {
     return sendJson(res, 403, { error: "主管及以上请使用客户分配功能" });

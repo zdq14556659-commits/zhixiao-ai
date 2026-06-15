@@ -88,7 +88,7 @@ async function run() {
   assert.ok(customerOpportunities.some((item) => item.stage === "商机" && item.productName === "V3升级"));
 
   const publicImport = await request("/import/customers?target=public_pool", { method: "POST", token: admin, body: {
-    rows: "客户名称,客户电话,客户地址,城市,意向产品\n宁波公海测试工厂,13812345679,浙江省宁波市鄞州区测试路2号,宁波市,ERP"
+    rows: "客户名称,客户电话,客户地址,城市\n宁波公海测试工厂,13812345679,浙江省宁波市鄞州区测试路2号,宁波市"
   } });
   assert.equal(publicImport.status, 201);
   assert.equal(publicImport.data.imported, 1);
@@ -96,7 +96,7 @@ async function run() {
   assert.equal(pool.data.count, 1);
   assert.equal(pool.data.items[0].phone, "认领后可见");
   assert.equal(pool.data.items[0].city, "宁波市");
-  assert.equal(pool.data.items[0].productName, "ERP");
+  assert.equal(pool.data.items[0].productName, "待确认产品");
   const customerBoard = await request("/customer-board", { token: sales });
   assert.equal(customerBoard.status, 200);
   assert.equal(customerBoard.data.backendVersion, "backend-v9");
@@ -108,9 +108,13 @@ async function run() {
   assert.ok(!stateWithPool.data.customers.some((item) => Number(item.id) === Number(pool.data.items[0].customerId)));
   const adminClaim = await request(`/opportunities/${pool.data.items[0].id}/claim`, { method: "POST", token: admin });
   assert.equal(adminClaim.status, 403);
-  const claimed = await request(`/opportunities/${pool.data.items[0].id}/claim`, { method: "POST", token: sales });
+  const missingProductClaim = await request(`/opportunities/${pool.data.items[0].id}/claim`, { method: "POST", token: sales });
+  assert.equal(missingProductClaim.status, 400);
+  assert.equal(missingProductClaim.data.field, "productId");
+  const claimed = await request(`/opportunities/${pool.data.items[0].id}/claim`, { method: "POST", token: sales, body: { productId: "product-erp" } });
   assert.equal(claimed.status, 200);
   assert.equal(claimed.data.phone, "13812345679");
+  assert.equal(claimed.data.productName, "ERP");
 
   const visit = await request("/visits", { method: "POST", token: sales, body: {
     customerId: wonV1.data.customerId, opportunityId: wonV1.data.id, factory: wonV1.data.name, phone: wonV1.data.phone,

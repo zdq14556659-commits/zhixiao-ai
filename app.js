@@ -219,6 +219,21 @@ function productById(productId) {
   return (state.products || []).find((item) => item.id === productId) || {};
 }
 
+function isPlaceholderProduct(product = {}) {
+  const name = String(product.name || product.productName || "").trim();
+  return !name || name === "待确认产品";
+}
+
+function selectableProducts() {
+  return (state.products || []).filter((item) => item.active !== false && !isPlaceholderProduct(item));
+}
+
+function productOptionsHtml(placeholder = "请选择意向产品") {
+  return `<option value="" disabled selected>${escapeHtml(placeholder)}</option>${selectableProducts()
+    .map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}${Number(item.price || 0) > 0 ? ` · ${escapeHtml(formatMoney(item.price))}` : ""}</option>`)
+    .join("")}`;
+}
+
 function productDefaultAmount(productId) {
   const price = Number(productById(productId).price || 0);
   return Number.isFinite(price) && price > 0 ? price : 150000;
@@ -728,13 +743,11 @@ function renderCustomers() {
   const paymentOwners = roleForUser(currentUser()).customerScope === "self" ? [currentUser()] : visibleUsers();
   $("#paymentOwnerSelect").innerHTML = paymentOwners.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
   $("#batchOwnerSelect").innerHTML = ownerOptions.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
+  $("#batchOwnerField")?.classList.toggle("hidden", currentStage === "公海");
   $("#assignOwnerSelect").innerHTML = ownerOptions.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
   $("#customerStageSelect").innerHTML = stages.map((stage) => `<option>${stage}</option>`).join("");
   $("#customerChannelSelect").innerHTML = channelSources.map((source) => `<option>${source}</option>`).join("");
-  const productOptions = (state.products || [])
-    .filter((item) => item.active !== false)
-    .map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}${Number(item.price || 0) > 0 ? ` · ${escapeHtml(formatMoney(item.price))}` : ""}</option>`)
-    .join("");
+  const productOptions = productOptionsHtml();
   $("#customerProductSelect").innerHTML = productOptions;
   $("#newOpportunityProductSelect").innerHTML = productOptions;
   $("#batchAssignBtn").classList.toggle("hidden", !canAssignCustomers());
@@ -946,8 +959,10 @@ function openCustomerDialog(customer = null) {
   form.name.value = customer?.name || "";
   form.phone.value = customer?.phone || "";
   form.city.value = customer?.city || "";
-  const productId = customer?.productId || state.products?.[0]?.id || "";
-  if (productId && !Array.from(form.productId.options).some((option) => option.value === productId)) {
+  const customerProductIsPlaceholder = isPlaceholderProduct({ name: customer?.productName });
+  const fallbackProductId = selectableProducts()[0]?.id || "";
+  const productId = customerProductIsPlaceholder ? "" : (customer?.productId || fallbackProductId);
+  if (productId && !Array.from(form.productId.options).some((option) => option.value === productId) && !customerProductIsPlaceholder) {
     form.productId.add(new Option(customer?.productName || "历史产品（待补充）", productId));
   }
   form.productId.value = productId;
@@ -1090,10 +1105,32 @@ async function saveCustomer(event) {
   toast("已保存");
 }
 
-async function claimCustomer(id) {
-  if (!window.confirm("认领后将获得3天临时保护，请及时提交有效跟进。确认认领？")) return;
+function claimCustomer(id) {
+  const customer = scopeOpportunityRows().find((item) => Number(item.id) === Number(id))
+    || currentFilteredCustomerRows.find((item) => Number(item.id) === Number(id))
+    || currentCustomerRows.find((item) => Number(item.id) === Number(id));
+  const form = $("#claimForm");
+  form.reset();
+  form.opportunityId.value = id;
+  $("#claimSummary").textContent = customer
+    ? `${customer.name} · 认领后获得3天临时保护，请及时提交有效跟进。`
+    : "认领后获得3天临时保护，请及时提交有效跟进。";
+  $("#claimProductSelect").innerHTML = productOptionsHtml("请选择意向产品");
+  const productId = customer && !isPlaceholderProduct(customer) ? customer.productId : "";
+  $("#claimProductSelect").value = selectableProducts().some((item) => item.id === productId) ? productId : "";
+  $("#claimDialog").showModal();
+}
+
+async function submitClaim(event) {
+  event.preventDefault();
+  if (event.submitter?.value === "cancel") return $("#claimDialog").close();
+  const form = new FormData(event.currentTarget);
+  const id = Number(form.get("opportunityId"));
+  const productId = String(form.get("productId") || "");
+  if (!productId) return toast("请选择：意向产品");
   try {
-    const claimed = await api(`/opportunities/${id}/claim`, { method: "POST" });
+    const claimed = await api(`/opportunities/${id}/claim`, { method: "POST", body: { productId } });
+    $("#claimDialog").close();
     currentStage = claimed.stage || "名单";
     customerPage = 1;
     await loadState();
@@ -1124,6 +1161,7 @@ async function advanceCustomer(id) {
   $("#advanceDialogSummary").textContent = `${customer.name} · ${customer.productName || "待确认产品"}`;
   $$(".advance-demo-field").forEach((node) => node.classList.toggle("hidden", nextStage !== "商机"));
   $$(".advance-deal-field").forEach((node) => node.classList.toggle("hidden", nextStage !== "成交"));
+  $("#advanceNextFollowRequired")?.classList.toggle("hidden", nextStage === "成交");
   const paymentOwners = roleForUser(currentUser()).customerScope === "self" ? [currentUser()] : visibleUsers();
   $("#advancePaymentOwnerSelect").innerHTML = paymentOwners.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
   $("#advancePaymentOwnerSelect").value = String(customer.paymentOwnerId || currentUser().id || "");
@@ -1146,7 +1184,7 @@ async function submitAdvance(event) {
   if (nextStage === "商机" && !demoAt) return toast("请填写：有效演示日期");
   if (nextStage === "成交" && contractAmount <= 0) return toast("请填写：合同金额");
   if (nextStage === "成交" && !paymentOwnerId) return toast("请选择：业绩归属人");
-  if (!nextFollow) return toast("请选择：下次跟进时间");
+  if (nextStage !== "成交" && !nextFollow) return toast("请选择：下次跟进时间");
   await api(`/opportunities/${id}/advance`, {
     method: "POST",
     body: {
@@ -1238,19 +1276,22 @@ async function batchImport(event) {
   event.preventDefault();
   if (event.submitter?.value === "cancel") return $("#batchDialog").close();
   const form = new FormData(event.currentTarget);
-  const ownerUser = userById(form.get("owner"));
+  const importToPublicPool = currentStage === "公海";
+  const ownerUser = importToPublicPool ? {} : userById(form.get("owner"));
   const owner = ownerUser.name || "";
   const file = form.get("file");
   const importBody = new FormData();
   importBody.append("stage", stages.includes(currentStage) ? currentStage : "名单");
-  importBody.append("owner", owner);
-  importBody.append("ownerId", ownerUser.id || "");
-  importBody.append("unitId", ownerUser.unitId || "");
-  importBody.append("unit", ownerUser.unit || "");
-  importBody.append("zone", ownerUser.zone || "");
+  if (!importToPublicPool) {
+    importBody.append("owner", owner);
+    importBody.append("ownerId", ownerUser.id || "");
+    importBody.append("unitId", ownerUser.unitId || "");
+    importBody.append("unit", ownerUser.unit || "");
+    importBody.append("zone", ownerUser.zone || "");
+    importBody.append("followPerson", owner);
+  }
   importBody.append("channelSource", "其他");
   importBody.append("createdBy", currentUser().name || "未记录");
-  importBody.append("followPerson", owner);
   importBody.append("moneyUnit", "yuan");
   if (file && file.size) {
     importBody.append("file", file);
@@ -1259,15 +1300,15 @@ async function batchImport(event) {
     if (!rows) return toast("请选择文件或粘贴客户数据");
     importBody.append("rows", rows);
   }
-  if (currentStage === "公海") importBody.append("target", "public_pool");
-  const endpoint = currentStage === "公海" ? "/import/customers?target=public_pool" : "/import/customers";
+  if (importToPublicPool) importBody.append("target", "public_pool");
+  const endpoint = importToPublicPool ? "/import/customers?target=public_pool" : "/import/customers";
   const result = await api(endpoint, { method: "POST", body: importBody });
   $("#batchDialog").close();
   event.currentTarget.reset();
   customerPage = 1;
   await loadState();
   showImportFeedback(result);
-  if (currentStage === "公海" && result.pendingLocation) trackGeocodeProgress();
+  if (importToPublicPool && result.pendingLocation) trackGeocodeProgress();
 }
 
 function isSoldStatus(status) {
@@ -2101,6 +2142,7 @@ function wireEvents() {
     if (button) restoreCustomer(Number(button.dataset.restoreCustomer)).catch((error) => toast(error.message));
   });
   $("#batchForm").addEventListener("submit", batchImport);
+  $("#claimForm").addEventListener("submit", submitClaim);
   $("#assignForm").addEventListener("submit", batchAssignCustomers);
   $("#targetForm").addEventListener("submit", saveTarget);
   $("#recommendBtn").addEventListener("click", recommend);

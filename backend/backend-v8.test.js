@@ -145,6 +145,11 @@ async function run() {
   const validLeadAdvance = await request(`/opportunities/${listCustomer.data.id}/advance`, { method: "POST", token: salesA, body: { note: "确认客户有明确需求", nextFollow: "2026-06-20", moneyUnit: "yuan" } });
   assert.equal(validLeadAdvance.status, 200);
   assert.equal(validLeadAdvance.data.stage, "线索");
+  const validOpportunityAdvance = await request(`/opportunities/${listCustomer.data.id}/advance`, { method: "POST", token: salesA, body: { demoAt: "2026-06-16", note: "已完成有效演示", nextFollow: "2026-06-21", moneyUnit: "yuan" } });
+  assert.equal(validOpportunityAdvance.status, 200);
+  const dealWithoutNextFollow = await request(`/opportunities/${listCustomer.data.id}/advance`, { method: "POST", token: salesA, body: { note: "客户已签约成交", contractAmount: 80000, paymentOwnerId: 2, moneyUnit: "yuan" } });
+  assert.equal(dealWithoutNextFollow.status, 200, JSON.stringify(dealWithoutNextFollow.data));
+  assert.equal(dealWithoutNextFollow.data.stage, "成交");
 
   const pool = await request("/public-pool", { token: salesA });
   assert.equal(pool.data.backendVersion, "backend-v9");

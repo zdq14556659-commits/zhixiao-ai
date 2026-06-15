@@ -58,6 +58,10 @@ Page({
     newOpportunityCustomerId: 0,
     newOpportunityNote: "",
     newOpportunityNextFollow: "",
+    claimOpen: false,
+    claimItem: null,
+    claimProductIndex: -1,
+    claimProductName: "",
     products: [],
     productIndex: 0
   },
@@ -128,7 +132,7 @@ Page({
       ownerIndex,
       regionIndex,
       cityIndex,
-      products: (state.products || []).filter((item) => item.active !== false),
+      products: (state.products || []).filter((item) => item.active !== false && !this.isPlaceholderProduct(item)),
       stageTimeLabel: this.stageTimeConfig(this.data.currentStage).label,
       canAssign: this.canAssignCustomers(),
       canImportPublic: app.canImportPublicPool(),
@@ -473,7 +477,7 @@ Page({
     if (!note) return wx.showToast({ title: "请填写本次跟进内容", icon: "none" });
     if (nextStage === "商机" && !this.data.advanceDemoAt) return wx.showToast({ title: "请选择有效演示日期", icon: "none" });
     if (nextStage === "成交" && contractAmount <= 0) return wx.showToast({ title: "请填写合同金额", icon: "none" });
-    if (!nextFollow) return wx.showToast({ title: "请选择下次跟进时间", icon: "none" });
+    if (nextStage !== "成交" && !nextFollow) return wx.showToast({ title: "请选择下次跟进时间", icon: "none" });
     if (Number(this.data.advancePaymentAmount || 0) > 0 && !this.data.advancePaymentDate) return wx.showToast({ title: "请选择进款日期", icon: "none" });
     this.submitAdvanceRequest(item, this.data.advanceTargetStage, {
       demoAt: this.data.advanceDemoAt,
@@ -508,6 +512,10 @@ Page({
   onProduct(event) { this.setData({ productIndex: Number(event.detail.value) }); },
   onNewOpportunityField(event) { this.setData({ [event.currentTarget.dataset.field]: event.detail.value }); },
   onNewOpportunityNextFollow(event) { this.setData({ newOpportunityNextFollow: event.detail.value }); },
+  isPlaceholderProduct(product = {}) {
+    const name = String(product.name || product.productName || "").trim();
+    return !name || name === "待确认产品";
+  },
   submitNewOpportunity() {
     const product = this.data.products[this.data.productIndex];
     if (!product) return wx.showToast({ title: "请选择产品", icon: "none" });
@@ -545,31 +553,52 @@ Page({
 
   claimCustomer(event) {
     const id = Number(event.currentTarget.dataset.id);
-    wx.showModal({
-      title: "认领公海客户",
-      content: "认领后获得3天临时保护，请及时提交有效跟进。",
-      success: (result) => {
-        if (!result.confirm) return;
-        wx.showLoading({ title: "认领中" });
-        app.requestApi(`/opportunities/${id}/claim`, { method: "POST" })
-          .then((customer) => {
-            app.loadRemoteState(() => {
-              this.setData({ currentStage: customer.stage || "名单", page: 1 });
-              this.loadCustomerBoard().then(() => {
-                wx.hideLoading();
-                wx.showToast({ title: "认领成功", icon: "success" });
-                this.preserveFiltersOnNextShow = true;
-                setTimeout(() => wx.navigateTo({ url: `/pages/follow/index?id=${customer.customerId}&opportunityId=${customer.id}` }), 500);
-              });
-            });
-          })
-          .catch((error) => {
-            wx.hideLoading();
-            app.loadRemoteState(() => this.loadCustomerBoard());
-            wx.showToast({ title: error.message || "客户可能已被他人认领", icon: "none" });
-          });
-      }
+    const item = this.data.filtered.find((row) => Number(row.id) === id) || (this.publicPoolItems || []).find((row) => Number(row.id) === id);
+    const productIndex = item && !this.isPlaceholderProduct(item)
+      ? this.data.products.findIndex((product) => product.id === item.productId)
+      : -1;
+    const product = productIndex >= 0 ? this.data.products[productIndex] : null;
+    this.setData({
+      claimOpen: true,
+      claimItem: item || { id },
+      claimProductIndex: productIndex,
+      claimProductName: product?.name || ""
     });
+  },
+
+  closeClaim() {
+    this.setData({ claimOpen: false, claimItem: null, claimProductIndex: -1, claimProductName: "" });
+  },
+
+  onClaimProduct(event) {
+    const claimProductIndex = Number(event.detail.value);
+    const product = this.data.products[claimProductIndex];
+    this.setData({ claimProductIndex, claimProductName: product?.name || "" });
+  },
+
+  submitClaimCustomer() {
+    const item = this.data.claimItem;
+    const product = this.data.products[this.data.claimProductIndex];
+    if (!item?.id) return wx.showToast({ title: "公海机会不存在", icon: "none" });
+    if (!product?.id) return wx.showToast({ title: "请选择意向产品", icon: "none" });
+    wx.showLoading({ title: "认领中" });
+    app.requestApi(`/opportunities/${item.id}/claim`, { method: "POST", data: { productId: product.id } })
+      .then((customer) => {
+        app.loadRemoteState(() => {
+          this.setData({ currentStage: customer.stage || "名单", page: 1, claimOpen: false, claimItem: null, claimProductIndex: -1, claimProductName: "" });
+          this.loadCustomerBoard().then(() => {
+            wx.hideLoading();
+            wx.showToast({ title: "认领成功", icon: "success" });
+            this.preserveFiltersOnNextShow = true;
+            setTimeout(() => wx.navigateTo({ url: `/pages/follow/index?id=${customer.customerId}&opportunityId=${customer.id}` }), 500);
+          });
+        });
+      })
+      .catch((error) => {
+        wx.hideLoading();
+        app.loadRemoteState(() => this.loadCustomerBoard());
+        wx.showToast({ title: error.message || "客户可能已被他人认领", icon: "none" });
+      });
   },
 
   assignCustomer(event) {

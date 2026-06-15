@@ -367,7 +367,7 @@
         <label class="advance-deal-field">进款日期<input name="paymentDate" type="date" /></label>
         <label class="advance-deal-field">业绩归属人 <span class="required-mark">*</span><select name="paymentOwnerId" id="advancePaymentOwnerSelect"></select></label>
         <label>本次跟进内容 <span class="required-mark">*</span><textarea name="note" rows="3"></textarea></label>
-        <label>下次跟进 <span class="required-mark">*</span><input name="nextFollow" type="date" /></label>
+        <label id="advanceNextFollowField">下次跟进 <span class="required-mark" id="advanceNextFollowRequired">*</span><input name="nextFollow" type="date" /></label>
         <div class="button-row"><button type="button" data-close-dialog="advanceDialog">取消</button><button class="primary" type="submit">确认推进</button></div>
       </form>
     </dialog>
@@ -399,12 +399,22 @@
       </form>
     </dialog>
 
+    <dialog id="claimDialog">
+      <form method="dialog" class="dialog-form" id="claimForm">
+        <h2>认领公海客户</h2>
+        <input type="hidden" name="opportunityId" />
+        <p class="muted" id="claimSummary">认领后获得3天临时保护，请及时提交有效跟进。</p>
+        <label>意向产品 <span class="required-mark">*</span><select name="productId" id="claimProductSelect"></select></label>
+        <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">确认认领</button></div>
+      </form>
+    </dialog>
+
     <dialog id="batchDialog">
       <form method="dialog" class="dialog-form" id="batchForm">
         <h2>批量导入客户</h2>
         <p class="muted">下载样表后按表头填写，支持 xlsx / csv / txt 上传，也可继续粘贴导入。</p>
         <a class="template-link" id="downloadTemplateLink" href="/api/import/customers/template" target="_blank" rel="noreferrer">下载样表</a>
-        <label>默认跟进人<select name="owner" id="batchOwnerSelect"></select></label>
+        <label id="batchOwnerField">默认跟进人<select name="owner" id="batchOwnerSelect"></select></label>
         <label>上传名单文件<input name="file" type="file" accept=".xlsx,.csv,.txt" /></label>
         <textarea name="rows" rows="8" placeholder="佛山柜体门板厂,13900139000,地推,广东省佛山市,酷家乐+手工报价,26"></textarea>
         <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">导入</button></div>

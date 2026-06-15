@@ -194,8 +194,22 @@
         <view class="form-item"><text class="label">进款日期</text><picker mode="date" value="{{advancePaymentDate}}" bindchange="onAdvancePaymentDate"><view class="picker-box">{{advancePaymentDate || '未进款'}}</view></picker></view>
       </block>
       <view class="form-item"><text class="label">本次跟进内容 <text class="required-mark">*</text></text><textarea value="{{advanceNote}}" data-field="advanceNote" bindinput="onAdvanceField"></textarea></view>
-      <view class="form-item"><text class="label">下次跟进 <text class="required-mark">*</text></text><picker mode="date" value="{{advanceNextFollow}}" bindchange="onAdvanceNextFollow"><view class="picker-box">{{advanceNextFollow || '未设置'}}</view></picker></view>
+      <view class="form-item"><text class="label">下次跟进 <text wx:if="{{advanceTargetStage !== '成交'}}" class="required-mark">*</text></text><picker mode="date" value="{{advanceNextFollow}}" bindchange="onAdvanceNextFollow"><view class="picker-box">{{advanceNextFollow || '未设置'}}</view></picker></view>
       <view class="modal-actions"><button class="plain-btn" bindtap="closeAdvance">取消</button><button class="primary-btn" bindtap="submitAdvanceForm">确认推进</button></view>
+    </view>
+  </view>
+
+  <view wx:if="{{claimOpen}}" class="modal-mask" catchtouchmove="true">
+    <view class="modal-card">
+      <view class="modal-title">认领公海客户</view>
+      <view class="muted">{{claimItem.name || '公海客户'}} · 认领后获得3天临时保护</view>
+      <view class="form-item">
+        <text class="label">意向产品 <text class="required-mark">*</text></text>
+        <picker range="{{products}}" range-key="name" value="{{claimProductIndex}}" bindchange="onClaimProduct">
+          <view class="picker-box">{{claimProductName || '请选择意向产品'}}</view>
+        </picker>
+      </view>
+      <view class="modal-actions"><button class="plain-btn" bindtap="closeClaim">取消</button><button class="primary-btn" bindtap="submitClaimCustomer">确认认领</button></view>
     </view>
   </view>
 
