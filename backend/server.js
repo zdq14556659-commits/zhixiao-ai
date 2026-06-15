@@ -4011,7 +4011,7 @@ async function importCustomers(req, viewer, target = "") {
   const stage = multipart.fields.stage || "名单";
   const state = readState();
   const importToPublicPool = target === "public_pool" || multipart.fields.target === "public_pool";
-  if (importToPublicPool && !canUseAdmin(state, viewer)) throw new Error("仅运营、总负责人和管理员可以导入公海");
+  if (importToPublicPool && !canImportPublicPool(state, viewer)) throw new Error("仅运营、总负责人和管理员可以导入公海");
   const viewerRole = findRole(state.roles, viewer.roleId, viewer.role);
   let ownerUser = viewer;
   if (!importToPublicPool && viewerRole.customerScope !== "self") {

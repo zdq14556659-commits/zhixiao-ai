@@ -90,6 +90,7 @@ const legacyState = {
 };
 
 fs.mkdirSync(uploadDir, { recursive: true });
+legacyState.users.push({ id: 4, name: "Ops", account: "ops", password: "123456", roleId: "role-ops", unitId: "unit-east", unit: "Ops", zone: "" });
 fs.writeFileSync(path.join(tempDir, "db.json"), JSON.stringify(legacyState, null, 2));
 fs.writeFileSync(path.join(tempDir, "seed.json"), JSON.stringify(legacyState, null, 2));
 
@@ -140,6 +141,7 @@ async function run() {
   await waitForServer();
   const tokenA = await login("sales-a");
   const tokenB = await login("sales-b");
+  const tokenOps = await login("ops");
 
   const stateA = await request("/state?client=mini", { token: tokenA });
   const stateB = await request("/state?client=mini", { token: tokenB });
@@ -218,6 +220,28 @@ async function run() {
   assert.ok(importResult.data.skipped.some((item) => item.reason.includes("文件内手机号")));
   assert.ok(importResult.data.failures.some((item) => item.reason === "手机号无效"));
   assert.ok(importResult.data.reportUrl);
+
+  const publicImportResult = await request("/import/customers?target=public_pool", {
+    method: "POST",
+    token: tokenOps,
+    body: {
+      moneyUnit: "yuan",
+      rows: "Ops public imported,13988889999,web,No 3 Taihu Road Wuxi,V1,150000"
+    }
+  });
+  assert.equal(publicImportResult.status, 201, JSON.stringify(publicImportResult.data));
+  assert.equal(publicImportResult.data.total, 1);
+  assert.equal(publicImportResult.data.imported, 1, JSON.stringify(publicImportResult.data));
+
+  const blockedPublicImport = await request("/import/customers?target=public_pool", {
+    method: "POST",
+    token: tokenB,
+    body: {
+      moneyUnit: "yuan",
+      rows: "Sales blocked public import,13988880000,web,No 4 Taihu Road Wuxi,V1,150000"
+    }
+  });
+  assert.equal(blockedPublicImport.status, 403);
 }
 
 run()
