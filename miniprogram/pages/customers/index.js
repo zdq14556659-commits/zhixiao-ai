@@ -147,7 +147,7 @@ Page({
     this.setData({ customerBoardLoading: true, customerBoardError: "", publicPoolLoading: true, publicPoolLoaded: false, publicPoolError: "", publicPoolFilteredOut: false });
     return app.requestApi("/customer-board")
       .then((result) => {
-        if (result.backendVersion !== "backend-v8") throw new Error("后端版本尚未更新，请等待部署完成后重试");
+        if (result.backendVersion !== "backend-v9") throw new Error("后端版本尚未更新，请等待部署完成后重试");
         this.privateOpportunityItems = Array.isArray(result.items) ? result.items : [];
         this.publicPoolItems = Array.isArray(result.publicPool?.items) ? result.publicPool.items : [];
         this.publicPoolCount = Number(result.publicPool?.count ?? this.publicPoolItems.length);

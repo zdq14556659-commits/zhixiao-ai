@@ -1,7 +1,7 @@
 const STORAGE_KEY = "zhixiao_ai_mini_state_v7";
 const AUTH_KEY = "zhixiao_ai_auth_v1";
 const API_BASE_OVERRIDE_KEY = "zhixiao_ai_api_base_override";
-const PROD_API_BASE = "https://zhixiaoai1.onrender.com/api";
+const PROD_API_BASE = "https://isales.santi.ren/crm/api";
 const API_BASE = getApiBase();
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const CHANNEL_SOURCES = ["自媒体", "官网留言", "自主注册", "渠道介绍", "企查查", "客源汇", "公众号", "地推", "其他"];
@@ -269,7 +269,7 @@ App({
   globalData: {
     today,
     apiBase: API_BASE,
-    backendVersion: "backend-v8",
+    backendVersion: "backend-v9",
     moneyUnit: "yuan",
     channelSources: CHANNEL_SOURCES,
     stageColors: {

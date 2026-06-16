@@ -1,6 +1,13 @@
-const API_BASE =
-  window.ZHIXIAO_API_BASE ||
-  (window.location.protocol === "file:" ? "http://127.0.0.1:8787/api" : `${window.location.origin}/api`);
+function getWebApiBase() {
+  if (window.ZHIXIAO_API_BASE) return window.ZHIXIAO_API_BASE;
+  if (window.location.protocol === "file:") return "http://127.0.0.1:8787/api";
+  const path = window.location.pathname || "/";
+  const crmMatch = path.match(/^(\/crm)\/?/i);
+  const prefix = crmMatch ? crmMatch[1] : "";
+  return `${window.location.origin}${prefix}/api`;
+}
+
+const API_BASE = getWebApiBase();
 const AUTH_KEY = "zhixiao-web-auth";
 const today = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 const stages = ["名单", "线索", "商机", "成交"];
