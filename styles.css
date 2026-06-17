@@ -641,10 +641,15 @@ button:disabled {
 }
 
 .customer-pager select,
+.customer-pager input,
 .customer-pager button {
   width: auto;
   min-height: 34px;
   padding: 0 12px;
+}
+
+.customer-pager input {
+  width: 78px;
 }
 
 .kb-file-link {
@@ -950,6 +955,39 @@ button:disabled {
 .visit-list article span, .user-list article span {
   float: right;
   color: var(--green);
+}
+
+.user-org-node {
+  display: grid;
+  gap: 8px;
+  margin-left: calc(var(--level, 0) * 14px);
+}
+
+.org-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  justify-content: flex-start;
+  border-color: var(--line);
+  background: #f8fbff;
+}
+
+.org-toggle span {
+  float: none;
+  color: var(--blue);
+  font-weight: 700;
+}
+
+.org-toggle em {
+  margin-left: auto;
+  color: var(--muted);
+  font-style: normal;
+}
+
+.user-org-children {
+  display: grid;
+  gap: 10px;
 }
 
 .sold-text { color: var(--red) !important; }

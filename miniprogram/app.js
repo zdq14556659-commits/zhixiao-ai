@@ -1,4 +1,4 @@
-const STORAGE_KEY = "zhixiao_ai_mini_state_v7";
+const STORAGE_KEY = "zhixiao_ai_mini_state_v8";
 const AUTH_KEY = "zhixiao_ai_auth_v1";
 const API_BASE_OVERRIDE_KEY = "zhixiao_ai_api_base_override";
 const PROD_API_BASE = "https://isales.santi.ren/crm/api";
@@ -65,7 +65,12 @@ function formatRequestError(error) {
 
 function normalizeChannelSource(value) {
   const text = String(value || "").trim();
-  if (CHANNEL_SOURCES.includes(text)) return text;
+  let sources = CHANNEL_SOURCES;
+  try {
+    sources = getApp()?.globalData?.channelSources || CHANNEL_SOURCES;
+  } catch {}
+  if (!text) return "其他";
+  if (sources.includes(text)) return text;
   const aliases = {
     官方资源: "官网留言",
     官网: "官网留言",
@@ -80,7 +85,7 @@ function normalizeChannelSource(value) {
     批量导入: "其他",
     展会: "其他"
   };
-  return aliases[text] || "其他";
+  return aliases[text] || text || "其他";
 }
 
 function getApiBase() {
@@ -106,9 +111,11 @@ function formatMoney(value) {
 }
 
 function migrateLocalState(state = seedState) {
+  const channelSources = Array.isArray(state.channelSources) && state.channelSources.length ? state.channelSources : CHANNEL_SOURCES;
   return {
     ...state,
     version: "mini-v7",
+    channelSources,
     products: state.products?.length ? state.products : DEFAULT_PRODUCTS,
     units: (state.units || []).filter((unit) => unit && !LEGACY_DEMO_UNIT_IDS.includes(unit.id)),
     users: (state.users || []).map((user) => LEGACY_DEMO_UNIT_IDS.includes(user.unitId)
@@ -123,6 +130,7 @@ const seedState = {
   stages: ["名单", "线索", "商机", "成交"],
   zones: ZONES,
   products: DEFAULT_PRODUCTS,
+  channelSources: CHANNEL_SOURCES,
   roles: DEFAULT_ROLES,
   units: DEFAULT_UNITS,
   users: [
@@ -299,8 +307,13 @@ App({
 
   setState(nextState) {
     const session = this.getSession();
-    const state = { ...nextState };
+    const state = migrateLocalState({ ...nextState });
     if (session && session.user) state.currentUserId = session.user.id;
+    const sources = (state.channelSources || [])
+      .filter((item) => typeof item === "string" || item.active !== false)
+      .map((item) => String(typeof item === "string" ? item : item.name || "").trim())
+      .filter(Boolean);
+    this.globalData.channelSources = [...new Set([...(state.channelSources?.length ? [] : CHANNEL_SOURCES), ...sources])];
     wx.setStorageSync(STORAGE_KEY, state);
     this.saveRemoteState(state);
   },
@@ -418,6 +431,11 @@ App({
           const nextState = res.data;
           const session = this.getSession();
           if (session && session.user) nextState.currentUserId = session.user.id;
+          const sources = (nextState.channelSources || [])
+            .filter((item) => typeof item === "string" || item.active !== false)
+            .map((item) => String(typeof item === "string" ? item : item.name || "").trim())
+            .filter(Boolean);
+          this.globalData.channelSources = [...new Set([...(nextState.channelSources?.length ? [] : CHANNEL_SOURCES), ...sources])];
           wx.setStorageSync(STORAGE_KEY, nextState);
           if (callback) callback(nextState);
         } else if (res.statusCode === 401) {

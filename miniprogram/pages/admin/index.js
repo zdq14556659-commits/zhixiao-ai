@@ -16,6 +16,8 @@ Page({
     zoneIndex: 0,
     scopeIndex: 1,
     users: [],
+    userOrgRows: [],
+    collapsedUnitIds: {},
     orgUnits: [],
     parentUnits: [],
     knowledge: [],
@@ -62,6 +64,7 @@ Page({
       const parentUnits = app.getUnits();
       this.setData({
         users: app.visibleUsers(),
+        userOrgRows: this.buildUserOrgRows(app.visibleUsers(), app.getUnits(), this.data.collapsedUnitIds),
         currentUserId: Number(app.getCurrentUser()?.id || 0),
         roles: app.getRoles(),
         units,
@@ -71,6 +74,56 @@ Page({
         unitPickerText: this.formatUnitPicker(units, this.data.unitIndex)
       });
       if (callback) callback();
+    });
+  },
+
+  isHiddenDemoUser(user = {}) {
+    const account = String(user.account || user.username || "").toLowerCase();
+    return ["linchen", "zhouyang"].includes(account) && ["林晨", "周扬"].includes(user.name);
+  },
+
+  buildUserOrgRows(rawUsers = [], units = [], collapsed = {}) {
+    const users = rawUsers.filter((user) => !this.isHiddenDemoUser(user));
+    const children = {};
+    units.forEach((unit) => {
+      const parentId = String(unit.parentId || "");
+      if (!children[parentId]) children[parentId] = [];
+      children[parentId].push(unit);
+    });
+    const usersByUnit = {};
+    users.forEach((user) => {
+      const unitId = String(user.unitId || "unassigned");
+      if (!usersByUnit[unitId]) usersByUnit[unitId] = [];
+      usersByUnit[unitId].push(user);
+    });
+    const countForUnit = (unitId) => {
+      let count = (usersByUnit[String(unitId)] || []).length;
+      (children[String(unitId)] || []).forEach((child) => { count += countForUnit(child.id); });
+      return count;
+    };
+    const rows = [];
+    const walk = (unit) => {
+      const id = String(unit.id);
+      const count = countForUnit(id);
+      if (!count && unit.type !== "root") return;
+      const isCollapsed = Boolean(collapsed[id]);
+      rows.push({ kind: "unit", id, name: unit.name, level: Number(unit.level || 0), count, collapsed: isCollapsed });
+      if (isCollapsed) return;
+      (usersByUnit[id] || []).forEach((user) => rows.push({ kind: "user", ...user, level: Number(unit.level || 0) + 1 }));
+      (children[id] || []).sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0)).forEach(walk);
+    };
+    const root = units.find((unit) => unit.id === "org-root") || units.find((unit) => unit.type === "root");
+    if (root) walk(root);
+    (usersByUnit.unassigned || []).forEach((user) => rows.push({ kind: "user", ...user, level: 0 }));
+    return rows;
+  },
+
+  toggleUserUnit(event) {
+    const id = event.currentTarget.dataset.id;
+    const collapsedUnitIds = { ...this.data.collapsedUnitIds, [id]: !this.data.collapsedUnitIds[id] };
+    this.setData({
+      collapsedUnitIds,
+      userOrgRows: this.buildUserOrgRows(this.data.users, this.data.orgUnits, collapsedUnitIds)
     });
   },
 

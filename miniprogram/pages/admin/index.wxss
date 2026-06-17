@@ -45,6 +45,28 @@
   border-top: 0;
 }
 
+.org-user-node {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  min-height: 66rpx;
+  margin-top: 8rpx;
+  padding: 12rpx 16rpx;
+  border-radius: 10rpx;
+  background: #f7fbff;
+  color: #1f2d3d;
+}
+
+.org-user-node .muted {
+  margin-left: auto;
+}
+
+.org-arrow {
+  width: 28rpx;
+  color: #409eff;
+  font-weight: 800;
+}
+
 .name {
   font-size: 30rpx;
   font-weight: 800;

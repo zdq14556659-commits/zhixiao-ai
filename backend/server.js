@@ -21,6 +21,8 @@ const PUBLIC_ROOT = path.resolve(__dirname, "..");
 const CUSTOMER_TEMPLATE_FILE = path.join(__dirname, "templates", "customer-import-template.xlsx");
 const USER_TEMPLATE_FILE = path.join(__dirname, "templates", "user-import-template.xlsx");
 const STAGES = ["名单", "线索", "商机", "成交"];
+const PUBLIC_POOL_STATUS = "公海";
+const IMPORT_STATUSES = [...STAGES, PUBLIC_POOL_STATUS];
 const STAGE_TIME_FIELDS = { 线索: "leadAt", 商机: "opportunityAt", 成交: "dealAt" };
 const CHANNEL_SOURCES = ["自媒体", "官网留言", "自主注册", "渠道介绍", "企查查", "客源汇", "公众号", "地推", "其他"];
 const ZONES = ["东部战区", "南部战区", "西部战区", "北部战区", "中部战区"];
@@ -193,7 +195,7 @@ async function routeApi(req, res, url) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/import/customers/template") {
-    return sendFile(res, CUSTOMER_TEMPLATE_FILE, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "CRM名单模板.xlsx");
+    return sendCustomerTemplate(res);
   }
 
   if (req.method === "GET" && url.pathname === "/api/import/users/template") {
@@ -327,6 +329,64 @@ async function routeApi(req, res, url) {
     state.products[index] = product;
     writeState(state);
     return sendJson(res, 200, product);
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/channel-sources") {
+    return sendJson(res, 200, authState.channelSources || normalizeChannelSources());
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/channel-sources") {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无渠道来源管理权限" });
+    const name = String(body.name || "").trim();
+    if (!name) return sendJson(res, 400, { error: "请填写渠道来源名称" });
+    if ((state.channelSources || []).some((item) => cleanText(item.name) === cleanText(name))) {
+      return sendJson(res, 409, { error: "渠道来源已存在" });
+    }
+    const source = normalizeChannelSourceItem({ id: body.id || stableId("channel", name), name, active: body.active !== false, sort: body.sort });
+    state.channelSources.push(source);
+    writeState(state);
+    return sendJson(res, 201, source);
+  }
+
+  const channelSourceUpdate = url.pathname.match(/^\/api\/channel-sources\/([^/]+)$/);
+  if ((req.method === "PUT" || req.method === "PATCH") && channelSourceUpdate) {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无渠道来源管理权限" });
+    const index = (state.channelSources || []).findIndex((item) => item.id === channelSourceUpdate[1]);
+    if (index < 0) return sendJson(res, 404, { error: "渠道来源不存在" });
+    const name = String(body.name || state.channelSources[index].name || "").trim();
+    if (!name) return sendJson(res, 400, { error: "请填写渠道来源名称" });
+    if ((state.channelSources || []).some((item, itemIndex) => itemIndex !== index && cleanText(item.name) === cleanText(name))) {
+      return sendJson(res, 409, { error: "渠道来源已存在" });
+    }
+    const source = normalizeChannelSourceItem({
+      ...state.channelSources[index],
+      name,
+      active: body.active !== false,
+      sort: body.sort ?? state.channelSources[index].sort
+    });
+    state.channelSources[index] = source;
+    writeState(state);
+    return sendJson(res, 200, source);
+  }
+
+  if (req.method === "DELETE" && channelSourceUpdate) {
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无渠道来源管理权限" });
+    const index = (state.channelSources || []).findIndex((item) => item.id === channelSourceUpdate[1]);
+    if (index < 0) return sendJson(res, 404, { error: "渠道来源不存在" });
+    const source = state.channelSources[index];
+    const used = (state.customers || []).some((customer) => cleanText(customer.channelSource) === cleanText(source.name));
+    if (used) return sendJson(res, 409, { error: "已有客户使用该渠道来源，请先停用，不能删除" });
+    state.channelSources.splice(index, 1);
+    writeState(state);
+    return sendJson(res, 200, { ok: true });
   }
 
   if (req.method === "GET" && url.pathname === "/api/public-pool") {
@@ -774,6 +834,36 @@ async function routeApi(req, res, url) {
     return sendJson(res, 200, visibleVisitsForCustomer(state, viewer, customer.id).sort(sortByNewest));
   }
 
+  const customerDelete = url.pathname.match(/^\/api\/customers\/(\d+)$/);
+  if (req.method === "DELETE" && customerDelete) {
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canHardDeleteCustomer(state, viewer)) return sendJson(res, 403, { error: "仅管理员和总负责人可以删除客户" });
+    const customerId = Number(customerDelete[1]);
+    const customer = findCustomer(state.customers || [], customerId);
+    if (!customer) return sendJson(res, 404, { error: "客户不存在" });
+    const opportunityIds = new Set((state.opportunities || []).filter((item) => Number(item.customerId) === customerId).map((item) => Number(item.id)));
+    state.customers = (state.customers || []).filter((item) => Number(item.id) !== customerId);
+    state.opportunities = (state.opportunities || []).filter((item) => Number(item.customerId) !== customerId);
+    state.activities = (state.activities || []).filter((item) => Number(item.customerId) !== customerId && !opportunityIds.has(Number(item.opportunityId)));
+    state.visits = (state.visits || []).filter((item) => Number(item.customerId) !== customerId && !opportunityIds.has(Number(item.opportunityId)));
+    state.geocodeJobs = (state.geocodeJobs || []).filter((item) => Number(item.customerId) !== customerId);
+    state.routes = (state.routes || []).map((route) => normalizeRoute({
+      ...route,
+      stops: (route.stops || []).filter((stop) => Number(stop.customerId) !== customerId)
+    }));
+    appendSecurityLog(state, {
+      type: "delete_customer",
+      actorId: viewer.id,
+      actorName: viewer.name,
+      targetId: customerId,
+      targetName: `${customer.name || ""} ${customer.phone || ""}`.trim(),
+      sourceIp: req.socket?.remoteAddress || "unknown"
+    });
+    writeState(state);
+    return sendJson(res, 200, { ok: true, deletedId: customerId });
+  }
+
   const customerArchive = url.pathname.match(/^\/api\/customers\/(\d+)\/archive$/);
   if (req.method === "POST" && customerArchive) {
     const body = await readBody(req);
@@ -915,7 +1005,7 @@ async function routeApi(req, res, url) {
     if (!canUseAdmin(state, viewer)) {
       const changesName = body.name !== undefined && String(body.name).trim() !== String(previous.name || "").trim();
       const changesPhone = body.phone !== undefined && normalizePhone(body.phone) !== normalizePhone(previous.phone);
-      const changesChannel = body.channelSource !== undefined && normalizeChannelSource(body.channelSource) !== normalizeChannelSource(previous.channelSource);
+      const changesChannel = body.channelSource !== undefined && normalizeChannelSource(body.channelSource, state.channelSources) !== normalizeChannelSource(previous.channelSource, state.channelSources);
       const changesCreatedBy = body.createdBy !== undefined && cleanText(body.createdBy) !== cleanText(previous.createdBy);
       if (changesName || changesPhone || changesChannel || changesCreatedBy) {
         return sendJson(res, 403, { error: "已有客户的名称、手机号、渠道来源和录入人仅总负责人、运营、管理员可修改" });
@@ -1052,12 +1142,18 @@ async function routeApi(req, res, url) {
     if (url.searchParams.get("target") === "public_pool" && !canImportPublicPool(authState, authUser)) {
       return sendJson(res, 403, { error: "仅运营、总负责人和管理员可以导入公海" });
     }
-    const result = await importCustomers(req, authUser, url.searchParams.get("target") || "");
-    return sendJson(res, 201, result);
+    try {
+      const result = await importCustomers(req, authUser, url.searchParams.get("target") || "");
+      return sendJson(res, 201, result);
+    } catch (error) {
+      const message = error.message || "导入失败";
+      const status = message.includes("仅运营") || message.includes("权限范围") ? 403 : 400;
+      return sendJson(res, status, { error: message });
+    }
   }
 
   if (req.method === "GET" && url.pathname === "/api/import/customers/template") {
-    return sendFile(res, CUSTOMER_TEMPLATE_FILE, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "CRM名单模板.xlsx");
+    return sendCustomerTemplate(res);
   }
 
   if (req.method === "POST" && url.pathname === "/api/users") {
@@ -1409,6 +1505,7 @@ function normalizeIncomingState(input) {
     visits: mergeById(current.visits, input.visits),
     targets: mergeById(current.targets, input.targets),
     competitors: mergeById(current.competitors, input.competitors),
+    channelSources: mergeById(current.channelSources, input.channelSources),
     routes: mergeById(current.routes, input.routes),
     geocodeJobs: mergeById(current.geocodeJobs, input.geocodeJobs),
     knowledge: input.knowledge || current.knowledge || [],
@@ -1465,13 +1562,14 @@ function migrateState(state) {
   const units = normalizeUnits(source.units || [], source);
   const competitors = normalizeCompetitors(source.competitors || []);
   const products = normalizeProducts(source.products || []);
+  const channelSources = normalizeChannelSources(source.channelSources || []);
   const users = ensureSystemAdminUser(normalizeUsers(source.users || [], {
     roles,
     units,
     resetAdminPassword: !["backend-v3", "backend-v4", "backend-v5", "backend-v6", "backend-v7", "backend-v8", "backend-v9"].includes(source.version)
   }), roles, units);
   const activities = source.activities || [];
-  const context = { roles, units, users, activities, competitors, products, legacyOwnership };
+  const context = { roles, units, users, activities, competitors, products, channelSources, legacyOwnership };
   const customers = (source.customers || []).map((customer) => normalizeCustomer(customer, context));
   const opportunitySource = Array.isArray(source.opportunities) && source.opportunities.length
     ? source.opportunities
@@ -1497,6 +1595,7 @@ function migrateState(state) {
     units,
     competitors,
     products,
+    channelSources,
     users,
     customers,
     opportunities,
@@ -1555,6 +1654,39 @@ function normalizeProduct(product = {}) {
     price: normalizeMoney(product.price),
     active: product.active !== false
   };
+}
+
+function normalizeChannelSources(sources = []) {
+  const incoming = Array.isArray(sources) ? sources : [];
+  const base = incoming.length ? [] : CHANNEL_SOURCES.map((name, index) => ({ id: stableId("channel", name), name, sort: index + 1 }));
+  const merged = base.map(normalizeChannelSourceItem);
+  incoming.forEach((item, index) => {
+    const normalized = normalizeChannelSourceItem(typeof item === "string" ? { name: item, sort: CHANNEL_SOURCES.length + index + 1 } : item);
+    if (!normalized.name) return;
+    const existingIndex = merged.findIndex((entry) => entry.id === normalized.id || cleanText(entry.name) === cleanText(normalized.name));
+    if (existingIndex >= 0) merged[existingIndex] = { ...merged[existingIndex], ...normalized, id: merged[existingIndex].id };
+    else merged.push(normalized);
+  });
+  return merged.sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0) || String(left.name).localeCompare(String(right.name), "zh-Hans-CN"));
+}
+
+function normalizeChannelSourceItem(item = {}) {
+  const name = String(item.name || item.value || item.label || "").trim();
+  return {
+    id: String(item.id || stableId("channel", name || Date.now())),
+    name,
+    active: item.active !== false,
+    sort: Number.isFinite(Number(item.sort)) ? Number(item.sort) : 100
+  };
+}
+
+function channelSourceNames(sources = CHANNEL_SOURCES, options = {}) {
+  const list = Array.isArray(sources) ? sources : CHANNEL_SOURCES;
+  const names = list
+    .filter((item) => typeof item === "string" || options.includeInactive || item.active !== false)
+    .map((item) => String(typeof item === "string" ? item : item.name || "").trim())
+    .filter(Boolean);
+  return [...new Set([...CHANNEL_SOURCES, ...names])];
 }
 
 function normalizeRoles(roles) {
@@ -2049,7 +2181,7 @@ function normalizeCustomer(customer, context = {}) {
     phone: primaryContact.phone || customer.phone || "待补充",
     phoneNormalized: primaryContact.phoneNormalized || normalizePhone(customer.phoneNormalized || customer.phone),
     contacts,
-    channelSource: normalizeChannelSource(customer.channelSource || customer.source || customer.channel),
+    channelSource: normalizeChannelSource(customer.channelSource || customer.source || customer.channel, context.channelSources || CHANNEL_SOURCES),
     createdBy: customer.createdBy || customer.inputBy || customer.creator || customer.owner || ownerUser.name || "未记录",
     followPerson: customer.followPerson || customer.followOwner || customer.owner || ownerUser.name || "未分配",
     address: customer.address || customer.customerAddress || "",
@@ -3192,6 +3324,12 @@ function canImportPublicPool(state, user) {
   return permissions.includes("admin") || permissions.includes(PUBLIC_POOL_IMPORT_PERMISSION);
 }
 
+function canHardDeleteCustomer(state, user) {
+  if (!user) return false;
+  const roleName = findRole(state.roles, user.roleId, user.role).name || user.role || "";
+  return ["总负责人", "管理员"].includes(roleName);
+}
+
 function canManageTargets(state, user) {
   if (!user) return false;
   return findRole(state.roles, user.roleId, user.role).customerScope !== "self";
@@ -3841,6 +3979,87 @@ function sendNoContent(res) {
   res.end();
 }
 
+async function sendCustomerTemplate(res) {
+  const contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const downloadName = "CRM名单模板.xlsx";
+  if (!fs.existsSync(CUSTOMER_TEMPLATE_FILE)) {
+    return sendJson(res, 404, { error: "template not found" });
+  }
+  const fallback = () => sendFile(res, CUSTOMER_TEMPLATE_FILE, contentType, downloadName);
+  try {
+    const JSZip = resolveOptionalJsZip();
+    if (!JSZip) return fallback();
+    const state = readState();
+    const channels = channelSourceNames(state.channelSources, { includeInactive: false });
+    const buffer = await fs.promises.readFile(CUSTOMER_TEMPLATE_FILE);
+    const zip = await JSZip.loadAsync(buffer);
+    const sheetPath = "xl/worksheets/sheet1.xml";
+    const sheetFile = zip.file(sheetPath);
+    if (!sheetFile) return fallback();
+    const xml = await sheetFile.async("string");
+    zip.file(sheetPath, upsertSheetListValidations(xml, [
+      { range: "C2:C1000", values: IMPORT_STATUSES },
+      { range: "F2:F1000", values: channels.length ? channels : CHANNEL_SOURCES }
+    ]));
+    const output = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+    return sendBuffer(res, output, contentType, downloadName);
+  } catch (error) {
+    console.warn("customer template dynamic validation failed, using static file", error.message);
+    return fallback();
+  }
+}
+
+function resolveOptionalJsZip() {
+  try {
+    return require("jszip");
+  } catch (_) {
+    try {
+      return require(require.resolve("jszip", {
+        paths: [
+          path.resolve("node_modules/.pnpm/node_modules"),
+          path.resolve("node_modules/.pnpm/jszip@3.10.1/node_modules")
+        ]
+      }));
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+function upsertSheetListValidations(xml, validations) {
+  const usesPrefix = /<x:worksheet\b/.test(xml);
+  const prefix = usesPrefix ? "x:" : "";
+  const validationXml = `<${prefix}dataValidations count="${validations.length}">${validations.map((item) => `
+    <${prefix}dataValidation type="list" allowBlank="1" showErrorMessage="1" sqref="${escapeXml(item.range)}">
+      <${prefix}formula1>&quot;${escapeXml(item.values.join(","))}&quot;</${prefix}formula1>
+    </${prefix}dataValidation>`).join("")}</${prefix}dataValidations>`;
+  const existingPattern = new RegExp(`<${prefix}dataValidations[\\s\\S]*?</${prefix}dataValidations>`);
+  if (existingPattern.test(xml)) {
+    return xml.replace(existingPattern, validationXml);
+  }
+  if (xml.includes(`<${prefix}pageMargins`)) {
+    return xml.replace(`<${prefix}pageMargins`, `${validationXml}<${prefix}pageMargins`);
+  }
+  return xml.replace(`</${prefix}worksheet>`, `${validationXml}</${prefix}worksheet>`);
+}
+
+function escapeXml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function sendBuffer(res, buffer, contentType, downloadName = "") {
+  const headers = { "Content-Type": contentType };
+  if (downloadName) {
+    headers["Content-Disposition"] = `attachment; filename*=UTF-8''${encodeURIComponent(downloadName)}`;
+  }
+  res.writeHead(200, headers);
+  res.end(buffer);
+}
+
 function sendFile(res, filePath, contentType, downloadName = "") {
   if (!fs.existsSync(filePath)) {
     return sendJson(res, 404, { error: "template not found" });
@@ -4038,7 +4257,6 @@ async function importCustomers(req, viewer, target = "") {
   const stage = multipart.fields.stage || "名单";
   const state = readState();
   const importToPublicPool = target === "public_pool" || multipart.fields.target === "public_pool";
-  if (importToPublicPool && !canImportPublicPool(state, viewer)) throw new Error("仅运营、总负责人和管理员可以导入公海");
   const viewerRole = findRole(state.roles, viewer.roleId, viewer.role);
   let ownerUser = viewer;
   if (!importToPublicPool && viewerRole.customerScope !== "self") {
@@ -4046,9 +4264,6 @@ async function importCustomers(req, viewer, target = "") {
     const visible = visibleUsers(state, viewer).find((item) => Number(item.id) === Number(requested.id));
     if (requested.id && !visible) throw new Error("不能将客户导入到权限范围外");
     if (visible) ownerUser = visible;
-  }
-  if (!importToPublicPool && !canOwnCustomerUser(state, ownerUser)) {
-    throw new Error("请选择销售、主管或区域经理作为默认跟进人");
   }
   const file = multipart.files[0];
   const defaults = {
@@ -4059,6 +4274,7 @@ async function importCustomers(req, viewer, target = "") {
     unit: ownerUser.unit || "",
     zone: ownerUser.zone || "",
     channelSource: multipart.fields.channelSource || "其他",
+    channelSources: state.channelSources || CHANNEL_SOURCES,
     createdBy: viewer.name,
     followPerson: ownerUser.name,
     inputMoneyUnit: multipart.fields.inputMoneyUnit || (multipart.fields.moneyUnit === MONEY_UNIT ? MONEY_UNIT : "wan")
@@ -4066,12 +4282,19 @@ async function importCustomers(req, viewer, target = "") {
   const rows = file
     ? parseCustomerImportFile(file, defaults)
     : parseCustomerRows(multipart.fields.rows || "", defaults);
+  const hasPublicRows = importToPublicPool || rows.some((row) => row.importToPublicPool);
+  const hasPrivateRows = !importToPublicPool && rows.some((row) => !row.importToPublicPool);
+  if (hasPublicRows && !canImportPublicPool(state, viewer)) throw new Error("仅运营、总负责人和管理员可以导入公海");
   const importedOpportunities = [];
   const createdCustomers = [];
   const skipped = [];
   const failed = [];
   const fileOpportunityKeys = new Set();
+  if (hasPrivateRows && !canOwnCustomerUser(state, ownerUser)) {
+    throw new Error("请选择销售、主管或区域经理作为默认跟进人");
+  }
   rows.forEach((row, index) => {
+    const rowImportToPublicPool = importToPublicPool || row.importToPublicPool;
     const rowNumber = Number(row.rowNumber || index + 1);
     const phoneNormalized = normalizePhone(row.phone);
     if (!phoneNormalized) {
@@ -4079,7 +4302,7 @@ async function importCustomers(req, viewer, target = "") {
       return;
     }
     const existingCustomer = findCustomerByPhone(state, phoneNormalized);
-    if (importToPublicPool && !String(row.address || existingCustomer?.address || "").trim()) {
+    if (rowImportToPublicPool && !String(row.address || existingCustomer?.address || "").trim()) {
       failed.push({ rowNumber, name: row.name || "", phone: row.phone || "", reason: "公海导入必须填写完整地址" });
       return;
     }
@@ -4123,30 +4346,30 @@ async function importCustomers(req, viewer, target = "") {
       }, state);
       state.customers.unshift(customer);
       createdCustomers.push(customer);
-      if (row.address && (!customer.location?.city || importToPublicPool)) state.geocodeJobs.push(normalizeGeocodeJob({ customerId: customer.id, address: customer.address, status: "pending" }));
+      if (row.address && (!customer.location?.city || rowImportToPublicPool)) state.geocodeJobs.push(normalizeGeocodeJob({ customerId: customer.id, address: customer.address, status: "pending" }));
     }
     const opportunity = normalizeOpportunity({
       id: Date.now() + index * 10 + 1,
       customerId: customer.id,
       productId: product.id,
       productName: product.name,
-      stage: row.stage || "名单",
-      owner: importToPublicPool ? "公海" : ownerUser.name,
-      ownerId: importToPublicPool ? "" : ownerUser.id,
-      followPerson: importToPublicPool ? "公海" : ownerUser.name,
-      unitId: importToPublicPool ? "" : ownerUser.unitId || "",
-      unit: importToPublicPool ? "" : ownerUser.unit || "",
-      zone: importToPublicPool ? "" : ownerUser.zone || "",
+      stage: rowImportToPublicPool ? "名单" : row.stage || "名单",
+      owner: rowImportToPublicPool ? "公海" : ownerUser.name,
+      ownerId: rowImportToPublicPool ? "" : ownerUser.id,
+      followPerson: rowImportToPublicPool ? "公海" : ownerUser.name,
+      unitId: rowImportToPublicPool ? "" : ownerUser.unitId || "",
+      unit: rowImportToPublicPool ? "" : ownerUser.unit || "",
+      zone: rowImportToPublicPool ? "" : ownerUser.zone || "",
       region: row.region,
       createdBy: viewer.name,
       createdAt: today(),
       amount: row.amountProvided ? row.amount : normalizeMoney(product.price) || DEFAULT_EXPECTED_AMOUNT,
-      ownershipStatus: importToPublicPool ? OWNERSHIP_PUBLIC : OWNERSHIP_PENDING,
-      claimUntil: importToPublicPool ? "" : addDaysToIso(now, CUSTOMER_CLAIM_DAYS),
+      ownershipStatus: rowImportToPublicPool ? OWNERSHIP_PUBLIC : OWNERSHIP_PENDING,
+      claimUntil: rowImportToPublicPool ? "" : addDaysToIso(now, CUSTOMER_CLAIM_DAYS),
       effectiveFollowUpAt: "",
-      publicPoolAt: importToPublicPool ? now : "",
-      publicPoolReason: importToPublicPool ? "operations_import" : "",
-      ownershipHistory: [ownershipEvent("created", null, importToPublicPool ? { id: "", name: "公海" } : ownerUser, viewer, importToPublicPool ? "运营导入公海机会" : "批量导入机会")],
+      publicPoolAt: rowImportToPublicPool ? now : "",
+      publicPoolReason: rowImportToPublicPool ? "operations_import" : "",
+      ownershipHistory: [ownershipEvent("created", null, rowImportToPublicPool ? { id: "", name: "公海" } : ownerUser, viewer, rowImportToPublicPool ? "运营导入公海机会" : "批量导入机会")],
       followUps: [{ date: row.lastFollow || today(), createdAt: now, author: viewer.name, note: row.lastNote || `导入${product.name}销售机会。`, nextFollow: row.nextFollow || "", isSystem: true }]
     }, state);
     state.opportunities.unshift(opportunity);
@@ -4214,10 +4437,10 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
   if (!rows.length) return [];
   const sourceHeaders = rows[0].map((cell) => String(cell || "").trim());
   const rawHeaders = sourceHeaders.map((cell) => normalizeHeader(cell));
-  const hasHeader = rawHeaders.some((header) => ["name", "phone", "channelSource", "address"].includes(header) || STAGES.includes(header));
+  const hasHeader = rawHeaders.some((header) => ["name", "phone", "channelSource", "address", "stage"].includes(header) || IMPORT_STATUSES.includes(header));
   const headers = hasHeader ? rawHeaders : ["name", "phone", "region", "amount", "software"];
   const dataRows = hasHeader ? rows.slice(1) : rows;
-  const stageHeader = rawHeaders.find((header) => STAGES.includes(header));
+  const stageHeader = rawHeaders.find((header) => IMPORT_STATUSES.includes(header));
   const amountHeaderIndex = rawHeaders.findIndex((header) => header === "amount");
   const amountHeaderText = amountHeaderIndex >= 0 ? sourceHeaders[amountHeaderIndex] : "";
   const inputMoneyUnit = /万/.test(amountHeaderText) ? "wan" : /元/.test(amountHeaderText) ? MONEY_UNIT : defaults.inputMoneyUnit || "wan";
@@ -4226,17 +4449,18 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
       const rowNumber = rowIndex + (hasHeader ? 2 : 1);
       if (!hasHeader) {
         const third = String(row[2] || "").trim();
-        const thirdLooksLikeChannel = isKnownChannelText(third) || row.length >= 6;
+        const thirdLooksLikeChannel = isKnownChannelText(third, defaults.channelSources) || row.length >= 6;
         const amountValue = thirdLooksLikeChannel ? row[5] : row[3];
         return {
           name: row[0] || "",
           phone: row[1] || "待补充",
-          channelSource: thirdLooksLikeChannel ? normalizeChannelSource(third) : normalizeChannelSource(defaults.channelSource),
+          channelSource: thirdLooksLikeChannel ? normalizeChannelSource(third, defaults.channelSources) : normalizeChannelSource(defaults.channelSource, defaults.channelSources),
           createdBy: defaults.createdBy || defaults.owner || "未记录",
           followPerson: defaults.followPerson || defaults.owner || "未分配",
           address: thirdLooksLikeChannel ? row[3] || "" : "",
           city: thirdLooksLikeChannel ? extractCity(row[3] || "") : extractCity(third),
           stage: defaults.stage || "名单",
+          importToPublicPool: defaults.stage === PUBLIC_POOL_STATUS,
           owner: defaults.owner || "未分配",
           ownerId: defaults.ownerId || "",
           unitId: defaults.unitId || "",
@@ -4259,17 +4483,20 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
         record[header] = row[index];
       });
       const stageCell = row[headers.findIndex((header) => header === "stage")];
-      const stage = STAGES.includes(stageCell) ? stageCell : stageHeader || defaults.stage || "名单";
+      const requestedStatus = normalizeImportStatus(stageCell) || normalizeImportStatus(stageHeader) || normalizeImportStatus(defaults.stage) || "名单";
+      const importToPublicPool = requestedStatus === PUBLIC_POOL_STATUS;
+      const stage = importToPublicPool ? "名单" : requestedStatus;
       const amountProvided = String(record.amount || "").trim() !== "";
       return {
         name: record.name || "",
         phone: record.phone || "待补充",
-        channelSource: normalizeChannelSource(record.channelSource || defaults.channelSource),
+        channelSource: normalizeChannelSource(record.channelSource || defaults.channelSource, defaults.channelSources),
         createdBy: record.createdBy || defaults.createdBy || defaults.owner || "未记录",
         followPerson: record.followPerson || defaults.followPerson || defaults.owner || "未分配",
         address: record.address || "",
         city: record.city || extractCity(record.address || record.region) || "",
         stage,
+        importToPublicPool,
         owner: record.owner || defaults.owner || record.followPerson || "未分配",
         ownerId: defaults.ownerId || "",
         unitId: defaults.unitId || "",
@@ -4297,7 +4524,7 @@ function normalizeImportedAmount(value, inputMoneyUnit = MONEY_UNIT) {
 function normalizeHeader(value) {
   const text = String(value || "").trim().replace(/\s/g, "");
   if (!text) return "";
-  if (STAGES.includes(text)) return text;
+  if (IMPORT_STATUSES.includes(text)) return text;
   if (/^客户/.test(text) && !/电话|地址/.test(text)) return "name";
   if (/^name$|customer|客户名称/i.test(text)) return "name";
   if (/客户电话|电话|手机号|phone|mobile|tel/i.test(text)) return "phone";
@@ -4318,9 +4545,16 @@ function normalizeHeader(value) {
   return "";
 }
 
-function normalizeChannelSource(value) {
+function normalizeImportStatus(value) {
   const text = String(value || "").trim();
-  if (CHANNEL_SOURCES.includes(text)) return text;
+  return IMPORT_STATUSES.includes(text) ? text : "";
+}
+
+function normalizeChannelSource(value, sources = CHANNEL_SOURCES) {
+  const text = String(value || "").trim();
+  if (!text) return "其他";
+  const names = channelSourceNames(sources, { includeInactive: true });
+  if (names.includes(text)) return text;
   const aliases = {
     官方资源: "官网留言",
     官网: "官网留言",
@@ -4335,13 +4569,13 @@ function normalizeChannelSource(value) {
     批量导入: "其他",
     展会: "其他"
   };
-  return aliases[text] || "其他";
+  return aliases[text] || text || "其他";
 }
 
-function isKnownChannelText(value) {
+function isKnownChannelText(value, sources = CHANNEL_SOURCES) {
   const text = String(value || "").trim();
   if (!text) return false;
-  return CHANNEL_SOURCES.includes(text) || ["官方资源", "官网", "网站留言", "官网注册", "注册", "转介绍", "介绍", "企查", "微信公众号", "手动录入", "批量导入", "展会"].includes(text);
+  return channelSourceNames(sources, { includeInactive: true }).includes(text) || ["官方资源", "官网", "网站留言", "官网注册", "注册", "转介绍", "介绍", "企查", "微信公众号", "手动录入", "批量导入", "展会"].includes(text);
 }
 
 function normalizeDateText(value) {

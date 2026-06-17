@@ -107,17 +107,24 @@
 
   <view class="card">
     <view class="section-title">员工列表</view>
-    <view class="user-row {{deletingUserId === item.id ? 'removing' : ''}}" wx:for="{{users}}" wx:key="id">
-      <view class="row-main">
-        <view class="name">{{item.name}}</view>
-        <view class="muted">{{item.role}} · {{item.orgPath || item.unit || '未填单位'}} · {{item.zone || item.region || '未分战区'}}</view>
-        <view class="muted">账号：{{item.account || item.username}}</view>
+    <block wx:for="{{userOrgRows}}" wx:key="id">
+      <view wx:if="{{item.kind === 'unit'}}" class="org-user-node" style="padding-left: {{item.level * 24}}rpx;" data-id="{{item.id}}" bindtap="toggleUserUnit">
+        <text class="org-arrow">{{item.collapsed ? '›' : '⌄'}}</text>
+        <text class="name">{{item.name}}</text>
+        <text class="muted">{{item.count}}人</text>
       </view>
-      <view wx:if="{{currentUserId !== item.id}}" class="user-row-actions">
-        <button class="mini-action" data-id="{{item.id}}" bindtap="openResetPassword">重置密码</button>
-        <button class="mini-danger" data-id="{{item.id}}" bindtap="deleteUser">删除</button>
+      <view wx:else class="user-row {{deletingUserId === item.id ? 'removing' : ''}}" style="margin-left: {{item.level * 24}}rpx;">
+        <view class="row-main">
+          <view class="name">{{item.name}}</view>
+          <view class="muted">{{item.role}} · {{item.orgPath || item.unit || '未填单位'}} · {{item.zone || item.region || '未分战区'}}</view>
+          <view class="muted">账号：{{item.account || item.username}}</view>
+        </view>
+        <view wx:if="{{currentUserId !== item.id}}" class="user-row-actions">
+          <button class="mini-action" data-id="{{item.id}}" bindtap="openResetPassword">重置密码</button>
+          <button class="mini-danger" data-id="{{item.id}}" bindtap="deleteUser">删除</button>
+        </view>
       </view>
-    </view>
+    </block>
   </view>
 
   <view class="card">

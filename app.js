@@ -11,7 +11,8 @@ const API_BASE = getWebApiBase();
 const AUTH_KEY = "zhixiao-web-auth";
 const today = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 const stages = ["名单", "线索", "商机", "成交"];
-const channelSources = ["自媒体", "官网留言", "自主注册", "渠道介绍", "企查查", "客源汇", "公众号", "地推", "其他"];
+const defaultChannelSources = ["自媒体", "官网留言", "自主注册", "渠道介绍", "企查查", "客源汇", "公众号", "地推", "其他"];
+let channelSources = [...defaultChannelSources];
 const zones = ["东部战区", "南部战区", "西部战区", "北部战区", "中部战区"];
 const scopeLabels = { self: "仅本人客户", unit: "本单位客户", zone: "本战区客户", all: "全部客户" };
 const permissionLabels = { dashboard: "看板", customers: "客户管理", field: "地推地图", assistant: "AI话术", publicPoolImport: "公海导入", admin: "系统设置" };
@@ -32,7 +33,7 @@ const orgTypeOptions = [
   { value: "team", label: "小组" }
 ];
 
-let state = { users: [], customers: [], opportunities: [], products: [], visits: [], knowledge: [], stages, roles: defaultRoles, units: [], competitors: [], routes: [] };
+let state = { users: [], customers: [], opportunities: [], products: [], visits: [], knowledge: [], stages, roles: defaultRoles, units: [], competitors: [], routes: [], channelSources: [] };
 let currentStage = "名单";
 let currentView = "dashboard";
 let currentSettingsTab = "accounts";
@@ -56,6 +57,7 @@ let dashboardData = null;
 let dashboardRequestId = 0;
 let targetManagement = { options: [], targets: [] };
 let dashboardDrilldownIds = null;
+let collapsedUserUnitIds = new Set();
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -281,9 +283,28 @@ function optionList(label, values) {
 
 function normalizeChannelSource(value) {
   const text = String(value || "").trim();
+  if (!text) return "其他";
   if (channelSources.includes(text)) return text;
   const aliases = { 官方资源: "官网留言", 官网: "官网留言", 网站留言: "官网留言", 官网注册: "自主注册", 注册: "自主注册", 转介绍: "渠道介绍", 介绍: "渠道介绍", 企查: "企查查", 微信公众号: "公众号", 手动录入: "其他", 批量导入: "其他", 展会: "其他" };
-  return aliases[text] || "其他";
+  return aliases[text] || text || "其他";
+}
+
+function updateChannelSourcesFromState() {
+  const configured = state.channelSources || [];
+  const names = configured
+    .filter((item) => typeof item === "string" || item.active !== false)
+    .map((item) => String(typeof item === "string" ? item : item.name || "").trim())
+    .filter(Boolean);
+  channelSources = [...new Set([...(configured.length ? [] : defaultChannelSources), ...names])];
+}
+
+function visibleSystemUsers() {
+  return visibleUsers().filter((user) => !isHiddenDemoUser(user));
+}
+
+function isHiddenDemoUser(user = {}) {
+  const account = String(user.account || user.username || "").toLowerCase();
+  return ["linchen", "zhouyang"].includes(account) && ["林晨", "周扬"].includes(user.name);
 }
 
 function inDateRange(value, start, end) {
@@ -422,6 +443,7 @@ async function trackGeocodeProgress() {
 
 async function loadState() {
   state = await api("/state");
+  updateChannelSourcesFromState();
   render();
 }
 
@@ -572,6 +594,17 @@ function canAdmin() {
 
 function canImportPublicPool() {
   return canAdmin() || hasPermission(currentUser(), "publicPoolImport");
+}
+
+function canHardDeleteCustomers() {
+  const roleName = roleForUser(currentUser()).name || currentUser().role || "";
+  return ["总负责人", "管理员"].includes(roleName);
+}
+
+function clampPageSize(value) {
+  const size = Number(value || 10);
+  if (!Number.isFinite(size)) return 10;
+  return Math.min(Math.max(Math.round(size), 10), 500);
 }
 
 function formatFollowTime(item = {}) {
@@ -807,6 +840,11 @@ function renderCustomers() {
   updateCustomerSelectionUI();
   const sizeSelect = $("#customerPageSize");
   if (sizeSelect) sizeSelect.value = String(customerPageSize);
+  const jumpInput = $("#customerPageJump");
+  if (jumpInput) {
+    jumpInput.max = String(totalPages);
+    jumpInput.value = String(customerPage);
+  }
   $("#customerPageSummary").textContent = `共 ${filteredRows.length} 条 · 第 ${customerPage} / ${totalPages} 页`;
   $("#customerPrevPage").disabled = customerPage <= 1;
   $("#customerNextPage").disabled = customerPage >= totalPages;
@@ -958,6 +996,54 @@ function readCompetitorProfilesEditor() {
   });
 }
 
+function renderUserOrgTree() {
+  const users = visibleSystemUsers();
+  const units = state.units || [];
+  const unitMap = new Map(units.map((unit) => [String(unit.id), unit]));
+  const children = new Map();
+  units.forEach((unit) => {
+    const parentId = String(unit.parentId || "");
+    if (!children.has(parentId)) children.set(parentId, []);
+    children.get(parentId).push(unit);
+  });
+  const usersByUnit = new Map();
+  users.forEach((user) => {
+    const unitId = String(user.unitId || "unassigned");
+    if (!usersByUnit.has(unitId)) usersByUnit.set(unitId, []);
+    usersByUnit.get(unitId).push(user);
+  });
+  const countForUnit = (unitId) => {
+    let count = (usersByUnit.get(String(unitId)) || []).length;
+    (children.get(String(unitId)) || []).forEach((child) => { count += countForUnit(child.id); });
+    return count;
+  };
+  const renderUserCard = (user) => `<article class="user-card">
+    <b>${escapeHtml(user.name)}</b><span>${user.status || "启用"}</span>
+    <p>${escapeHtml(user.role)} · ${escapeHtml(user.orgPath || user.unit || "待分配")} · ${escapeHtml(user.zone || "未分战区")} · 账号：${escapeHtml(user.account || user.username || user.phone || "-")}</p>
+    <div class="user-actions">${Number(user.id) === Number(currentUser().id) ? "" : `<button data-action="reset-password" data-id="${user.id}">重置密码</button><button data-action="offboard-user" data-id="${user.id}">离职交接</button><button data-action="delete-user" data-id="${user.id}">删除员工</button>`}</div>
+  </article>`;
+  const renderNode = (unit) => {
+    const unitId = String(unit.id);
+    const collapsed = collapsedUserUnitIds.has(unitId);
+    const unitUsers = (usersByUnit.get(unitId) || []).sort((left, right) => String(left.name).localeCompare(String(right.name), "zh-Hans-CN"));
+    const childNodes = (children.get(unitId) || []).sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0));
+    const count = countForUnit(unitId);
+    if (!count && unit.type !== "root") return "";
+    return `<section class="user-org-node" style="--level:${Number(unit.level || 0)}">
+      <button type="button" class="org-toggle" data-action="toggle-user-unit" data-id="${escapeHtml(unitId)}">
+        <span>${collapsed ? "›" : "⌄"}</span>
+        <b>${escapeHtml(unit.name)}</b>
+        <em>${count}人</em>
+      </button>
+      ${collapsed ? "" : `<div class="user-org-children">${unitUsers.map(renderUserCard).join("")}${childNodes.map(renderNode).join("")}</div>`}
+    </section>`;
+  };
+  const root = unitMap.get(orgRootId) || units.find((unit) => unit.type === "root");
+  const tree = root ? renderNode(root) : "";
+  const unassigned = (usersByUnit.get("unassigned") || []).map(renderUserCard).join("");
+  return tree || unassigned ? `${tree}${unassigned ? `<section class="user-org-node"><div class="org-toggle"><b>未分配</b><em>${(usersByUnit.get("unassigned") || []).length}人</em></div>${unassigned}</section>` : ""}` : `<article class="empty">暂无员工</article>`;
+}
+
 function openCustomerDialog(customer = null) {
   const form = $("#customerForm");
   form.reset();
@@ -1006,6 +1092,7 @@ function openCustomerDialog(customer = null) {
   renderCompetitorProfilesEditor(customer?.competitorProfiles || []);
   $("#customerAiBtn").classList.toggle("hidden", !customer);
   $("#customerArchiveBtn").classList.toggle("hidden", !customer || customer.lifecycleStatus === "archived");
+  $("#customerDeleteBtn").classList.toggle("hidden", !customer || !canHardDeleteCustomers());
   $("#customerDialogTitle").textContent = customer ? "客户跟进" : "新增客户";
   $("#customerDialog").showModal();
 }
@@ -1592,6 +1679,19 @@ async function archiveCustomerFromDialog() {
   toast("客户已归档，并从漏斗和业绩统计中移出");
 }
 
+async function deleteCustomerFromDialog() {
+  const id = Number($("#customerForm [name=id]").value || 0);
+  if (!id) return;
+  const name = $("#customerForm [name=name]").value || "该客户";
+  const confirmed = window.confirm(`确认删除客户：${name}？\n删除后不可恢复，相关机会、跟进、拜访记录会一并删除。`);
+  if (!confirmed) return;
+  await api(`/customers/${id}`, { method: "DELETE" });
+  $("#customerDialog").close();
+  customerPage = 1;
+  await loadState();
+  toast("客户已删除");
+}
+
 async function restoreCustomer(id) {
   await api(`/customers/${id}/restore`, { method: "POST", body: {} });
   $("#followHistoryDialog").close();
@@ -1696,9 +1796,7 @@ function renderAdmin() {
   if (unitTypeSelect) {
     unitTypeSelect.innerHTML = orgTypeOptions.map((item) => `<option value="${item.value}">${item.label}</option>`).join("");
   }
-  $("#userList").innerHTML = visibleUsers()
-    .map((user) => `<article><b>${escapeHtml(user.name)}</b><span>${user.status || "启用"}</span><p>${escapeHtml(user.role)} · ${escapeHtml(user.orgPath || user.unit || "待分配")} · ${escapeHtml(user.zone || "未分战区")} · 账号：${escapeHtml(user.account || user.username || user.phone || "-")}</p><div class="user-actions">${Number(user.id) === Number(currentUser().id) ? "" : `<button data-action="reset-password" data-id="${user.id}">重置密码</button><button data-action="offboard-user" data-id="${user.id}">离职交接</button><button data-action="delete-user" data-id="${user.id}">删除员工</button>`}</div></article>`)
-    .join("");
+  $("#userList").innerHTML = renderUserOrgTree();
   $("#competitorList").innerHTML = (state.competitors || []).map((item) => `<article><b><i class="competitor-swatch" style="background:${escapeHtml(item.color)}"></i>${escapeHtml(item.name)}</b><span>${item.active === false ? "停用" : "启用"}</span></article>`).join("");
   $("#productList").innerHTML = (state.products || []).map((item) => `
     <article>
@@ -1709,6 +1807,17 @@ function renderAdmin() {
         <button data-action="update-product-price" data-id="${escapeHtml(item.id)}">保存价格</button>
       </div>
     </article>`).join("");
+  $("#channelSourceList").innerHTML = (state.channelSources || [])
+    .map((item) => `
+      <article>
+        <b>${escapeHtml(item.name)}</b>
+        <span>${item.active === false ? "停用" : "启用"}</span>
+        <div class="inline-actions">
+          <button data-action="toggle-channel-source" data-id="${escapeHtml(item.id)}">${item.active === false ? "启用" : "停用"}</button>
+          <button data-action="delete-channel-source" data-id="${escapeHtml(item.id)}">删除</button>
+        </div>
+      </article>`)
+    .join("");
   $("#roleList").innerHTML = roles()
     .map((role) => `<article><b>${role.name}</b><span>${scopeLabels[role.customerScope] || role.customerScope}</span><p>${(role.permissions || []).map((permission) => permissionLabels[permission] || permission).join(" · ")}</p></article>`)
     .join("");
@@ -1852,6 +1961,17 @@ async function addProduct(event) {
   showSuccessFeedback("产品添加成功", "产品已加入销售机会和客户导入选项。 ");
 }
 
+async function addChannelSource(event) {
+  event.preventDefault();
+  const formNode = event.currentTarget;
+  const name = String(new FormData(formNode).get("name") || "").trim();
+  if (!name) return toast("请填写渠道来源名称");
+  await api("/channel-sources", { method: "POST", body: { name } });
+  formNode.reset();
+  await loadState();
+  showSuccessFeedback("渠道来源添加成功", `${name} 已同步到客户表单、筛选和导入模板。`);
+}
+
 async function updateProductPrice(productId) {
   const product = productById(productId);
   if (!product.id) return;
@@ -1866,6 +1986,25 @@ async function updateProductPrice(productId) {
   });
   await loadState();
   toast("产品价格已更新");
+}
+
+async function toggleChannelSource(sourceId) {
+  const source = (state.channelSources || []).find((item) => item.id === sourceId);
+  if (!source) return;
+  await api(`/channel-sources/${encodeURIComponent(sourceId)}`, {
+    method: "PUT",
+    body: { name: source.name, active: source.active === false }
+  });
+  await loadState();
+  toast("渠道来源已更新");
+}
+
+async function deleteChannelSource(sourceId) {
+  const source = (state.channelSources || []).find((item) => item.id === sourceId);
+  if (!source || !confirm(`确认删除渠道来源：${source.name}？已有客户使用的渠道不能删除。`)) return;
+  await api(`/channel-sources/${encodeURIComponent(sourceId)}`, { method: "DELETE" });
+  await loadState();
+  toast("渠道来源已删除");
 }
 
 async function importUsers(event) {
@@ -2062,8 +2201,15 @@ function wireEvents() {
     $("#customerFilterToggle").setAttribute("aria-expanded", String(!collapsed));
   });
   $("#customerPageSize").addEventListener("change", (event) => {
-    customerPageSize = Number(event.currentTarget.value) || 10;
+    customerPageSize = clampPageSize(event.currentTarget.value);
+    event.currentTarget.value = String(customerPageSize);
     customerPage = 1;
+    renderCustomers();
+  });
+  $("#customerPageSize").addEventListener("blur", (event) => {
+    customerPageSize = clampPageSize(event.currentTarget.value);
+    event.currentTarget.value = String(customerPageSize);
+    customerPage = Math.max(1, Math.min(customerPage, Math.max(Math.ceil(currentFilteredCustomerRows.length / customerPageSize), 1)));
     renderCustomers();
   });
   $("#dashboardMonth").addEventListener("change", (event) => {
@@ -2090,6 +2236,12 @@ function wireEvents() {
     const totalPages = Math.max(Math.ceil(currentFilteredCustomerRows.length / customerPageSize), 1);
     if (customerPage >= totalPages) return;
     customerPage += 1;
+    renderCustomers();
+  });
+  $("#customerJumpPage").addEventListener("click", () => {
+    const totalPages = Math.max(Math.ceil(currentFilteredCustomerRows.length / customerPageSize), 1);
+    const targetPage = Math.min(Math.max(Number($("#customerPageJump").value || 1), 1), totalPages);
+    customerPage = targetPage;
     renderCustomers();
   });
   $("#addCustomerBtn").addEventListener("click", () => openCustomerDialog());
@@ -2144,6 +2296,7 @@ function wireEvents() {
   });
   $("#customerAiBtn").addEventListener("click", () => analyzeCustomer(Number($("#customerForm [name=opportunityId]").value)));
   $("#customerArchiveBtn").addEventListener("click", () => archiveCustomerFromDialog().catch((error) => toast(error.message)));
+  $("#customerDeleteBtn").addEventListener("click", () => deleteCustomerFromDialog().catch((error) => toast(error.message)));
   $("#followHistoryList").addEventListener("click", (event) => {
     const button = event.target.closest("[data-restore-customer]");
     if (button) restoreCustomer(Number(button.dataset.restoreCustomer)).catch((error) => toast(error.message));
@@ -2163,6 +2316,7 @@ function wireEvents() {
   $("#resetUnitFormBtn").addEventListener("click", () => resetUnitForm());
   $("#competitorForm").addEventListener("submit", addCompetitor);
   $("#productForm").addEventListener("submit", addProduct);
+  $("#channelSourceForm").addEventListener("submit", addChannelSource);
   $("#customerProductSelect").addEventListener("change", (event) => fillAmountFromProduct($("#customerForm"), event.target.value));
   $("#newOpportunityProductSelect").addEventListener("change", (event) => fillAmountFromProduct($("#newOpportunityForm"), event.target.value));
   $("#openUserImportBtn").addEventListener("click", () => $("#userImportDialog").showModal());
@@ -2171,6 +2325,13 @@ function wireEvents() {
   $("#userList").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-action]");
     if (!button) return;
+    if (button.dataset.action === "toggle-user-unit") {
+      const id = button.dataset.id;
+      if (collapsedUserUnitIds.has(id)) collapsedUserUnitIds.delete(id);
+      else collapsedUserUnitIds.add(id);
+      renderAdmin();
+      return;
+    }
     if (button.dataset.action === "delete-user") deleteUser(button.dataset.id);
     if (button.dataset.action === "reset-password") openResetPasswordDialog(button.dataset.id);
     if (button.dataset.action === "offboard-user") openOffboardDialog(button.dataset.id);
@@ -2185,6 +2346,12 @@ function wireEvents() {
   $("#productList").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-action='update-product-price']");
     if (button) updateProductPrice(button.dataset.id).catch((error) => toast(error.message));
+  });
+  $("#channelSourceList").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button) return;
+    if (button.dataset.action === "toggle-channel-source") toggleChannelSource(button.dataset.id).catch((error) => toast(error.message));
+    if (button.dataset.action === "delete-channel-source") deleteChannelSource(button.dataset.id).catch((error) => toast(error.message));
   });
   $("#fieldModeSwitch").addEventListener("click", (event) => {
     const button = event.target.closest("[data-map-mode]");

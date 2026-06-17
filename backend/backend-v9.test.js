@@ -95,6 +95,7 @@ async function run() {
   assert.equal(migrated.users.find((user) => user.account === "sales-east").orgPath, "智销AI / 战区部 / 东部战区 / 杭州运营中心 / 杭州一部");
 
   const admin = await login("admin");
+  const sales = await login("sales-east");
   const supervisor = await login("supervisor");
   const region = await login("region");
 
@@ -122,6 +123,41 @@ async function run() {
 
   const deleteEmpty = await request(`/units/${createStaffUnit.data.id}`, { method: "DELETE", token: admin });
   assert.equal(deleteEmpty.status, 200);
+
+  const createChannel = await request("/channel-sources", { method: "POST", token: admin, body: { name: "展会扫码" } });
+  assert.equal(createChannel.status, 201, JSON.stringify(createChannel.data));
+  const channelList = await request("/channel-sources", { token: admin });
+  assert.ok(channelList.data.some((item) => item.name === "展会扫码"));
+  const disableChannel = await request(`/channel-sources/${createChannel.data.id}`, { method: "PUT", token: admin, body: { name: "展会扫码", active: false } });
+  assert.equal(disableChannel.status, 200);
+  assert.equal(disableChannel.data.active, false);
+  const deleteChannel = await request(`/channel-sources/${createChannel.data.id}`, { method: "DELETE", token: admin });
+  assert.equal(deleteChannel.status, 200);
+
+  const publicStatusImport = await request("/import/customers", { method: "POST", token: admin, body: {
+    moneyUnit: "yuan",
+    rows: "客户,客户电话,状态,客户地址,渠道来源,意向产品\n绍兴公海导入工厂,13800001003,公海,浙江省绍兴市柯桥区测试路3号,官网留言,V1"
+  } });
+  assert.equal(publicStatusImport.status, 201, JSON.stringify(publicStatusImport.data));
+  assert.equal(publicStatusImport.data.imported, 1);
+  const boardAfterPublicImport = await request("/customer-board", { token: sales });
+  assert.ok(boardAfterPublicImport.data.publicPool.items.some((item) => item.name === "绍兴公海导入工厂"));
+  assert.equal(boardAfterPublicImport.data.publicPool.items.find((item) => item.name === "绍兴公海导入工厂").stage, "名单");
+
+  const leadStatusImport = await request("/import/customers", { method: "POST", token: admin, body: {
+    moneyUnit: "yuan",
+    ownerId: 2,
+    rows: "客户,客户电话,状态,客户地址,渠道来源,意向产品\n杭州线索导入工厂,13800001004,线索,浙江省杭州市余杭区测试路4号,官网留言,V1"
+  } });
+  assert.equal(leadStatusImport.status, 201, JSON.stringify(leadStatusImport.data));
+  assert.equal(leadStatusImport.data.customers[0].stage, "线索");
+
+  const forbiddenDelete = await request("/customers/101", { method: "DELETE", token: sales });
+  assert.equal(forbiddenDelete.status, 403);
+  const deleteCustomer = await request("/customers/101", { method: "DELETE", token: admin });
+  assert.equal(deleteCustomer.status, 200);
+  const boardAfterDelete = await request("/customer-board", { token: admin });
+  assert.ok(!boardAfterDelete.data.items.some((item) => item.customerId === 101));
 
   await stopServer();
   fs.rmSync(tempDir, { recursive: true, force: true });

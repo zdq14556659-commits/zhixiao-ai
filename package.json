@@ -14,6 +14,9 @@
     "test:v9": "node backend/backend-v9.test.js",
     "test": "npm run test:password && npm run test:customers && npm run test:v6 && npm run test:v7 && npm run test:v8 && npm run test:v9"
   },
+  "dependencies": {
+    "jszip": "^3.10.1"
+  },
   "engines": {
     "node": ">=20"
   }

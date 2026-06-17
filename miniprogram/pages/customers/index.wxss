@@ -286,6 +286,25 @@
   background: #fff;
 }
 
+.page-input-line,
+.jump-pager {
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+  color: #7a8798;
+}
+
+.page-input-line input,
+.jump-pager input {
+  width: 104rpx;
+  min-height: 58rpx;
+  padding: 0 12rpx;
+  border: 1rpx solid #dcdfe6;
+  border-radius: 8rpx;
+  background: #fff;
+  color: #1f2d3d;
+}
+
 .pager {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 110rpx minmax(0, 1fr);
@@ -299,6 +318,11 @@
 .pager button {
   min-height: 60rpx;
   font-size: 24rpx;
+}
+
+.jump-pager {
+  justify-content: center;
+  margin: 0 0 24rpx;
 }
 
 .empty {

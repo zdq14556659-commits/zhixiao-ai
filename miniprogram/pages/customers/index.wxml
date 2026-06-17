@@ -175,12 +175,23 @@
     <picker range="{{pageSizes}}" value="{{pageSizeIndex}}" bindchange="onPageSize">
       <view class="page-size">每页 {{pageSize}} 条⌄</view>
     </picker>
+    <view class="page-input-line">
+      <text>每页</text>
+      <input type="number" value="{{pageSizeInput}}" bindinput="onPageSizeInput" />
+      <button class="plain-btn mini-btn" bindtap="applyPageSizeInput">应用</button>
+    </view>
     <text>共 {{filtered.length}} 条</text>
   </view>
   <view class="pager" wx:if="{{filtered.length > pageSize}}">
     <button class="plain-btn" bindtap="prevPage" disabled="{{page <= 1}}">上一页</button>
     <text>{{page}} / {{totalPages}}</text>
     <button class="plain-btn" bindtap="nextPage" disabled="{{page >= totalPages}}">下一页</button>
+  </view>
+  <view class="jump-pager" wx:if="{{filtered.length > pageSize}}">
+    <text>跳至</text>
+    <input type="number" value="{{jumpPageInput}}" bindinput="onJumpPageInput" />
+    <text>页</text>
+    <button class="plain-btn mini-btn" bindtap="jumpPage">跳转</button>
   </view>
 
   <view wx:if="{{advanceOpen}}" class="modal-mask" catchtouchmove="true">

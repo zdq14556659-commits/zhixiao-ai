@@ -31,6 +31,8 @@ Page({
     pageSize: 10,
     pageSizes: [10, 20],
     pageSizeIndex: 0,
+    pageSizeInput: "10",
+    jumpPageInput: "1",
     totalPages: 1,
     canAssign: false,
     canImportPublic: false,
@@ -346,6 +348,8 @@ Page({
       page,
       totalPages,
       paged: filtered.slice(start, start + this.data.pageSize),
+      jumpPageInput: String(page),
+      pageSizeInput: String(this.data.pageSize),
       hasActiveFilters,
       filteredOut,
       publicPoolFilteredOut: this.data.currentStage === "公海" && this.data.publicPoolLoaded && filteredOut
@@ -390,7 +394,28 @@ Page({
   onPageSize(event) {
     const pageSizeIndex = Number(event.detail.value);
     const pageSize = this.data.pageSizes[pageSizeIndex] || 10;
-    this.setData({ pageSizeIndex, pageSize, page: 1 });
+    this.setData({ pageSizeIndex, pageSize, pageSizeInput: String(pageSize), page: 1 });
+    this.applyFilters();
+  },
+
+  onPageSizeInput(event) {
+    this.setData({ pageSizeInput: event.detail.value });
+  },
+
+  applyPageSizeInput() {
+    const size = Math.min(Math.max(Math.round(Number(this.data.pageSizeInput || 10)), 10), 500);
+    const pageSizeIndex = this.data.pageSizes.indexOf(size);
+    this.setData({ pageSize: size, pageSizeInput: String(size), pageSizeIndex: pageSizeIndex >= 0 ? pageSizeIndex : -1, page: 1 });
+    this.applyFilters();
+  },
+
+  onJumpPageInput(event) {
+    this.setData({ jumpPageInput: event.detail.value });
+  },
+
+  jumpPage() {
+    const page = Math.min(Math.max(Math.round(Number(this.data.jumpPageInput || 1)), 1), this.data.totalPages || 1);
+    this.setData({ page, jumpPageInput: String(page) });
     this.applyFilters();
   },
 

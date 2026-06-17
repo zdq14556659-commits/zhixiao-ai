@@ -157,12 +157,15 @@
             </div>
             <div class="customer-pager" id="customerPager">
               <label>每页
-                <select id="customerPageSize">
-                  <option value="10">10条</option>
-                  <option value="20">20条</option>
-                </select>
+                <input id="customerPageSize" type="number" min="10" max="500" step="1" value="10" />
+                条
               </label>
               <span id="customerPageSummary">第 1 / 1 页</span>
+              <label>跳至
+                <input id="customerPageJump" type="number" min="1" step="1" value="1" />
+                页
+              </label>
+              <button id="customerJumpPage" type="button">跳转</button>
               <button id="customerPrevPage" type="button">上一页</button>
               <button id="customerNextPage" type="button">下一页</button>
             </div>
@@ -270,6 +273,14 @@
               <div class="user-list compact-list" id="productList"></div>
             </section>
             <section class="panel">
+              <div class="panel-title"><h2>渠道来源管理</h2><span>客户表单、筛选和导入模板统一使用这些来源</span></div>
+              <form class="form-stack" id="channelSourceForm">
+                <label>渠道来源名称<input name="name" required placeholder="例如：抖音私信 / 展会扫码" /></label>
+                <button class="primary" type="submit">添加渠道来源</button>
+              </form>
+              <div class="user-list compact-list" id="channelSourceList"></div>
+            </section>
+            <section class="panel">
               <div class="panel-title"><h2>角色权限</h2><span>设置角色能看到的客户范围和功能模块</span></div>
               <form class="form-stack" id="roleForm">
                 <label>角色名称<input name="name" required placeholder="例如：大区招商主管" /></label>
@@ -352,6 +363,7 @@
         <label>下次跟进<input name="nextFollow" type="date" /></label>
         <button id="customerAiBtn" type="button">让小智分析该客户</button>
         <button id="customerArchiveBtn" class="danger-outline hidden" type="button">标记为无效或倒闭</button>
+        <button id="customerDeleteBtn" class="danger-outline hidden" type="button">删除客户</button>
         <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">保存</button></div>
       </form>
     </dialog>
