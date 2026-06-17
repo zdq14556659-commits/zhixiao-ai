@@ -1,0 +1,40 @@
+name: Deploy to Server
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pack archive
+        run: |
+          tar -czf /tmp/zhixiao-ai.tar.gz \
+            --exclude=.git \
+            --exclude=node_modules \
+            --exclude=backend/data/db.json \
+            --exclude=backend/data/db.backup.json \
+            --exclude=backend/uploads \
+            --exclude=miniprogram/project.private.config.json \
+            --exclude=.env \
+            .
+
+      - name: Upload to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: /tmp/zhixiao-ai.tar.gz
+          target: /tmp/
+
+      - name: Release
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: /usr/local/sbin/zhixiao-release /tmp/zhixiao-ai.tar.gz
