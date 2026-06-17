@@ -400,7 +400,11 @@ function showImportFeedback(result, entityLabel = "客户") {
     ...(Array.isArray(result.skipped) ? result.skipped : []),
     ...(Array.isArray(result.failures) ? result.failures : [])
   ];
-  $("#importResultTitle").textContent = duplicates && !imported && !failed ? `重复${entityLabel}未导入` : `${entityLabel}导入完成`;
+  $("#importResultTitle").textContent = failed && !imported && !duplicates
+    ? `${entityLabel}导入失败`
+    : duplicates && !imported && !failed
+      ? `重复${entityLabel}未导入`
+      : `${entityLabel}导入完成`;
   $("#importResultStats").innerHTML = [
     ["总行数", total, ""],
     ["成功", imported, "success"],
@@ -409,7 +413,10 @@ function showImportFeedback(result, entityLabel = "客户") {
     ...(pendingLocation ? [["待定位", pendingLocation, "warning"]] : [])
   ].map(([label, value, className]) => `<div class="${className}"><span>${label}</span><b>${value}</b></div>`).join("");
   $("#importResultDetails").innerHTML = details.length
-    ? details.map((item) => `<article><b>第${Number(item.rowNumber || 0)}行 · ${escapeHtml(item.name || "未命名客户")}</b><span>${escapeHtml(item.phone || "手机号未填写")} · ${escapeHtml(item.reason || "未导入")}</span></article>`).join("")
+    ? details.map((item) => {
+      const rowLabel = item.rowNumber ? `第${escapeHtml(item.rowNumber)}行 · ` : "";
+      return `<article><b>${rowLabel}${escapeHtml(item.name || "未命名客户")}</b><span>${escapeHtml(item.phone || "手机号未填写")} · ${escapeHtml(item.reason || "未导入")}</span></article>`;
+    }).join("")
     : `<div class="empty">本次没有未导入${entityLabel}</div>`;
   const link = $("#importResultDownload");
   if (result.reportUrl) {
@@ -422,6 +429,25 @@ function showImportFeedback(result, entityLabel = "客户") {
   }
   const dialog = $("#importResultDialog");
   if (!dialog.open) dialog.showModal();
+}
+
+function importErrorResult(error) {
+  const data = error?.data || {};
+  const skipped = Array.isArray(data.skipped) ? data.skipped : [];
+  let failures = Array.isArray(data.failures) ? data.failures : [];
+  if (!skipped.length && !failures.length) {
+    failures = [{ rowNumber: "", name: "", phone: "", reason: data.error || error?.message || "导入失败" }];
+  }
+  return {
+    total: Number(data.total || 0),
+    imported: Number(data.imported || 0),
+    duplicates: Number(data.duplicates || skipped.length || 0),
+    failed: Number(data.failed || failures.length || 1),
+    pendingLocation: Number(data.pendingLocation || 0),
+    reportUrl: data.reportUrl || "",
+    skipped,
+    failures
+  };
 }
 
 async function trackGeocodeProgress() {
@@ -1396,13 +1422,18 @@ async function batchImport(event) {
   }
   if (importToPublicPool) importBody.append("target", "public_pool");
   const endpoint = importToPublicPool ? "/import/customers?target=public_pool" : "/import/customers";
-  const result = await api(endpoint, { method: "POST", body: importBody });
-  $("#batchDialog").close();
-  event.currentTarget.reset();
-  customerPage = 1;
-  await loadState();
-  showImportFeedback(result);
-  if (importToPublicPool && result.pendingLocation) trackGeocodeProgress();
+  try {
+    const result = await api(endpoint, { method: "POST", body: importBody });
+    $("#batchDialog").close();
+    event.currentTarget.reset();
+    customerPage = 1;
+    await loadState();
+    showImportFeedback(result);
+    if (importToPublicPool && Number(result.pendingGeocode || 0)) trackGeocodeProgress();
+  } catch (error) {
+    $("#batchDialog").close();
+    showImportFeedback(importErrorResult(error));
+  }
 }
 
 function isSoldStatus(status) {

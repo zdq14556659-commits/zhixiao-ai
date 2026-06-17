@@ -1,4 +1,4 @@
-const STORAGE_KEY = "zhixiao_ai_mini_state_v8";
+const STORAGE_KEY = "zhixiao_ai_mini_state_v9";
 const AUTH_KEY = "zhixiao_ai_auth_v1";
 const API_BASE_OVERRIDE_KEY = "zhixiao_ai_api_base_override";
 const PROD_API_BASE = "https://isales.santi.ren/crm/api";

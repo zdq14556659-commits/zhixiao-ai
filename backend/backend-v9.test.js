@@ -144,6 +144,17 @@ async function run() {
   assert.ok(boardAfterPublicImport.data.publicPool.items.some((item) => item.name === "绍兴公海导入工厂"));
   assert.equal(boardAfterPublicImport.data.publicPool.items.find((item) => item.name === "绍兴公海导入工厂").stage, "名单");
 
+  const publicNoAddressImport = await request("/import/customers", { method: "POST", token: admin, body: {
+    moneyUnit: "yuan",
+    rows: "客户,客户电话,状态,渠道来源,意向产品\n福州无地址公海工厂,13800001005,公海,公众号,V1"
+  } });
+  assert.equal(publicNoAddressImport.status, 201, JSON.stringify(publicNoAddressImport.data));
+  assert.equal(publicNoAddressImport.data.imported, 1);
+  assert.equal(publicNoAddressImport.data.failed, 0);
+  assert.equal(publicNoAddressImport.data.pendingLocation, 1);
+  const boardAfterNoAddressImport = await request("/customer-board", { token: sales });
+  assert.ok(boardAfterNoAddressImport.data.publicPool.items.some((item) => item.name === "福州无地址公海工厂"));
+
   const leadStatusImport = await request("/import/customers", { method: "POST", token: admin, body: {
     moneyUnit: "yuan",
     ownerId: 2,
