@@ -4302,10 +4302,6 @@ async function importCustomers(req, viewer, target = "") {
       return;
     }
     const existingCustomer = findCustomerByPhone(state, phoneNormalized);
-    if (rowImportToPublicPool && !String(row.address || existingCustomer?.address || "").trim()) {
-      failed.push({ rowNumber, name: row.name || "", phone: row.phone || "", reason: "公海导入必须填写完整地址" });
-      return;
-    }
     const explicitProductName = String(row.productName || "").trim();
     const product = resolveProduct(state, row.productId, explicitProductName) || normalizeProduct({ id: stableId("product", explicitProductName || "待确认产品"), name: explicitProductName || "待确认产品" });
     const fileKey = `${phoneNormalized}|${cleanText(product.name)}`;
@@ -4381,12 +4377,15 @@ async function importCustomers(req, viewer, target = "") {
   if (createdCustomers.length) setTimeout(() => processGeocodeQueue().catch(() => {}), 20);
   const reportRows = [...skipped, ...failed];
   const reportUrl = reportRows.length ? writeImportReport(reportRows) : "";
+  const pendingLocation = createdCustomers.filter((item) => item.location?.status !== "resolved").length;
+  const pendingGeocode = createdCustomers.filter((item) => String(item.address || "").trim() && item.location?.status !== "resolved").length;
   return {
     total: rows.length,
     imported: importedOpportunities.length,
     duplicates: skipped.length,
     failed: failed.length,
-    pendingLocation: createdCustomers.filter((item) => item.location?.status !== "resolved").length,
+    pendingLocation,
+    pendingGeocode,
     reportUrl,
     skipped,
     failures: failed,
