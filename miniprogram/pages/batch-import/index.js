@@ -74,7 +74,7 @@ Page({
       wx.hideLoading();
       this.showImportResult(result);
     } catch (error) {
-      wx.showToast({ title: error.message || "导入失败", icon: "none" });
+      this.showImportResult(this.importErrorResult(error));
     } finally {
       wx.hideLoading();
       this.setData({ importing: false });
@@ -131,15 +131,35 @@ Page({
           });
         } catch (error) {
           this.setData({ importing: false });
-          wx.showToast({ title: error.message || "导入失败", icon: "none" });
+          this.showImportResult(this.importErrorResult(error));
         }
       },
       fail: () => {
         wx.hideLoading();
         this.setData({ importing: false });
-        wx.showToast({ title: "上传失败", icon: "none" });
+        this.showImportResult(this.importErrorResult(new Error("上传失败，请检查网络或文件权限")));
       }
     });
+  },
+
+  importErrorResult(error) {
+    const data = error?.data || {};
+    const skipped = Array.isArray(data.skipped) ? data.skipped : [];
+    let failures = Array.isArray(data.failures) ? data.failures : [];
+    if (!skipped.length && !failures.length) {
+      failures = [{ rowNumber: "", name: "", phone: "", reason: data.error || error?.message || "导入失败" }];
+    }
+    return {
+      total: Number(data.total || 0),
+      imported: Number(data.imported || 0),
+      duplicates: Number(data.duplicates || skipped.length || 0),
+      failed: Number(data.failed || failures.length || 1),
+      pendingLocation: Number(data.pendingLocation || 0),
+      pendingGeocode: Number(data.pendingGeocode || 0),
+      skipped,
+      failures,
+      reportUrl: data.reportUrl || ""
+    };
   },
 
   showImportResult(result) {
@@ -149,6 +169,7 @@ Page({
       duplicates: Number(result.duplicates || 0),
       failed: Number(result.failed || 0),
       pendingLocation: Number(result.pendingLocation || 0),
+      pendingGeocode: Number(result.pendingGeocode || 0),
       skipped: Array.isArray(result.skipped) ? result.skipped : [],
       failures: Array.isArray(result.failures) ? result.failures : []
     };
@@ -157,8 +178,10 @@ Page({
       : "";
     normalizedResult.reportUrl = reportUrl;
     this.setData({ importResult: normalizedResult });
-    if (this.data.targetPublicPool && normalizedResult.pendingLocation) this.refreshGeocodeProgress();
-    if (normalizedResult.duplicates) {
+    if (this.data.targetPublicPool && normalizedResult.pendingGeocode) this.refreshGeocodeProgress();
+    if (normalizedResult.failed && !normalizedResult.imported && !normalizedResult.duplicates) {
+      wx.showToast({ title: "导入失败，请查看明细", icon: "none", duration: 2600 });
+    } else if (normalizedResult.duplicates) {
       wx.showToast({ title: `发现${normalizedResult.duplicates}条重复客户，已跳过`, icon: "none", duration: 2600 });
     } else {
       wx.showToast({ title: "导入完成", icon: "success" });
