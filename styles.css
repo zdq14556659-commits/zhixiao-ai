@@ -1074,6 +1074,31 @@ dialog::backdrop { background: rgba(31, 45, 61, 0.38); }
 .import-result-actions { justify-content: flex-end; }
 .import-result-actions .template-link { margin-right: auto; }
 
+.custom-fields-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.custom-field-row {
+  display: grid;
+  gap: 6px;
+}
+
+.config-list article {
+  align-items: flex-start;
+}
+
+.target-rule-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.target-rule-grid label,
+.check-grid.compact label {
+  min-height: 34px;
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.62;

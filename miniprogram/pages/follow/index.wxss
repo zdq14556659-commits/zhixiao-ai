@@ -2,6 +2,13 @@
   margin-top: 10rpx;
 }
 
+.template-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+  margin-bottom: 16rpx;
+}
+
 .history-card {
   margin-top: 20rpx;
 }

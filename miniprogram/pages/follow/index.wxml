@@ -7,9 +7,12 @@
 
   <form bindsubmit="submitFollow">
     <view class="card">
+      <view wx:if="{{templates.length}}" class="template-row">
+        <button wx:for="{{templates}}" wx:key="id" class="plain-btn" type="button" data-index="{{index}}" bindtap="useTemplate">{{item.name}}</button>
+      </view>
       <view class="form-item">
         <text class="label">本次跟进记录</text>
-        <textarea name="note" placeholder="记录客户问题、意向、下一步动作"></textarea>
+        <textarea name="note" value="{{noteDraft}}" placeholder="记录客户问题、意向、下一步动作"></textarea>
       </view>
       <view class="form-item">
         <text class="label">下次跟进日期</text>

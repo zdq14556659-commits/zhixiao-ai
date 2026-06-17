@@ -6,6 +6,8 @@ Page({
     opportunityId: "",
     customer: null,
     history: [],
+    templates: [],
+    noteDraft: "",
     nextFollow: "2026-06-05"
   },
 
@@ -19,7 +21,8 @@ Page({
       ...item,
       displayTime: this.formatFollowTime(item)
     }));
-    this.setData({ id, opportunityId, customer: { ...customer, ...(opportunity || {}) }, history, nextFollow: opportunity?.nextFollow || customer?.nextFollow || app.globalData.today });
+    const merged = { ...customer, ...(opportunity || {}) };
+    this.setData({ id, opportunityId, customer: merged, history, templates: app.followTemplates(merged.stage), nextFollow: opportunity?.nextFollow || customer?.nextFollow || app.globalData.today });
   },
 
   formatFollowTime(item = {}) {
@@ -35,6 +38,14 @@ Page({
 
   onNextFollow(event) {
     this.setData({ nextFollow: event.detail.value });
+  },
+
+  useTemplate(event) {
+    const template = this.data.templates[Number(event.currentTarget.dataset.index)] || {};
+    const nextFollow = template.nextFollowDays
+      ? new Date(Date.now() + Number(template.nextFollowDays) * 86400000 + 8 * 3600000).toISOString().slice(0, 10)
+      : this.data.nextFollow;
+    this.setData({ noteDraft: template.content || "", nextFollow });
   },
 
   submitFollow(event) {

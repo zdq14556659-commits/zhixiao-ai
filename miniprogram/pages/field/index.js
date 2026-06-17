@@ -33,12 +33,13 @@ Page({
   onShow() {
     if (!app.ensureLogin()) return;
     app.loadRemoteState((remoteState) => {
+      const statuses = app.activeStageNames();
       const softwareOptions = (remoteState.competitors || app.getState().competitors || [])
         .filter((item) => item.active !== false)
         .map((item) => item.name)
         .filter(Boolean);
       if (!softwareOptions.includes("其他")) softwareOptions.push("其他");
-      this.setData({ currentUser: app.getCurrentUser(), visits: app.scopeVisits(), softwareOptions: softwareOptions.length ? softwareOptions : ["其他"] });
+      this.setData({ currentUser: app.getCurrentUser(), visits: app.scopeVisits(), statuses, softwareOptions: softwareOptions.length ? softwareOptions : ["其他"] });
       this.centerOnSelf(() => this.refreshMapData());
     });
   },

@@ -12,7 +12,8 @@
     "test:v7": "node backend/opportunity-v7.test.js",
     "test:v8": "node backend/backend-v8.test.js",
     "test:v9": "node backend/backend-v9.test.js",
-    "test": "npm run test:password && npm run test:customers && npm run test:v6 && npm run test:v7 && npm run test:v8 && npm run test:v9"
+    "test:config": "node backend/business-config.test.js",
+    "test": "npm run test:password && npm run test:customers && npm run test:v6 && npm run test:v7 && npm run test:v8 && npm run test:v9 && npm run test:config"
   },
   "dependencies": {
     "jszip": "^3.10.1"

@@ -116,7 +116,7 @@ Page({
     const ownerIndex = Math.min(this.data.ownerIndex, owners.length - 1);
     const regionIndex = Math.min(this.data.regionIndex, regions.length - 1);
     const cityIndex = Math.min(this.data.cityIndex, cities.length - 1);
-    const stageTabs = [...state.stages, "公海"].map((stage) => ({
+    const stageTabs = [...app.activeStageNames(), "公海"].map((stage) => ({
       name: stage,
       count: stage === "公海"
         ? this.publicPoolCount || 0
@@ -278,7 +278,7 @@ Page({
     if (stage === "全部") return { label: "阶段时间", field: "createdAt" };
     if (stage === "公海") return { label: "进入公海", field: "publicPoolAt" };
     if (stage === "名单") return { label: "录入时间", field: "createdAt" };
-    if (stage === "成交") return { label: "成交时间", field: "dealAt" };
+    if (app.isWonStage(stage)) return { label: "成交时间", field: "dealAt" };
     return { label: "转化时间", field: stage === "商机" ? "opportunityAt" : "leadAt" };
   },
 
@@ -420,13 +420,13 @@ Page({
   },
 
   goAdd() {
-    const stage = ["名单", "线索", "商机", "成交"].includes(this.data.currentStage) ? this.data.currentStage : "名单";
+    const stage = app.activeStageNames().includes(this.data.currentStage) ? this.data.currentStage : (app.activeStageNames()[0] || "名单");
     this.preserveFiltersOnNextShow = true;
     wx.navigateTo({ url: `/pages/customer-form/index?stage=${stage}` });
   },
 
   goBatchImport() {
-    const stage = ["名单", "线索", "商机", "成交"].includes(this.data.currentStage) ? this.data.currentStage : "名单";
+    const stage = app.activeStageNames().includes(this.data.currentStage) ? this.data.currentStage : (app.activeStageNames()[0] || "名单");
     const target = this.data.currentStage === "公海" ? "&target=public_pool" : "";
     this.preserveFiltersOnNextShow = true;
     wx.navigateTo({ url: `/pages/batch-import/index?stage=${stage}${target}` });
@@ -466,7 +466,7 @@ Page({
     const id = Number(event.currentTarget.dataset.id);
     const customer = this.data.filtered.find((item) => Number(item.id) === id);
     if (!customer) return;
-    const stages = app.getState().stages;
+    const stages = app.activeStageNames();
     const stageIndex = stages.indexOf(customer.stage);
     if (stageIndex >= stages.length - 1) {
       this.openNewOpportunity(event);
@@ -500,9 +500,9 @@ Page({
     const nextFollow = String(this.data.advanceNextFollow || "");
     const contractAmount = Number(this.data.advanceContractAmount || 0);
     if (!note) return wx.showToast({ title: "请填写本次跟进内容", icon: "none" });
-    if (nextStage === "商机" && !this.data.advanceDemoAt) return wx.showToast({ title: "请选择有效演示日期", icon: "none" });
-    if (nextStage === "成交" && contractAmount <= 0) return wx.showToast({ title: "请填写合同金额", icon: "none" });
-    if (nextStage !== "成交" && !nextFollow) return wx.showToast({ title: "请选择下次跟进时间", icon: "none" });
+    if (app.stageRank(nextStage) >= app.stageRank("商机") && !this.data.advanceDemoAt) return wx.showToast({ title: "请选择有效演示日期", icon: "none" });
+    if (app.isWonStage(nextStage) && contractAmount <= 0) return wx.showToast({ title: "请填写合同金额", icon: "none" });
+    if (!app.isWonStage(nextStage) && !nextFollow) return wx.showToast({ title: "请选择下次跟进时间", icon: "none" });
     if (Number(this.data.advancePaymentAmount || 0) > 0 && !this.data.advancePaymentDate) return wx.showToast({ title: "请选择进款日期", icon: "none" });
     this.submitAdvanceRequest(item, this.data.advanceTargetStage, {
       demoAt: this.data.advanceDemoAt,
@@ -565,7 +565,7 @@ Page({
   },
 
   isCustomerAssignable(customer) {
-    if (customer.ownershipStatus === "public_pool") return customer.stage !== "成交";
+    if (customer.ownershipStatus === "public_pool") return !app.isWonStage(customer.stage);
     if (customer.stage === "名单") return true;
     if (!["线索", "商机"].includes(customer.stage)) return false;
     const latest = customer.lastFollow || customer.createdAt || "";

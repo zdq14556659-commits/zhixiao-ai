@@ -25,12 +25,15 @@ Page({
     contacts: [],
     competitorProfiles: [],
     competitorNames: [],
+    customerCustomFields: [],
+    opportunityCustomFields: [],
     form: {}
   },
 
   onLoad(options) {
     if (!app.ensureLogin()) return;
     const state = app.getState();
+    const stages = app.activeStageNames();
     const ownerUsers = app.visibleFollowUsers();
     const owners = ownerUsers.map((user) => user.name);
     const currentUser = app.getCurrentUser();
@@ -39,7 +42,8 @@ Page({
     const master = options.id ? (state.customers || []).find((item) => Number(item.id) === Number(options.id)) : null;
     const opportunity = options.opportunityId ? (state.opportunities || []).find((item) => Number(item.id) === Number(options.opportunityId)) : null;
     const customer = master ? { ...master, ...(opportunity || {}), id: master.id, customerId: master.id } : null;
-    const stageIndex = Math.max(0, this.data.stages.indexOf(customer?.stage || options.stage || "名单"));
+    if (customer?.stage && !stages.includes(customer.stage)) stages.push(customer.stage);
+    const stageIndex = Math.max(0, stages.indexOf(customer?.stage || options.stage || "名单"));
     const ownerIndex = Math.max(0, owners.indexOf(customer?.owner || customer?.followPerson || owners[0]));
     const channelSources = app.globalData.channelSources;
     const channelIndex = Math.max(0, channelSources.indexOf(app.normalizeChannelSource(customer?.channelSource || "其他")));
@@ -62,6 +66,7 @@ Page({
     this.setData({
       owners,
       ownerUsers,
+      stages,
       stageIndex,
       ownerIndex,
       paymentOwners,
@@ -78,6 +83,8 @@ Page({
       contacts,
       competitorProfiles,
       competitorNames: (state.competitors || []).map((item) => item.name),
+      customerCustomFields: this.buildCustomFields("customer", customer?.customFields || {}),
+      opportunityCustomFields: this.buildCustomFields("opportunity", customer?.customFields || {}),
       nextFollow: customer?.nextFollow || app.globalData.today,
       demoAt: customer?.demoAt || "",
       expectedDealDate: customer?.expectedDealDate || "",
@@ -85,6 +92,37 @@ Page({
       form: formData
     });
     wx.setNavigationBarTitle({ title: customer ? "编辑客户" : "新增客户" });
+  },
+
+  buildCustomFields(module, values = {}) {
+    return app.customFieldDefs(module).map((field) => ({
+      ...field,
+      value: Array.isArray(values[field.key]) ? values[field.key].join(",") : values[field.key] ?? "",
+      optionText: Array.isArray(field.options) ? field.options.join(",") : "",
+      checked: Boolean(values[field.key])
+    }));
+  },
+
+  onCustomFieldInput(event) {
+    const module = event.currentTarget.dataset.module;
+    const index = Number(event.currentTarget.dataset.index);
+    const value = event.detail.value;
+    const listKey = module === "opportunity" ? "opportunityCustomFields" : "customerCustomFields";
+    this.setData({ [`${listKey}[${index}].value`]: value });
+  },
+
+  onCustomFieldSwitch(event) {
+    const module = event.currentTarget.dataset.module;
+    const index = Number(event.currentTarget.dataset.index);
+    const listKey = module === "opportunity" ? "opportunityCustomFields" : "customerCustomFields";
+    this.setData({ [`${listKey}[${index}].checked`]: Boolean(event.detail.value) });
+  },
+
+  collectCustomFields(list = []) {
+    return list.reduce((result, field) => {
+      result[field.key] = field.type === "boolean" ? Boolean(field.checked) : field.value;
+      return result;
+    }, {});
   },
 
   onStage(event) {
@@ -233,11 +271,11 @@ Page({
     const demoAt = this.data.demoAt;
     const contractAmount = Number(form.contractAmount || 0);
     const paymentAmount = Number(form.paymentAmount || 0);
-    if (["商机", "成交"].includes(stage) && !demoAt) {
+    if (app.stageRank(stage) >= app.stageRank("商机") && !demoAt) {
       wx.showToast({ title: "进入商机前请填写有效演示时间", icon: "none" });
       return;
     }
-    if (stage === "成交" && contractAmount <= 0) {
+    if (app.isWonStage(stage) && contractAmount <= 0) {
       wx.showToast({ title: "进入成交前请填写合同金额", icon: "none" });
       return;
     }
@@ -286,7 +324,9 @@ Page({
       createdAt: previous.createdAt || app.globalData.today,
       lastFollow: app.globalData.today,
       nextFollow: this.data.nextFollow,
-      lastNote: String(form.note || "").trim() || (this.data.editingId ? undefined : "新增客户。")
+      lastNote: String(form.note || "").trim() || (this.data.editingId ? undefined : "新增客户。"),
+      customerCustomFields: this.collectCustomFields(this.data.customerCustomFields),
+      opportunityCustomFields: this.collectCustomFields(this.data.opportunityCustomFields)
     };
     wx.showLoading({ title: "保存中" });
     try {

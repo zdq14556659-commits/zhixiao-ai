@@ -221,6 +221,7 @@
         <section class="view" id="settingsView">
           <div class="settings-tabs" id="settingsTabs">
             <button class="active" data-settings-tab="accounts">账号管理</button>
+            <button data-settings-tab="business">业务配置</button>
             <button data-settings-tab="knowledge">知识库</button>
           </div>
           <section class="settings-pane panel" id="settingsKnowledgePane">
@@ -229,8 +230,10 @@
               <label>知识标题<input name="question" placeholder="例如：价格异议处理" /></label>
               <label>知识内容<textarea name="answer" rows="4" placeholder="可直接填写标准话术，也可以只上传文件"></textarea></label>
               <div class="knowledge-tag-grid">
+                <label>适用行业<input name="industries" placeholder="全屋定制,教育培训,企业服务" /></label>
                 <label>产品模块<input name="productModules" placeholder="报价,拆单,生产管理" /></label>
                 <label>销售阶段<input name="salesStages" placeholder="名单,线索,商机,成交" /></label>
+                <label>客户状态<input name="customerStatuses" placeholder="新客户,老客户,公海,成交" /></label>
                 <label>客户角色<input name="customerRoles" placeholder="老板,设计主管,生产主管" /></label>
                 <label>竞品<input name="competitors" placeholder="三维家,云熙,海迅" /></label>
                 <label>异议类型<input name="objectionTypes" placeholder="价格,功能,实施,售后" /></label>
@@ -241,6 +244,83 @@
             </form>
             <div class="kb-list compact-list" id="knowledgeList"></div>
           </section>
+          <div class="settings-pane admin-grid" id="settingsBusinessPane">
+            <section class="panel">
+              <div class="panel-title"><h2>销售阶段</h2><span>支持改名、排序、停用、必填项和超期天数；历史阶段不会被删除</span></div>
+              <form class="form-stack" id="stageConfigForm">
+                <input type="hidden" name="id" />
+                <label>阶段名称<input name="name" required placeholder="例如：试用 / 报价 / 签约" /></label>
+                <div class="grid-2">
+                  <label>排序<input name="sort" type="number" min="0" step="1" value="100" /></label>
+                  <label>颜色<input name="color" type="color" value="#64748b" /></label>
+                </div>
+                <div class="grid-2">
+                  <label>阶段类型<select name="type"><option value="normal">普通阶段</option><option value="start">起始阶段</option><option value="won">赢单阶段</option></select></label>
+                  <label>超期天数<input name="overdueDays" type="number" min="0" step="1" value="0" /></label>
+                </div>
+                <label>进入阶段必填字段<input name="requiredFields" placeholder="demoAt,contractAmount,paymentOwnerId" /></label>
+                <label class="checkbox-line"><input name="active" type="checkbox" checked />启用该阶段</label>
+                <div class="inline-actions"><button class="primary" type="submit">保存阶段</button><button id="resetStageConfigBtn" type="button">新建阶段</button></div>
+              </form>
+              <div class="config-list compact-list" id="stageConfigList"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-title"><h2>自定义字段</h2><span>核心字段固定，自定义字段按客户、商机、地推拜访分开保存</span></div>
+              <form class="form-stack" id="customFieldForm">
+                <input type="hidden" name="key" />
+                <div class="grid-2">
+                  <label>字段名称<input name="label" required placeholder="例如：客户行业" /></label>
+                  <label>所属模块<select name="module" id="customFieldModuleSelect"></select></label>
+                </div>
+                <div class="grid-2">
+                  <label>字段类型<select name="type" id="customFieldTypeSelect"></select></label>
+                  <label>排序<input name="sort" type="number" min="0" step="1" value="100" /></label>
+                </div>
+                <label>选项<input name="options" placeholder="单选/多选填写：选项A,选项B" /></label>
+                <label>占位提示<input name="placeholder" placeholder="给销售看的填写提示" /></label>
+                <div class="check-grid">
+                  <label><input name="required" type="checkbox" /> 必填</label>
+                  <label><input name="showInList" type="checkbox" /> 列表展示</label>
+                  <label><input name="active" type="checkbox" checked /> 启用</label>
+                </div>
+                <div class="inline-actions"><button class="primary" type="submit">保存字段</button><button id="resetCustomFieldBtn" type="button">新建字段</button></div>
+              </form>
+              <div class="config-list compact-list" id="customFieldList"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-title"><h2>跟进模板</h2><span>按阶段和场景提供跟进内容模板，小程序只读取不编辑</span></div>
+              <form class="form-stack" id="followTemplateForm">
+                <input type="hidden" name="id" />
+                <div class="grid-2">
+                  <label>模板名称<input name="name" required placeholder="例如：报价后回访" /></label>
+                  <label>适用阶段<select name="stageId" id="followTemplateStageSelect"></select></label>
+                </div>
+                <div class="grid-2">
+                  <label>场景<input name="scene" placeholder="例如：价格异议" /></label>
+                  <label>默认下次跟进天数<input name="nextFollowDays" type="number" min="0" step="1" value="1" /></label>
+                </div>
+                <label>模板内容<textarea name="content" rows="3" required></textarea></label>
+                <label class="checkbox-line"><input name="active" type="checkbox" checked />启用该模板</label>
+                <div class="inline-actions"><button class="primary" type="submit">保存模板</button><button id="resetFollowTemplateBtn" type="button">新建模板</button></div>
+              </form>
+              <div class="config-list compact-list" id="followTemplateList"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-title"><h2>地图与业绩规则</h2><span>配置地图展示字段、拜访字段、目标项和公海规则</span></div>
+              <form class="form-stack" id="businessRulesForm">
+                <label>地图弹窗字段<input name="pointPopupFields" placeholder="name,stage,productName,owner,phone,address" /></label>
+                <label>地图筛选字段<input name="filters" placeholder="stage,pointStatus,ownerId,unitId,zone,city" /></label>
+                <label>地推拜访字段<input name="visitFields" placeholder="factory,phone,status,software,result,photos" /></label>
+                <div class="target-rule-grid" id="targetRuleFields"></div>
+                <div class="grid-2">
+                  <label>认领保护天数<input name="claimProtectionDays" type="number" min="1" max="30" step="1" /></label>
+                  <label>公海回收天数<input name="publicPoolDays" type="number" min="1" max="365" step="1" /></label>
+                </div>
+                <label>业绩归属<select name="revenueAttribution"><option value="paymentOwner">按进款归属人</option><option value="owner">按机会负责人</option></select></label>
+                <button class="primary" type="submit">保存地图与业绩规则</button>
+              </form>
+            </section>
+          </div>
           <div class="settings-pane admin-grid active" id="settingsAccountsPane">
             <section class="panel">
               <div class="panel-title"><h2>新建员工账号</h2><span>员工可用账号密码登录小程序和 Web</span></div>
@@ -268,6 +348,8 @@
               <form class="form-stack" id="productForm">
                 <label>产品名称<input name="name" required placeholder="例如：续费服务" /></label>
                 <label>产品价格（元）<input name="price" type="number" min="0" step="0.01" placeholder="例如：80000" /></label>
+                <label>产品分类<input name="category" placeholder="例如：软件 / 服务 / 硬件" /></label>
+                <label>产品备注<input name="note" placeholder="适用场景、版本说明等" /></label>
                 <button class="primary" type="submit">添加产品</button>
               </form>
               <div class="user-list compact-list" id="productList"></div>
@@ -345,6 +427,8 @@
         <label>录入人<input name="createdBy" /></label>
         <label>客户地址<input name="address" /></label>
         <label>预计金额（元）<input name="amount" type="number" min="0" step="0.01" /></label>
+        <div class="dialog-section-title">客户自定义字段</div>
+        <div id="customerCustomFieldsEditor" class="custom-fields-editor"></div>
         <div class="dialog-section-title">经营信息</div>
         <label>有效演示时间<input name="demoAt" type="date" /></label>
         <label>预计成交日期<input name="expectedDealDate" type="date" /></label>
@@ -353,6 +437,8 @@
         <label>进款日期<input name="paymentDate" type="date" /></label>
         <label>进款业绩归属人<select name="paymentOwnerId" id="paymentOwnerSelect"></select></label>
         <label>未成交原因<textarea name="lossReason" rows="2" placeholder="价格、竞品、暂时无预算等"></textarea></label>
+        <div class="dialog-section-title">商机自定义字段</div>
+        <div id="opportunityCustomFieldsEditor" class="custom-fields-editor"></div>
         <div class="dialog-section-title">联系人</div>
         <div id="customerContactsEditor" class="repeat-editor"></div>
         <button id="addContactBtn" type="button">添加联系人</button>
@@ -392,6 +478,8 @@
         <label>意向产品 <span class="required-mark">*</span><select name="productId" id="newOpportunityProductSelect"></select></label>
         <label>预计金额（元）<input name="amount" type="number" min="0" step="0.01" /></label>
         <label>跟进人 <span class="required-mark">*</span><select name="ownerId" id="newOpportunityOwnerSelect"></select></label>
+        <div class="dialog-section-title">商机自定义字段</div>
+        <div id="newOpportunityCustomFieldsEditor" class="custom-fields-editor"></div>
         <label>首次跟进备注 <span class="required-mark">*</span><textarea name="note" rows="3"></textarea></label>
         <label>下次跟进 <span class="required-mark">*</span><input name="nextFollow" type="date" /></label>
         <div class="button-row"><button type="button" data-close-dialog="newOpportunityDialog">取消</button><button class="primary" type="submit">创建线索</button></div>

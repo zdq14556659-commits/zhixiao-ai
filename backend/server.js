@@ -57,6 +57,53 @@ const LEGACY_MONEY_MULTIPLIER = 10000;
 const DEFAULT_EXPECTED_AMOUNT = 150000;
 const TARGET_FIELDS = ["revenueTarget", "contractTarget", "listTarget", "leadTarget", "opportunityTarget", "dealTarget"];
 const MONEY_FIELDS = ["amount", "quoteAmount", "contractAmount", "paymentAmount", "revenueTarget", "contractTarget"];
+const CUSTOM_FIELD_TYPES = ["text", "textarea", "number", "money", "date", "select", "multi_select", "boolean"];
+const CUSTOM_FIELD_MODULES = ["customer", "opportunity", "visit"];
+const CORE_FIELD_DEFS = [
+  { key: "name", label: "客户名称", module: "customer", required: true, locked: true },
+  { key: "phone", label: "手机号", module: "customer", required: true, locked: true },
+  { key: "owner", label: "负责人", module: "opportunity", required: true, locked: true },
+  { key: "stage", label: "销售阶段", module: "opportunity", required: true, locked: true },
+  { key: "productId", label: "意向产品", module: "opportunity", required: false, locked: true },
+  { key: "channelSource", label: "渠道来源", module: "customer", required: false, locked: true },
+  { key: "address", label: "客户地址", module: "customer", required: false, locked: true },
+  { key: "note", label: "跟进记录", module: "opportunity", required: false, locked: true }
+];
+const DEFAULT_STAGE_DEFS = [
+  { id: "stage-list", name: "名单", legacyName: "名单", sort: 10, active: true, color: "#64748b", type: "start", requiredFields: [], overdueDays: 7 },
+  { id: "stage-lead", name: "线索", legacyName: "线索", sort: 20, active: true, color: "#409eff", type: "normal", requiredFields: [], overdueDays: 15 },
+  { id: "stage-opportunity", name: "商机", legacyName: "商机", sort: 30, active: true, color: "#8b5cf6", type: "normal", requiredFields: ["demoAt"], overdueDays: 30 },
+  { id: "stage-deal", name: "成交", legacyName: "成交", sort: 40, active: true, color: "#67c23a", type: "won", requiredFields: ["contractAmount", "paymentOwnerId"], overdueDays: 0 }
+];
+const DEFAULT_FOLLOW_TEMPLATES = [
+  { id: "follow-first", name: "首次沟通", stageId: "stage-list", scene: "首次触达", content: "已完成首次沟通，客户核心需求：", nextFollowDays: 1, active: true, sort: 10 },
+  { id: "follow-demo", name: "演示后跟进", stageId: "stage-opportunity", scene: "演示复盘", content: "已完成产品演示，客户关注点：", nextFollowDays: 3, active: true, sort: 20 }
+];
+const DEFAULT_MAP_CONFIG = {
+  pointPopupFields: ["name", "stage", "productName", "owner", "phone", "address", "competitor", "equipment", "lastVisitedAt"],
+  filters: ["stage", "pointStatus", "ownerId", "unitId", "zone", "city", "software", "equipment"],
+  visitFields: ["factory", "phone", "status", "software", "cuttingDevice", "drillingDevice", "lossReason", "result", "photos"],
+  immutableFields: ["latitude", "longitude", "customerId", "opportunityId", "ownerId", "photos"]
+};
+const DEFAULT_PERFORMANCE_CONFIG = {
+  enabledTargetFields: TARGET_FIELDS,
+  stageOverdueDays: { "名单": 7, "线索": 15, "商机": 30, "成交": 0 },
+  claimProtectionDays: CUSTOMER_CLAIM_DAYS,
+  publicPoolDays: PUBLIC_POOL_DAYS,
+  revenueAttribution: "paymentOwner"
+};
+const DEFAULT_BUSINESS_CONFIG = {
+  version: 1,
+  mode: "single",
+  coreFields: CORE_FIELD_DEFS,
+  customFields: [],
+  salesStages: DEFAULT_STAGE_DEFS,
+  followTemplates: DEFAULT_FOLLOW_TEMPLATES,
+  map: DEFAULT_MAP_CONFIG,
+  performance: DEFAULT_PERFORMANCE_CONFIG,
+  updatedAt: "",
+  updatedBy: ""
+};
 const DEFAULT_ROLES = [
   { id: "role-owner", name: "总负责人", customerScope: "all", permissions: ADMIN_PERMISSIONS },
   { id: "role-region", name: "区域经理", customerScope: "zone", permissions: DEFAULT_PERMISSIONS },
@@ -262,6 +309,26 @@ async function routeApi(req, res, url) {
     return sendJson(res, index >= 0 ? 200 : 201, target);
   }
 
+  if (req.method === "GET" && url.pathname === "/api/business-config") {
+    return sendJson(res, 200, getBusinessConfig(authState));
+  }
+
+  if (req.method === "PUT" && url.pathname === "/api/business-config") {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "仅总负责人和管理员可以修改业务配置" });
+    const nextConfig = normalizeBusinessConfig({
+      ...body,
+      updatedAt: new Date().toISOString(),
+      updatedBy: viewer.name
+    }, state);
+    state.businessConfig = nextConfig;
+    state.stages = stageNames(state, { includeInactive: true, includeUsed: true });
+    writeState(state);
+    return sendJson(res, 200, nextConfig);
+  }
+
   if (req.method === "GET" && url.pathname === "/api/competitors") {
     return sendJson(res, 200, authState.competitors || DEFAULT_COMPETITORS);
   }
@@ -301,7 +368,7 @@ async function routeApi(req, res, url) {
     if ((state.products || []).some((item) => cleanText(item.name) === cleanText(name))) {
       return sendJson(res, 409, { error: "产品已存在" });
     }
-    const product = normalizeProduct({ id: body.id || stableId("product", name), name, price: body.price, active: body.active !== false });
+    const product = normalizeProduct({ id: body.id || stableId("product", name), name, price: body.price, category: body.category, note: body.note, sort: body.sort, active: body.active !== false });
     state.products.push(product);
     writeState(state);
     return sendJson(res, 201, product);
@@ -324,6 +391,9 @@ async function routeApi(req, res, url) {
       ...state.products[index],
       name,
       price: body.price,
+      category: body.category !== undefined ? body.category : state.products[index].category,
+      note: body.note !== undefined ? body.note : state.products[index].note,
+      sort: body.sort !== undefined ? body.sort : state.products[index].sort,
       active: body.active !== false
     });
     state.products[index] = product;
@@ -392,7 +462,7 @@ async function routeApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/public-pool") {
     const items = visiblePublicPoolOpportunities(authState, authUser).map((opportunity) => {
       const customer = findCustomer(authState.customers, opportunity.customerId);
-      return sanitizePublicPoolOpportunity(customer, opportunity);
+      return sanitizePublicPoolOpportunity(authState, customer, opportunity);
     });
     return sendJson(res, 200, { count: items.length, items, backendVersion: BACKEND_VERSION, moneyUnit: MONEY_UNIT });
   }
@@ -416,6 +486,9 @@ async function routeApi(req, res, url) {
     if (hasActiveProductOpportunity(state, customer.id, product.id)) {
       return sendJson(res, 409, { error: "该客户已有相同产品的进行中机会", code: "DUPLICATE_ACTIVE_OPPORTUNITY" });
     }
+    const customFields = splitCustomFields(state, body);
+    const customFieldError = validateCustomFieldValues(state, "opportunity", customFields.opportunity);
+    if (customFieldError) return sendJson(res, 400, { error: customFieldError });
     const owner = resolveOpportunityOwner(state, viewer, customer, body);
     if (owner.error) return sendJson(res, owner.status || 403, { error: owner.error });
     const opportunity = normalizeOpportunity({
@@ -424,7 +497,7 @@ async function routeApi(req, res, url) {
       customerId: customer.id,
       productId: product.id,
       productName: product.name,
-      stage: STAGES.includes(body.stage) ? body.stage : "线索",
+      stage: normalizeStageName(state, body.stage, "线索"),
       ownerId: owner.user.id,
       owner: owner.user.name,
       followPerson: owner.user.name,
@@ -434,8 +507,9 @@ async function routeApi(req, res, url) {
       createdBy: viewer.name,
       createdAt: today(),
       ownershipStatus: OWNERSHIP_PENDING,
-      claimUntil: addDaysToIso(new Date().toISOString(), CUSTOMER_CLAIM_DAYS),
+      claimUntil: addDaysToIso(new Date().toISOString(), claimProtectionDays(state)),
       nextFollow: String(body.nextFollow || ""),
+      customFields: customFields.opportunity,
       followUps: [normalizeFollowUp({ date: today(), author: viewer.name, note, nextFollow: body.nextFollow, isSystem: false }, customer)],
       effectiveFollowUpAt: new Date().toISOString()
     }, state);
@@ -455,7 +529,7 @@ async function routeApi(req, res, url) {
     const index = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunityUpdate[1]));
     if (index < 0) return sendJson(res, 404, { error: "销售机会不存在" });
     const previous = state.opportunities[index];
-    if (isOpportunityPublicPool(previous)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
+    if (isOpportunityPublicPool(previous, state)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
     if (!canViewOpportunity(state, viewer, previous)) return sendJson(res, 403, { error: "无权修改该销售机会" });
     if (body.productId !== undefined || body.productName !== undefined) {
       const product = resolveProduct(state, body.productId, body.productName);
@@ -466,7 +540,14 @@ async function routeApi(req, res, url) {
       body.productId = product.id;
       body.productName = product.name;
     }
-    const validationError = validateOpportunityBusinessUpdate(previous, body);
+    if (body.customFields !== undefined || body.opportunityCustomFields !== undefined) {
+      const customFields = splitCustomFields(state, body);
+      const mergedCustomFields = { ...(previous.customFields || {}), ...customFields.opportunity };
+      const customFieldError = validateCustomFieldValues(state, "opportunity", mergedCustomFields);
+      if (customFieldError) return sendJson(res, 400, { error: customFieldError });
+      body.customFields = mergedCustomFields;
+    }
+    const validationError = validateOpportunityBusinessUpdate(previous, body, state);
     if (validationError) return sendJson(res, 400, { error: validationError });
     const next = normalizeOpportunity({ ...previous, ...body, id: previous.id, customerId: previous.customerId }, state);
     state.opportunities[index] = next;
@@ -483,26 +564,25 @@ async function routeApi(req, res, url) {
     const index = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunityAdvance[1]));
     if (index < 0) return sendJson(res, 404, { error: "销售机会不存在" });
     const previous = state.opportunities[index];
-    if (isOpportunityPublicPool(previous)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
+    if (isOpportunityPublicPool(previous, state)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
     if (!canViewOpportunity(state, viewer, previous)) return sendJson(res, 403, { error: "无权推进该销售机会" });
-    const stageIndex = STAGES.indexOf(previous.stage);
-    if (stageIndex < 0 || stageIndex >= STAGES.length - 1) return sendJson(res, 409, { error: "该销售机会已成交" });
-    const nextStage = STAGES[stageIndex + 1];
-    const requiredError = validateOpportunityAdvance(previous, nextStage, body);
+    const targetStage = nextStage(state, previous.stage);
+    if (!targetStage) return sendJson(res, 409, { error: "该销售机会已成交" });
+    const requiredError = validateOpportunityAdvance(previous, targetStage, body, state);
     if (requiredError) return sendJson(res, 400, requiredError);
-    const validationError = validateOpportunityBusinessUpdate(previous, { ...body, stage: nextStage });
+    const validationError = validateOpportunityBusinessUpdate(previous, { ...body, stage: targetStage }, state);
     if (validationError) return sendJson(res, 400, { error: validationError });
-    const followNote = String(body.note || `客户推进至${nextStage}阶段。`).trim();
+    const followNote = String(body.note || `客户推进至${targetStage}阶段。`).trim();
     const next = normalizeOpportunity({
       ...previous,
       ...body,
-      stage: nextStage,
+      stage: targetStage,
       followUps: [...(previous.followUps || []), normalizeFollowUp({ date: today(), createdAt: new Date().toISOString(), author: viewer.name, note: followNote, nextFollow: body.nextFollow || "", isSystem: !String(body.note || "").trim() }, previous)]
     }, state);
-    setStageTime(next, nextStage, today());
+    setStageTime(next, targetStage, today());
     if (String(body.note || "").trim()) lockOpportunityOwnership(next, viewer, "推进时提交有效跟进");
     state.opportunities[index] = next;
-    state.activities.push({ date: today(), owner: next.owner, type: nextStage, customerId: next.customerId, opportunityId: next.id });
+    state.activities.push({ date: today(), owner: next.owner, type: targetStage, customerId: next.customerId, opportunityId: next.id });
     syncCustomerCompatibility(state, next.customerId);
     writeState(state);
     return sendJson(res, 200, opportunityView(state, next));
@@ -516,7 +596,7 @@ async function routeApi(req, res, url) {
     const index = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunityFollow[1]));
     if (index < 0) return sendJson(res, 404, { error: "销售机会不存在" });
     const previous = state.opportunities[index];
-    if (isOpportunityPublicPool(previous)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
+    if (isOpportunityPublicPool(previous, state)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
     if (!canViewOpportunity(state, viewer, previous)) return sendJson(res, 403, { error: "无权跟进该销售机会" });
     const note = String(body.note || "").trim();
     if (!note) return sendJson(res, 400, { error: "请填写跟进内容" });
@@ -702,6 +782,11 @@ async function routeApi(req, res, url) {
     if (!body.confirmSimilar && findSimilarCustomer(state, body)) {
       return sendJson(res, 409, { error: "发现同城名称相似的客户，请确认后继续录入", code: "SIMILAR_CUSTOMER_WARNING" });
     }
+    const customFields = splitCustomFields(state, body);
+    const customerFieldError = validateCustomFieldValues(state, "customer", customFields.customer);
+    if (customerFieldError) return sendJson(res, 400, { error: customerFieldError });
+    const opportunityFieldError = validateCustomFieldValues(state, "opportunity", customFields.opportunity);
+    if (opportunityFieldError) return sendJson(res, 400, { error: opportunityFieldError });
     const now = new Date().toISOString();
     const candidate = {
       id: Date.now(),
@@ -717,6 +802,7 @@ async function routeApi(req, res, url) {
       unit: owner.unit,
       zone: owner.zone,
       city: body.city || extractCity(body.address || body.region) || "待识别",
+      customFields: customFields.customer,
       ownershipStatus: OWNERSHIP_LOCKED,
       claimUntil: "",
       effectiveFollowUpAt: "",
@@ -741,8 +827,9 @@ async function routeApi(req, res, url) {
       unitId: owner.unitId,
       unit: owner.unit,
       zone: owner.zone,
+      customFields: customFields.opportunity,
       ownershipStatus: OWNERSHIP_PENDING,
-      claimUntil: addDaysToIso(now, CUSTOMER_CLAIM_DAYS),
+      claimUntil: addDaysToIso(now, claimProtectionDays(state)),
       effectiveFollowUpAt: "",
       ownershipHistory: [ownershipEvent("created", null, owner, viewer, "首次录入")],
       followUps: [{
@@ -754,7 +841,7 @@ async function routeApi(req, res, url) {
         isSystem: true
       }]
     };
-    const validationError = validateOpportunityBusinessUpdate({}, opportunityCandidate);
+    const validationError = validateOpportunityBusinessUpdate({}, opportunityCandidate, state);
     if (validationError) return sendJson(res, 400, { error: validationError });
     const opportunity = normalizeOpportunity(opportunityCandidate, state);
     state.opportunities.unshift(opportunity);
@@ -904,7 +991,7 @@ async function routeApi(req, res, url) {
     const viewer = getAuthUser(req, state);
     const opportunity = state.opportunities.find((item) => Number(item.id) === Number(body.opportunityId)) || primaryOpportunity(state, customer.id);
     if (!opportunity) return sendJson(res, 404, { error: "销售机会不存在" });
-    if (isOpportunityPublicPool(opportunity)) {
+    if (isOpportunityPublicPool(opportunity, state)) {
       return sendJson(res, 409, { error: "公海客户需先认领后跟进", code: "CUSTOMER_CLAIM_REQUIRED" });
     }
     if (!canViewOpportunity(state, viewer, opportunity)) return sendJson(res, 403, { error: "无权跟进该销售机会" });
@@ -935,7 +1022,7 @@ async function routeApi(req, res, url) {
     const customer = state.customers[index];
     if (!canAssignCustomers(state, viewer)) return sendJson(res, 403, { error: "无客户分配权限" });
     if (!canViewRecord(state, viewer, customer)) return sendJson(res, 403, { error: "不可分配不可见客户" });
-    if (!isCustomerAssignable(customer)) return sendJson(res, 400, { error: "当前客户暂不满足分配条件" });
+    if (!isCustomerAssignable(customer, state)) return sendJson(res, 400, { error: "当前客户暂不满足分配条件" });
     const target = findAssignableSalesUser(state, viewer, body.ownerId, body.owner || body.followPerson);
     if (!target) return sendJson(res, 400, { error: "请选择当前权限内的跟进人" });
     const { next, previousStage } = buildAssignedCustomer(state, viewer, customer, target, body);
@@ -970,7 +1057,7 @@ async function routeApi(req, res, url) {
         failed.push({ id, name: customer.name, reason: "无权查看" });
         return;
       }
-      if (!isCustomerAssignable(customer)) {
+      if (!isCustomerAssignable(customer, state)) {
         failed.push({ id, name: customer.name, reason: "不满足分配条件" });
         return;
       }
@@ -1037,16 +1124,27 @@ async function routeApi(req, res, url) {
     if (identityChanged && !body.confirmSimilar && findSimilarCustomer(state, { ...previous, ...body }, previous.id)) {
       return sendJson(res, 409, { error: "发现同城名称相似的客户，请确认后继续保存", code: "SIMILAR_CUSTOMER_WARNING" });
     }
+    const hasCustomFields = body.customFields !== undefined || body.customerCustomFields !== undefined || body.opportunityCustomFields !== undefined;
+    const customFields = hasCustomFields ? splitCustomFields(state, body) : { customer: {}, opportunity: {} };
+    if (hasCustomFields) {
+      const customerFieldError = validateCustomFieldValues(state, "customer", { ...(previous.customFields || {}), ...customFields.customer });
+      if (customerFieldError) return sendJson(res, 400, { error: customerFieldError });
+      const currentOpportunity = state.opportunities.find((item) => Number(item.id) === Number(body.opportunityId)) || primaryOpportunity(state, previous.id) || {};
+      const opportunityFieldError = validateCustomFieldValues(state, "opportunity", { ...(currentOpportunity.customFields || {}), ...customFields.opportunity });
+      if (opportunityFieldError) return sendJson(res, 400, { error: opportunityFieldError });
+    }
     const salesFields = ["productId", "productName", "stage", "owner", "ownerId", "followPerson", "unitId", "unit", "zone", "region", "amount", "demoAt", "quoteAmount", "expectedDealDate", "contractAmount", "paymentAmount", "paymentDate", "paymentOwnerId", "paymentOwner", "lossReason", "ownershipStatus", "claimUntil", "effectiveFollowUpAt", "publicPoolAt", "publicPoolReason", "ownershipHistory", "leadAt", "opportunityAt", "dealAt", "followUps", "lastNote", "note", "lastFollow", "nextFollow"];
     const customerBody = { ...body };
-    salesFields.forEach((field) => delete customerBody[field]);
+    [...salesFields, "customFields", "customerCustomFields", "opportunityCustomFields", "visitCustomFields"].forEach((field) => delete customerBody[field]);
     customerBody.city = body.city || (body.address !== undefined ? extractCity(body.address) || "待识别" : previous.city);
+    if (hasCustomFields) customerBody.customFields = { ...(previous.customFields || {}), ...customFields.customer };
     const next = normalizeCustomer({ ...previous, ...customerBody, id: previous.id }, state);
     state.customers[index] = next;
     const opportunity = state.opportunities.find((item) => Number(item.id) === Number(body.opportunityId)) || primaryOpportunity(state, previous.id);
-    if (opportunity && salesFields.some((field) => body[field] !== undefined)) {
+    if (opportunity && (salesFields.some((field) => body[field] !== undefined) || hasCustomFields)) {
       const opportunityIndex = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunity.id));
       const opportunityBody = Object.fromEntries(salesFields.filter((field) => body[field] !== undefined).map((field) => [field, body[field]]));
+      if (hasCustomFields) opportunityBody.customFields = { ...(opportunity.customFields || {}), ...customFields.opportunity };
       if (body.productId !== undefined || body.productName !== undefined) {
         const product = resolveProduct(state, body.productId, body.productName);
         if (!product) return sendJson(res, 400, { error: "请选择有效的意向产品" });
@@ -1056,7 +1154,7 @@ async function routeApi(req, res, url) {
         opportunityBody.productId = product.id;
         opportunityBody.productName = product.name;
       }
-      const validationError = validateOpportunityBusinessUpdate(opportunity, opportunityBody);
+      const validationError = validateOpportunityBusinessUpdate(opportunity, opportunityBody, state);
       if (validationError) return sendJson(res, 400, { error: validationError });
       const updated = normalizeOpportunity({ ...opportunity, ...opportunityBody }, state);
       if (String(body.lastNote || body.note || "").trim()) {
@@ -1081,9 +1179,12 @@ async function routeApi(req, res, url) {
     const viewer = getAuthUser(req, state);
     const conflict = visitCustomerConflict(state, viewer, body);
     if (conflict) return sendJson(res, conflict.status, conflict.payload);
+    const customFields = splitCustomFields(state, body);
+    const customFieldError = validateCustomFieldValues(state, "visit", customFields.visit);
+    if (customFieldError) return sendJson(res, 400, { error: customFieldError });
     const visitOpportunity = body.opportunityId
       ? state.opportunities.find((item) => Number(item.id) === Number(body.opportunityId))
-      : (state.opportunities || []).find((item) => Number(item.customerId) === Number(body.customerId) && !isOpportunityPublicPool(item) && canViewOpportunity(state, viewer, item));
+      : (state.opportunities || []).find((item) => Number(item.customerId) === Number(body.customerId) && !isOpportunityPublicPool(item, state) && canViewOpportunity(state, viewer, item));
     const visit = normalizeVisit({
       id: Date.now(),
       date: today(),
@@ -1096,7 +1197,8 @@ async function routeApi(req, res, url) {
       ownerId: viewer.id,
       unitId: viewer.unitId || "",
       unit: viewer.unit || "",
-      zone: viewer.zone || ""
+      zone: viewer.zone || "",
+      customFields: customFields.visit
     }, state);
     state.visits.unshift(visit);
     syncVisitToCustomer(state, visit);
@@ -1115,6 +1217,13 @@ async function routeApi(req, res, url) {
     if (!canViewRecord(state, viewer, state.visits[index])) return sendJson(res, 403, { error: "无权修改该拜访记录" });
     const conflict = visitCustomerConflict(state, viewer, { ...state.visits[index], ...body });
     if (conflict) return sendJson(res, conflict.status, conflict.payload);
+    if (body.customFields !== undefined || body.visitCustomFields !== undefined) {
+      const customFields = splitCustomFields(state, body);
+      const mergedCustomFields = { ...(state.visits[index].customFields || {}), ...customFields.visit };
+      const customFieldError = validateCustomFieldValues(state, "visit", mergedCustomFields);
+      if (customFieldError) return sendJson(res, 400, { error: customFieldError });
+      body.customFields = mergedCustomFields;
+    }
     const visit = normalizeVisit({
       ...state.visits[index],
       ...body,
@@ -1472,7 +1581,7 @@ async function routeApi(req, res, url) {
     const customer = state.customers.find((item) => Number(item.id) === Number(customerId));
     if (!customer || !canViewRecord(state, viewer, customer)) return sendJson(res, 404, { error: "客户不存在" });
     const opportunity = selectedOpportunity || primaryOpportunity(state, customer.id);
-    if (opportunity && isOpportunityPublicPool(opportunity)) return sendJson(res, 409, { error: "请先认领公海销售机会", code: "CUSTOMER_CLAIM_REQUIRED" });
+    if (opportunity && isOpportunityPublicPool(opportunity, state)) return sendJson(res, 409, { error: "请先认领公海销售机会", code: "CUSTOMER_CLAIM_REQUIRED" });
     if (opportunity && !canViewOpportunity(state, viewer, opportunity)) return sendJson(res, 404, { error: "销售机会不存在" });
     const context = buildCustomerAiContext(state, customer, opportunity, viewer);
     const result = await generateStructuredXiaozhiAdvice(body.question || "", state.knowledge || [], context);
@@ -1488,6 +1597,295 @@ async function routeApi(req, res, url) {
   }
 
   sendJson(res, 404, { error: "not found" });
+}
+
+function normalizeBusinessConfig(input = {}, state = {}) {
+  const source = input && typeof input === "object" ? input : {};
+  const stageMap = new Map();
+  const addStage = (stage, index = 0, historical = false) => {
+    const normalized = normalizeStageDef(stage, index, historical);
+    if (!normalized.name) return;
+    const key = normalized.id;
+    const previous = stageMap.get(key);
+    stageMap.set(key, previous ? { ...previous, ...normalized, requiredFields: normalized.requiredFields } : normalized);
+  };
+  const configuredStages = Array.isArray(source.salesStages) ? source.salesStages : [];
+  DEFAULT_STAGE_DEFS.forEach((stage, index) => addStage(stage, index));
+  configuredStages.forEach((stage, index) => addStage(stage, index));
+  if (!configuredStages.length) {
+    (Array.isArray(state.stages) ? state.stages : []).forEach((name, index) => {
+      const exists = [...stageMap.values()].some((stage) => sameStageName(stage, name));
+      if (!exists) addStage({ name, legacyName: name, sort: 1000 + index, active: true }, index);
+    });
+  }
+  usedStageNames(state).forEach((name, index) => {
+    const exists = [...stageMap.values()].some((stage) => sameStageName(stage, name));
+    if (!exists) addStage({ name, legacyName: name, sort: 2000 + index, active: false }, index, true);
+  });
+  const salesStages = [...stageMap.values()]
+    .map((stage, index) => ({ ...stage, sort: Number.isFinite(Number(stage.sort)) ? Number(stage.sort) : (index + 1) * 10 }))
+    .sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0));
+  if (!salesStages.some((stage) => stage.type === "won")) {
+    const deal = salesStages.find((stage) => sameStageName(stage, "成交")) || salesStages[salesStages.length - 1];
+    if (deal) deal.type = "won";
+  }
+  const customFields = normalizeCustomFieldDefinitions(source.customFields || []);
+  const followTemplates = normalizeFollowTemplates(source.followTemplates || []);
+  const performance = normalizePerformanceConfig(source.performance || {}, salesStages);
+  return {
+    version: 1,
+    mode: "single",
+    coreFields: CORE_FIELD_DEFS,
+    customFields,
+    salesStages,
+    followTemplates,
+    map: normalizeMapConfig(source.map || {}),
+    performance,
+    updatedAt: source.updatedAt || "",
+    updatedBy: source.updatedBy || ""
+  };
+}
+
+function normalizeStageDef(stage = {}, index = 0, historical = false) {
+  const rawName = typeof stage === "string" ? stage : stage.name;
+  const name = String(rawName || "").trim();
+  if (!name) return {};
+  const legacyName = String(stage.legacyName || name).trim();
+  const defaultStage = DEFAULT_STAGE_DEFS.find((item) => sameStageName(item, name) || sameStageName(item, legacyName) || item.id === stage.id) || {};
+  const id = String(stage.id || defaultStage.id || stableId("stage", legacyName || name)).trim();
+  const requiredFields = Array.isArray(stage.requiredFields)
+    ? [...new Set(stage.requiredFields.map((field) => String(field || "").trim()).filter(Boolean))]
+    : [...(defaultStage.requiredFields || [])];
+  const type = ["start", "normal", "won"].includes(stage.type) ? stage.type : (defaultStage.type || (name === "成交" ? "won" : "normal"));
+  return {
+    id,
+    name,
+    legacyName,
+    sort: Number(stage.sort ?? defaultStage.sort ?? ((index + 1) * 10)),
+    active: historical ? false : stage.active !== false,
+    color: String(stage.color || defaultStage.color || "#64748b").trim(),
+    type,
+    requiredFields,
+    overdueDays: Math.max(0, Number(stage.overdueDays ?? defaultStage.overdueDays ?? 0) || 0),
+    historical: Boolean(historical || stage.historical)
+  };
+}
+
+function sameStageName(stage = {}, name = "") {
+  const text = cleanText(name);
+  return cleanText(stage.name) === text || cleanText(stage.legacyName) === text;
+}
+
+function usedStageNames(state = {}) {
+  const values = [
+    ...(state.customers || []).map((item) => item.stage),
+    ...(state.opportunities || []).map((item) => item.stage),
+    ...(state.visits || []).map((item) => item.status),
+    ...(state.activities || []).map((item) => item.type)
+  ];
+  return [...new Set(values.map((item) => String(item || "").trim()).filter((item) => item && item !== PUBLIC_POOL_STATUS))];
+}
+
+function normalizeCustomFieldDefinitions(fields = []) {
+  const seen = new Set();
+  return (Array.isArray(fields) ? fields : [])
+    .map((field, index) => normalizeCustomFieldDefinition(field, index))
+    .filter((field) => {
+      if (!field.key || seen.has(field.key)) return false;
+      seen.add(field.key);
+      return true;
+    });
+}
+
+function normalizeCustomFieldDefinition(field = {}, index = 0) {
+  const label = String(field.label || field.name || "").trim();
+  const key = String(field.key || stableId("field", `${field.module || "customer"}-${label || index}`)).replace(/[^a-zA-Z0-9_-]/g, "");
+  const module = CUSTOM_FIELD_MODULES.includes(field.module) ? field.module : "customer";
+  const type = CUSTOM_FIELD_TYPES.includes(field.type) ? field.type : "text";
+  const options = Array.isArray(field.options)
+    ? field.options.map((item) => String(typeof item === "string" ? item : item?.label || item?.value || "").trim()).filter(Boolean)
+    : String(field.options || "").split(/,|，|\n/).map((item) => item.trim()).filter(Boolean);
+  return {
+    key,
+    label: label || key,
+    module,
+    type,
+    required: Boolean(field.required),
+    active: field.active !== false,
+    showInList: Boolean(field.showInList),
+    options: [...new Set(options)],
+    placeholder: String(field.placeholder || "").trim(),
+    sort: Number(field.sort ?? ((index + 1) * 10))
+  };
+}
+
+function normalizeCustomFields(values = {}, definitions = []) {
+  const source = values && typeof values === "object" && !Array.isArray(values) ? values : {};
+  const allowed = new Set((definitions || []).map((field) => field.key));
+  const next = {};
+  Object.entries(source).forEach(([key, value]) => {
+    if (!allowed.has(key)) return;
+    const def = definitions.find((field) => field.key === key) || {};
+    if (def.type === "multi_select") {
+      next[key] = Array.isArray(value) ? value.map(String).filter(Boolean) : String(value || "").split(/,|，/).map((item) => item.trim()).filter(Boolean);
+    } else if (def.type === "boolean") {
+      next[key] = value === true || value === "true" || value === "on" || value === 1 || value === "1";
+    } else if (["number", "money"].includes(def.type)) {
+      next[key] = value === "" || value === null || value === undefined ? "" : Number(value || 0);
+    } else {
+      next[key] = String(value ?? "").trim();
+    }
+  });
+  return next;
+}
+
+function customFieldDefs(state = {}, module = "customer", includeInactive = false) {
+  return (getBusinessConfig(state).customFields || [])
+    .filter((field) => field.module === module && (includeInactive || field.active !== false))
+    .sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0));
+}
+
+function validateCustomFieldValues(state = {}, module = "customer", values = {}) {
+  const definitions = customFieldDefs(state, module);
+  for (const field of definitions) {
+    const value = values?.[field.key];
+    const empty = Array.isArray(value) ? !value.length : value === undefined || value === null || value === "";
+    if (field.required && empty) return `${field.label}为必填项`;
+    if (["select", "multi_select"].includes(field.type) && field.options.length && !empty) {
+      const selected = Array.isArray(value) ? value : [value];
+      if (selected.some((item) => !field.options.includes(String(item)))) return `${field.label}包含无效选项`;
+    }
+  }
+  return "";
+}
+
+function splitCustomFields(state = {}, body = {}) {
+  const source = body.customFields && typeof body.customFields === "object" ? body.customFields : {};
+  return {
+    customer: normalizeCustomFields(body.customerCustomFields || source, customFieldDefs(state, "customer", true)),
+    opportunity: normalizeCustomFields(body.opportunityCustomFields || source, customFieldDefs(state, "opportunity", true)),
+    visit: normalizeCustomFields(body.visitCustomFields || source, customFieldDefs(state, "visit", true))
+  };
+}
+
+function importCustomFieldsFromRecord(record = {}, defaults = {}, module = "customer") {
+  const config = normalizeBusinessConfig(defaults.businessConfig || {}, {});
+  const definitions = (config.customFields || []).filter((field) => field.module === module);
+  const values = {};
+  definitions.forEach((field) => {
+    const matchedKey = Object.keys(record).find((key) => cleanText(key) === cleanText(field.key) || cleanText(key) === cleanText(field.label));
+    if (matchedKey && record[matchedKey] !== undefined && record[matchedKey] !== "") values[field.key] = record[matchedKey];
+  });
+  return normalizeCustomFields(values, definitions);
+}
+
+function normalizeFollowTemplates(templates = []) {
+  const source = Array.isArray(templates) && templates.length ? templates : DEFAULT_FOLLOW_TEMPLATES;
+  return source.map((item, index) => ({
+    id: String(item.id || stableId("follow-template", item.name || index)),
+    name: String(item.name || "跟进模板").trim(),
+    stageId: String(item.stageId || ""),
+    scene: String(item.scene || "").trim(),
+    content: String(item.content || "").trim(),
+    nextFollowDays: Math.max(0, Number(item.nextFollowDays || 0) || 0),
+    active: item.active !== false,
+    sort: Number(item.sort ?? ((index + 1) * 10))
+  })).filter((item) => item.name && item.content);
+}
+
+function normalizeMapConfig(map = {}) {
+  const pickKnown = (value, fallback) => {
+    const list = Array.isArray(value) ? value : fallback;
+    return [...new Set(list.map((item) => String(item || "").trim()).filter(Boolean))];
+  };
+  return {
+    pointPopupFields: pickKnown(map.pointPopupFields, DEFAULT_MAP_CONFIG.pointPopupFields),
+    filters: pickKnown(map.filters, DEFAULT_MAP_CONFIG.filters),
+    visitFields: pickKnown(map.visitFields, DEFAULT_MAP_CONFIG.visitFields),
+    immutableFields: DEFAULT_MAP_CONFIG.immutableFields
+  };
+}
+
+function normalizePerformanceConfig(performance = {}, salesStages = DEFAULT_STAGE_DEFS) {
+  const enabledTargetFields = Array.isArray(performance.enabledTargetFields) && performance.enabledTargetFields.length
+    ? performance.enabledTargetFields.filter((field) => TARGET_FIELDS.includes(field))
+    : DEFAULT_PERFORMANCE_CONFIG.enabledTargetFields;
+  const stageOverdueDays = {};
+  salesStages.forEach((stage) => {
+    stageOverdueDays[stage.name] = Math.max(0, Number(performance.stageOverdueDays?.[stage.name] ?? stage.overdueDays ?? 0) || 0);
+  });
+  return {
+    enabledTargetFields: [...new Set(enabledTargetFields)],
+    stageOverdueDays,
+    claimProtectionDays: clampRuleDays(performance.claimProtectionDays, CUSTOMER_CLAIM_DAYS, 1, 30),
+    publicPoolDays: clampRuleDays(performance.publicPoolDays, PUBLIC_POOL_DAYS, 1, 365),
+    revenueAttribution: performance.revenueAttribution === "owner" ? "owner" : "paymentOwner"
+  };
+}
+
+function clampRuleDays(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(Math.max(Math.round(number), min), max);
+}
+
+function getBusinessConfig(state = {}) {
+  return normalizeBusinessConfig(state.businessConfig || DEFAULT_BUSINESS_CONFIG, state);
+}
+
+function getStageDefs(state = {}, options = {}) {
+  const used = new Set(usedStageNames(state).map(cleanText));
+  return (getBusinessConfig(state).salesStages || [])
+    .filter((stage) => options.includeInactive || stage.active !== false || (options.includeUsed && used.has(cleanText(stage.name))))
+    .sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0));
+}
+
+function stageNames(state = {}, options = {}) {
+  return getStageDefs(state, options).map((stage) => stage.name);
+}
+
+function activeStageNames(state = {}) {
+  return stageNames(state);
+}
+
+function stageDefForName(state = {}, name = "") {
+  return getStageDefs(state, { includeInactive: true }).find((stage) => sameStageName(stage, name)) || null;
+}
+
+function stageIdForName(state = {}, name = "") {
+  return stageDefForName(state, name)?.id || "";
+}
+
+function normalizeStageName(state = {}, value = "", fallback = "名单") {
+  const match = stageDefForName(state, value);
+  if (match) return match.name;
+  return stageDefForName(state, fallback)?.name || fallback;
+}
+
+function stageRank(state = {}, value = "") {
+  const stages = getStageDefs(state, { includeInactive: true });
+  const index = stages.findIndex((stage) => sameStageName(stage, value) || stage.id === value);
+  return index >= 0 ? index : -1;
+}
+
+function nextStage(state = {}, current = "") {
+  const stages = getStageDefs(state, { includeInactive: false });
+  const index = stages.findIndex((stage) => sameStageName(stage, current) || stage.id === current);
+  const next = stages[index + 1];
+  return next && next.type !== "start" ? next.name : next?.name || "";
+}
+
+function isWonStage(state = {}, value = "") {
+  const stage = stageDefForName(state, value);
+  return stage?.type === "won";
+}
+
+function claimProtectionDays(state = {}) {
+  return getBusinessConfig(state).performance.claimProtectionDays || CUSTOMER_CLAIM_DAYS;
+}
+
+function publicPoolDays(state = {}) {
+  return getBusinessConfig(state).performance.publicPoolDays || PUBLIC_POOL_DAYS;
 }
 
 function normalizeIncomingState(input) {
@@ -1508,6 +1906,7 @@ function normalizeIncomingState(input) {
     channelSources: mergeById(current.channelSources, input.channelSources),
     routes: mergeById(current.routes, input.routes),
     geocodeJobs: mergeById(current.geocodeJobs, input.geocodeJobs),
+    businessConfig: input.businessConfig ? normalizeBusinessConfig(input.businessConfig, current) : current.businessConfig,
     knowledge: input.knowledge || current.knowledge || [],
     resources: input.resources || current.resources || [],
     securityLogs: current.securityLogs || []
@@ -1563,13 +1962,14 @@ function migrateState(state) {
   const competitors = normalizeCompetitors(source.competitors || []);
   const products = normalizeProducts(source.products || []);
   const channelSources = normalizeChannelSources(source.channelSources || []);
+  const businessConfig = normalizeBusinessConfig(source.businessConfig || {}, source);
   const users = ensureSystemAdminUser(normalizeUsers(source.users || [], {
     roles,
     units,
     resetAdminPassword: !["backend-v3", "backend-v4", "backend-v5", "backend-v6", "backend-v7", "backend-v8", "backend-v9"].includes(source.version)
   }), roles, units);
   const activities = source.activities || [];
-  const context = { roles, units, users, activities, competitors, products, channelSources, legacyOwnership };
+  const context = { roles, units, users, activities, competitors, products, channelSources, businessConfig, legacyOwnership };
   const customers = (source.customers || []).map((customer) => normalizeCustomer(customer, context));
   const opportunitySource = Array.isArray(source.opportunities) && source.opportunities.length
     ? source.opportunities
@@ -1589,7 +1989,8 @@ function migrateState(state) {
     moneyUnit: MONEY_UNIT,
     moneyMigratedAt: source.moneyMigratedAt || new Date().toISOString(),
     currentUserId: Number(source.currentUserId || users[0]?.id || 0),
-    stages: Array.isArray(source.stages) && source.stages.length ? source.stages : STAGES,
+    businessConfig,
+    stages: stageNames({ ...source, businessConfig }, { includeInactive: true, includeUsed: true }),
     zones: Array.isArray(source.zones) && source.zones.length ? source.zones : ZONES,
     roles,
     units,
@@ -1652,6 +2053,9 @@ function normalizeProduct(product = {}) {
     id: product.id || stableId("product", name),
     name,
     price: normalizeMoney(product.price),
+    category: String(product.category || "").trim(),
+    note: String(product.note || "").trim(),
+    sort: Number.isFinite(Number(product.sort)) ? Number(product.sort) : 100,
     active: product.active !== false
   };
 }
@@ -1984,7 +2388,9 @@ function normalizeKnowledgeTags(input = {}) {
   return {
     productModules: parse(input.productModules || input.productModule),
     salesStages: parse(input.salesStages || input.salesStage),
+    industries: parse(input.industries || input.industry),
     customerRoles: parse(input.customerRoles || input.customerRole),
+    customerStatuses: parse(input.customerStatuses || input.customerStatus),
     competitors: parse(input.competitors || input.competitor),
     objectionTypes: parse(input.objectionTypes || input.objectionType)
   };
@@ -2163,7 +2569,7 @@ function normalizeCustomer(customer, context = {}) {
         }, customer)
       ];
   const createdAt = customer.createdAt || today();
-  const stageTimes = normalizeStageTimes(customer, context.activities || [], createdAt);
+  const stageTimes = normalizeStageTimes(customer, context.activities || [], createdAt, context);
   const owner = customer.owner || ownerUser.name || "林晨";
   const ownerId = customer.ownerId || ownerUser.id || "";
   const ownershipStatus = [OWNERSHIP_PENDING, OWNERSHIP_LOCKED, OWNERSHIP_PUBLIC].includes(customer.ownershipStatus)
@@ -2186,7 +2592,8 @@ function normalizeCustomer(customer, context = {}) {
     followPerson: customer.followPerson || customer.followOwner || customer.owner || ownerUser.name || "未分配",
     address: customer.address || customer.customerAddress || "",
     city,
-    stage: customer.stage || "名单",
+    stage: normalizeStageName(context, customer.stage, "名单"),
+    stageId: stageIdForName(context, normalizeStageName(context, customer.stage, "名单")) || customer.stageId,
     owner,
     ownerId,
     unitId: customer.unitId || ownerUser.unitId || unit.id || "",
@@ -2206,6 +2613,7 @@ function normalizeCustomer(customer, context = {}) {
     lossReason: customer.lossReason || "",
     software: primarySoftware,
     competitorProfiles,
+    customFields: normalizeCustomFields(customer.customFields, customFieldDefs(context, "customer", true)),
     location: { ...location, city: location.city || (city === "待识别" ? "" : city) },
     lifecycleStatus: customer.lifecycleStatus === LIFECYCLE_ARCHIVED ? LIFECYCLE_ARCHIVED : LIFECYCLE_ACTIVE,
     archiveReason: customer.archiveReason || "",
@@ -2282,13 +2690,14 @@ function normalizeOpportunity(opportunity = {}, context = {}) {
     ? opportunity.followUps.map((item) => normalizeFollowUp(item, opportunity))
     : [normalizeFollowUp({ date: createdAt, author: opportunity.createdBy || ownerUser.name || "历史数据", note: "新增销售机会。", isSystem: true }, opportunity)];
   const latest = followUps[followUps.length - 1] || {};
-  const stage = STAGES.includes(opportunity.stage) ? opportunity.stage : "名单";
+  const stage = normalizeStageName(context, opportunity.stage, "名单");
   return {
     id: Number(opportunity.id || Date.now()),
     customerId: Number(opportunity.customerId || customer.id || 0),
     productId: product.id,
     productName: product.name,
     stage,
+    stageId: stageIdForName(context, stage) || opportunity.stageId,
     owner: opportunity.owner || ownerUser.name || customer.owner || "未分配",
     ownerId: opportunity.ownerId || ownerUser.id || customer.ownerId || "",
     followPerson: opportunity.followPerson || opportunity.owner || ownerUser.name || customer.followPerson || "未分配",
@@ -2309,6 +2718,7 @@ function normalizeOpportunity(opportunity = {}, context = {}) {
     paymentOwnerId: opportunity.paymentOwnerId || (opportunity.paymentAmount ? opportunity.ownerId || ownerUser.id : ""),
     paymentOwner: opportunity.paymentOwner || (opportunity.paymentAmount ? opportunity.owner || ownerUser.name : ""),
     lossReason: opportunity.lossReason || "",
+    customFields: normalizeCustomFields(opportunity.customFields, customFieldDefs(context, "opportunity", true)),
     ownershipStatus: [OWNERSHIP_PENDING, OWNERSHIP_LOCKED, OWNERSHIP_PUBLIC, OWNERSHIP_CLAIMABLE].includes(opportunity.ownershipStatus)
       ? opportunity.ownershipStatus
       : OWNERSHIP_LOCKED,
@@ -2317,16 +2727,16 @@ function normalizeOpportunity(opportunity = {}, context = {}) {
     publicPoolAt: opportunity.publicPoolAt || "",
     publicPoolReason: opportunity.publicPoolReason || "",
     ownershipHistory: Array.isArray(opportunity.ownershipHistory) ? opportunity.ownershipHistory : [],
-    leadAt: opportunity.leadAt || (STAGES.indexOf(stage) >= 1 ? latest.date || createdAt : ""),
-    opportunityAt: opportunity.opportunityAt || (STAGES.indexOf(stage) >= 2 ? latest.date || createdAt : ""),
-    dealAt: opportunity.dealAt || (stage === "成交" ? latest.date || createdAt : ""),
+    leadAt: opportunity.leadAt || (stageRank(context, stage) >= stageRank(context, "线索") ? latest.date || createdAt : ""),
+    opportunityAt: opportunity.opportunityAt || (stageRank(context, stage) >= stageRank(context, "商机") ? latest.date || createdAt : ""),
+    dealAt: opportunity.dealAt || (isWonStage(context, stage) ? latest.date || createdAt : ""),
     followUps
   };
 }
 
 function primaryOpportunity(state, customerId) {
   const items = (state.opportunities || []).filter((item) => Number(item.customerId) === Number(customerId));
-  return items.find((item) => item.stage !== "成交" && !isOpportunityPublicPool(item))
+  return items.find((item) => !isWonStage(state, item.stage) && !isOpportunityPublicPool(item, state))
     || items.find((item) => item.stage !== "成交")
     || items.slice().sort((a, b) => String(b.dealAt || b.createdAt).localeCompare(String(a.dealAt || a.createdAt)))[0]
     || null;
@@ -2336,7 +2746,7 @@ function syncCustomerCompatibility(state, customerId) {
   const customer = findCustomer(state.customers || [], customerId);
   const opportunity = primaryOpportunity(state, customerId);
   if (!customer || !opportunity) return customer;
-  ["stage", "owner", "ownerId", "followPerson", "unitId", "unit", "zone", "region", "orgPath", "amount", "demoAt", "quoteAmount", "expectedDealDate", "contractAmount", "paymentAmount", "paymentDate", "paymentOwnerId", "paymentOwner", "lossReason", "ownershipStatus", "claimUntil", "effectiveFollowUpAt", "publicPoolAt", "publicPoolReason", "ownershipHistory", "leadAt", "opportunityAt", "dealAt", "followUps"].forEach((field) => {
+  ["stage", "stageId", "owner", "ownerId", "followPerson", "unitId", "unit", "zone", "region", "orgPath", "amount", "demoAt", "quoteAmount", "expectedDealDate", "contractAmount", "paymentAmount", "paymentDate", "paymentOwnerId", "paymentOwner", "lossReason", "ownershipStatus", "claimUntil", "effectiveFollowUpAt", "publicPoolAt", "publicPoolReason", "ownershipHistory", "leadAt", "opportunityAt", "dealAt", "followUps"].forEach((field) => {
     customer[field] = opportunity[field];
   });
   return customer;
@@ -2345,7 +2755,7 @@ function syncCustomerCompatibility(state, customerId) {
 function opportunityView(state, opportunity) {
   const customer = findCustomer(state.customers || [], opportunity.customerId) || {};
   const latest = (opportunity.followUps || [])[opportunity.followUps.length - 1] || {};
-  const publicPool = opportunityPublicPoolInfo(opportunity);
+  const publicPool = opportunityPublicPoolInfo(opportunity, state);
   return {
     ...customer,
     ...opportunity,
@@ -2372,6 +2782,10 @@ function opportunityView(state, opportunity) {
     lastFollow: latest.date || "",
     nextFollow: latest.nextFollow || "",
     lastNote: latest.note || "",
+    customFields: {
+      ...(customer.customFields || {}),
+      ...(opportunity.customFields || {})
+    },
     followUps: (opportunity.followUps || []).map((item) => normalizeFollowUp(item, opportunity))
   };
 }
@@ -2413,33 +2827,33 @@ function resolveOpportunityOwner(state, viewer, customer, body = {}) {
   return { user: visible };
 }
 
-function validateOpportunityBusinessUpdate(previous = {}, body = {}) {
+function validateOpportunityBusinessUpdate(previous = {}, body = {}, state = {}) {
   const nextStage = body.stage || previous.stage || "名单";
   const stageChanged = nextStage !== previous.stage;
   const demoAt = body.demoAt !== undefined ? body.demoAt : previous.demoAt;
   const contractAmount = body.contractAmount !== undefined ? normalizeMoney(body.contractAmount) : normalizeMoney(previous.contractAmount);
   const paymentAmount = body.paymentAmount !== undefined ? normalizeMoney(body.paymentAmount) : normalizeMoney(previous.paymentAmount);
   const paymentDate = body.paymentDate !== undefined ? body.paymentDate : previous.paymentDate;
-  if (stageChanged && STAGES.indexOf(nextStage) >= STAGES.indexOf("商机") && !demoAt) return "进入商机前必须填写有效演示时间";
-  if (stageChanged && nextStage === "成交" && contractAmount <= 0) return "进入成交前必须填写合同金额";
+  if (stageChanged && stageRank(state, nextStage) >= stageRank(state, "商机") && !demoAt) return "进入商机前必须填写有效演示时间";
+  if (stageChanged && isWonStage(state, nextStage) && contractAmount <= 0) return "进入成交前必须填写合同金额";
   if (paymentAmount > 0 && !paymentDate) return "填写实际进款后必须选择进款日期";
   if (paymentDate && paymentAmount <= 0) return "填写进款日期前必须填写实际进款金额";
   return "";
 }
 
-function validateOpportunityAdvance(previous = {}, nextStage, body = {}) {
+function validateOpportunityAdvance(previous = {}, nextStage, body = {}, state = {}) {
   const note = String(body.note || "").trim();
   if (!note) return { error: "请填写本次跟进内容", field: "note" };
-  if (nextStage === "商机" && !String(body.demoAt || previous.demoAt || "").trim()) {
+  if (stageRank(state, nextStage) >= stageRank(state, "商机") && !String(body.demoAt || previous.demoAt || "").trim()) {
     return { error: "请填写有效演示日期", field: "demoAt" };
   }
-  if (nextStage === "成交" && normalizeMoney(body.contractAmount ?? previous.contractAmount) <= 0) {
+  if (isWonStage(state, nextStage) && normalizeMoney(body.contractAmount ?? previous.contractAmount) <= 0) {
     return { error: "请填写合同金额", field: "contractAmount" };
   }
-  if (nextStage === "成交" && !Number(body.paymentOwnerId || previous.paymentOwnerId)) {
+  if (isWonStage(state, nextStage) && !Number(body.paymentOwnerId || previous.paymentOwnerId)) {
     return { error: "请选择业绩归属人", field: "paymentOwnerId" };
   }
-  if (nextStage !== "成交" && !String(body.nextFollow || "").trim()) {
+  if (!isWonStage(state, nextStage) && !String(body.nextFollow || "").trim()) {
     return { error: "请选择下次跟进时间", field: "nextFollow" };
   }
   return null;
@@ -2454,8 +2868,12 @@ function lockOpportunityOwnership(opportunity, actor, reason) {
   opportunity.ownershipHistory = [...(opportunity.ownershipHistory || []), ownershipEvent("locked", opportunity, actor, actor, reason)];
 }
 
-function opportunityPublicPoolInfo(opportunity = {}, at = Date.now()) {
-  if (opportunity.stage === "成交") return { isPublic: false, at: "", reason: "" };
+function opportunityPublicPoolInfo(opportunity = {}, at = Date.now(), state = {}) {
+  if (at && typeof at === "object") {
+    state = at;
+    at = Date.now();
+  }
+  if (isWonStage(state, opportunity.stage) || opportunity.stage === "成交") return { isPublic: false, at: "", reason: "" };
   if ([OWNERSHIP_PUBLIC, OWNERSHIP_CLAIMABLE].includes(opportunity.ownershipStatus)) {
     return { isPublic: true, at: opportunity.publicPoolAt || opportunity.claimUntil || new Date(at).toISOString(), reason: opportunity.publicPoolReason || "inactive_30_days" };
   }
@@ -2466,14 +2884,19 @@ function opportunityPublicPoolInfo(opportunity = {}, at = Date.now()) {
   }
   const manual = (opportunity.followUps || []).filter((item) => !item.isSystem && String(item.note || "").trim()).slice(-1)[0];
   const activityAt = Date.parse(manual?.createdAt || manual?.date || opportunity.effectiveFollowUpAt || opportunity.createdAt || "");
-  if (Number.isFinite(activityAt) && activityAt + PUBLIC_POOL_DAYS * 86400000 <= at) {
-    return { isPublic: true, at: new Date(activityAt + PUBLIC_POOL_DAYS * 86400000).toISOString(), reason: "inactive_30_days" };
+  const poolDays = publicPoolDays(state);
+  if (Number.isFinite(activityAt) && activityAt + poolDays * 86400000 <= at) {
+    return { isPublic: true, at: new Date(activityAt + poolDays * 86400000).toISOString(), reason: `inactive_${poolDays}_days` };
   }
   return { isPublic: false, at: "", reason: "" };
 }
 
-function isOpportunityPublicPool(opportunity = {}, at = Date.now()) {
-  return opportunityPublicPoolInfo(opportunity, at).isPublic;
+function isOpportunityPublicPool(opportunity = {}, at = Date.now(), state = {}) {
+  if (at && typeof at === "object") {
+    state = at;
+    at = Date.now();
+  }
+  return opportunityPublicPoolInfo(opportunity, at, state).isPublic;
 }
 
 function canViewOpportunity(state, viewer, opportunity) {
@@ -2482,7 +2905,7 @@ function canViewOpportunity(state, viewer, opportunity) {
 }
 
 function canManageOpportunityAssignment(state, viewer, opportunity) {
-  if (!isOpportunityPublicPool(opportunity)) return canViewOpportunity(state, viewer, opportunity);
+  if (!isOpportunityPublicPool(opportunity, state)) return canViewOpportunity(state, viewer, opportunity);
   const role = findRole(state.roles, viewer.roleId, viewer.role);
   if (role.customerScope === "all") return true;
   if (role.customerScope === "self") return false;
@@ -2490,11 +2913,11 @@ function canManageOpportunityAssignment(state, viewer, opportunity) {
 }
 
 function visiblePublicPoolOpportunities(state, viewer) {
-  return (state.opportunities || []).filter((item) => isOpportunityPublicPool(item) && (findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED));
+  return (state.opportunities || []).filter((item) => isOpportunityPublicPool(item, state) && (findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED));
 }
 
-function sanitizePublicPoolOpportunity(customer = {}, opportunity = {}) {
-  const pool = opportunityPublicPoolInfo(opportunity);
+function sanitizePublicPoolOpportunity(state = {}, customer = {}, opportunity = {}) {
+  const pool = opportunityPublicPoolInfo(opportunity, state);
   return {
     id: opportunity.id,
     opportunityId: opportunity.id,
@@ -2505,6 +2928,7 @@ function sanitizePublicPoolOpportunity(customer = {}, opportunity = {}) {
     channelSource: customer.channelSource || "其他",
     productId: opportunity.productId,
     productName: opportunity.productName,
+    stageId: stageIdForName(state, opportunity.stage) || opportunity.stageId,
     stage: opportunity.stage,
     ownershipStatus: OWNERSHIP_PUBLIC,
     publicPoolAt: pool.at,
@@ -2518,7 +2942,7 @@ function sanitizePublicPoolOpportunity(customer = {}, opportunity = {}) {
 
 function claimOpportunityAtIndex(res, state, viewer, index, body = {}) {
   const previous = state.opportunities[index];
-  if (!isOpportunityPublicPool(previous)) return sendJson(res, 409, { error: "该机会已被认领或不在公海", code: "DUPLICATE_CUSTOMER" });
+  if (!isOpportunityPublicPool(previous, state)) return sendJson(res, 409, { error: "该机会已被认领或不在公海", code: "DUPLICATE_CUSTOMER" });
   if (!canOwnCustomerUser(state, viewer)) {
     return sendJson(res, 403, { error: "仅销售、主管和区域经理可以认领公海机会" });
   }
@@ -2547,7 +2971,7 @@ function claimOpportunityAtIndex(res, state, viewer, index, body = {}) {
     unit: viewer.unit || "",
     zone: viewer.zone || "",
     ownershipStatus: OWNERSHIP_PENDING,
-    claimUntil: addDaysToIso(now, CUSTOMER_CLAIM_DAYS),
+    claimUntil: addDaysToIso(now, claimProtectionDays(state)),
     effectiveFollowUpAt: "",
     publicPoolAt: "",
     publicPoolReason: "",
@@ -2563,7 +2987,7 @@ function claimOpportunityAtIndex(res, state, viewer, index, body = {}) {
 
 function assignOpportunity(state, previous, target, viewer) {
   const now = new Date().toISOString();
-  const wasPublic = isOpportunityPublicPool(previous);
+  const wasPublic = isOpportunityPublicPool(previous, state);
   return normalizeOpportunity({
     ...previous,
     owner: target.name,
@@ -2573,7 +2997,7 @@ function assignOpportunity(state, previous, target, viewer) {
     unit: target.unit || "",
     zone: target.zone || "",
     ownershipStatus: wasPublic ? OWNERSHIP_PENDING : OWNERSHIP_LOCKED,
-    claimUntil: wasPublic ? addDaysToIso(now, CUSTOMER_CLAIM_DAYS) : "",
+    claimUntil: wasPublic ? addDaysToIso(now, claimProtectionDays(state)) : "",
     effectiveFollowUpAt: wasPublic ? "" : previous.effectiveFollowUpAt,
     publicPoolAt: "",
     publicPoolReason: "",
@@ -2655,13 +3079,13 @@ function primaryCompetitorName(customer = {}) {
   return (profiles.find((item) => item.isPrimary) || profiles[0] || {}).brand || "";
 }
 
-function normalizeStageTimes(customer = {}, activities = [], createdAt = today()) {
+function normalizeStageTimes(customer = {}, activities = [], createdAt = today(), state = {}) {
   const activityDate = (stage) => (activities || [])
     .filter((item) => Number(item.customerId) === Number(customer.id) && item.type === stage && item.date)
     .map((item) => item.date)
     .sort()[0] || "";
-  const currentIndex = STAGES.indexOf(customer.stage || "名单");
-  const fallbackFor = (stage) => currentIndex >= STAGES.indexOf(stage)
+  const currentIndex = stageRank(state, customer.stage || "名单");
+  const fallbackFor = (stage) => currentIndex >= stageRank(state, stage)
     ? (activityDate(stage) || customer.lastFollow || createdAt)
     : "";
   return {
@@ -2720,7 +3144,8 @@ function normalizeVisit(visit = {}, context = {}) {
     lossReason: visit.lossReason || visit.reason || "",
     objections: visit.objections || "",
     result: visit.result || visit.note || "",
-    status: normalizeVisitStage(visit.status),
+    status: normalizeStageName(context, visit.status || "线索", "线索"),
+    customFields: normalizeCustomFields(visit.customFields, customFieldDefs(context, "visit", true)),
     latitude: Number(visit.latitude || 0),
     longitude: Number(visit.longitude || 0),
     city: visit.city || "",
@@ -2992,11 +3417,19 @@ function isCustomerClaimable(customer = {}) {
   return customerPublicPoolInfo(customer).isPublic;
 }
 
-function isCustomerPublicPool(customer = {}, at = Date.now()) {
-  return customerPublicPoolInfo(customer, at).isPublic;
+function isCustomerPublicPool(customer = {}, at = Date.now(), state = {}) {
+  if (at && typeof at === "object") {
+    state = at;
+    at = Date.now();
+  }
+  return customerPublicPoolInfo(customer, at, state).isPublic;
 }
 
-function customerPublicPoolInfo(customer = {}, at = Date.now()) {
+function customerPublicPoolInfo(customer = {}, at = Date.now(), state = {}) {
+  if (at && typeof at === "object") {
+    state = at;
+    at = Date.now();
+  }
   if (customer.lifecycleStatus === LIFECYCLE_ARCHIVED) return { isPublic: false, at: "", reason: "" };
   if (customer.stage === "成交") return { isPublic: false, at: "", reason: "" };
   if (!["名单", "线索", "商机"].includes(customer.stage || "名单")) return { isPublic: false, at: "", reason: "" };
@@ -3021,7 +3454,7 @@ function customerPublicPoolInfo(customer = {}, at = Date.now()) {
   const fallbackAt = customer.effectiveFollowUpAt || customer.createdAt || "";
   const activityAt = Date.parse(lastManualAt || fallbackAt);
   if (!Number.isFinite(activityAt)) return { isPublic: false, at: "", reason: "" };
-  const publicAt = activityAt + PUBLIC_POOL_DAYS * 24 * 60 * 60 * 1000;
+  const publicAt = activityAt + publicPoolDays(state) * 24 * 60 * 60 * 1000;
   if (publicAt <= at) {
     return { isPublic: true, at: new Date(publicAt).toISOString(), reason: "inactive_30_days" };
   }
@@ -3073,7 +3506,7 @@ function lockCustomerOwnership(customer, operator, reason) {
 
 function claimCustomerAtIndex(res, state, viewer, index) {
   const customerId = state.customers[index]?.id;
-  const opportunityIndex = state.opportunities.findIndex((item) => Number(item.customerId) === Number(customerId) && isOpportunityPublicPool(item));
+  const opportunityIndex = state.opportunities.findIndex((item) => Number(item.customerId) === Number(customerId) && isOpportunityPublicPool(item, state));
   if (opportunityIndex >= 0) return claimOpportunityAtIndex(res, state, viewer, opportunityIndex, { allowPlaceholderProduct: true });
   const role = findRole(state.roles, viewer.roleId, viewer.role);
   if (role.customerScope !== "self" && role.name !== "销售") {
@@ -3094,7 +3527,7 @@ function claimCustomerAtIndex(res, state, viewer, index) {
     zone: viewer.zone || "",
     region: viewer.zone || previous.region,
     ownershipStatus: OWNERSHIP_PENDING,
-    claimUntil: addDaysToIso(now, CUSTOMER_CLAIM_DAYS),
+    claimUntil: addDaysToIso(now, claimProtectionDays(state)),
     effectiveFollowUpAt: "",
     publicPoolAt: "",
     publicPoolReason: "",
@@ -3154,7 +3587,7 @@ function visitCustomerConflict(state, viewer, body = {}) {
     if (!opportunity || (referenced && Number(opportunity.customerId) !== Number(referenced.id))) {
       return { status: 400, payload: { error: "销售机会与所选工厂不一致", code: "OPPORTUNITY_CUSTOMER_MISMATCH" } };
     }
-    if (isOpportunityPublicPool(opportunity)) {
+    if (isOpportunityPublicPool(opportunity, state)) {
       return { status: 409, payload: { error: "公海销售机会需先认领", code: "CUSTOMER_CLAIM_REQUIRED" } };
     }
     if (!canViewOpportunity(state, viewer, opportunity)) {
@@ -3184,10 +3617,10 @@ function stableId(prefix, value) {
 function publicState(state, viewer = null) {
   const scoped = scopeStateForUser(state, viewer);
   const { securityLogs, geocodeJobs, ...safeState } = scoped;
-  const privateOpportunities = (scoped.opportunities || []).filter((item) => !isOpportunityPublicPool(item));
+  const privateOpportunities = (scoped.opportunities || []).filter((item) => !isOpportunityPublicPool(item, state));
   const privateCustomerIds = new Set(privateOpportunities.map((item) => Number(item.customerId)));
   const sanitizedPublicOpportunities = viewer
-    ? visiblePublicPoolOpportunities(state, viewer).map((item) => sanitizePublicPoolOpportunity(findCustomer(state.customers, item.customerId), item))
+    ? visiblePublicPoolOpportunities(state, viewer).map((item) => sanitizePublicPoolOpportunity(state, findCustomer(state.customers, item.customerId), item))
     : [];
   return {
     ...safeState,
@@ -3199,19 +3632,20 @@ function publicState(state, viewer = null) {
 
 function buildCustomerBoard(state, viewer) {
   const privateOpportunities = (state.opportunities || [])
-    .filter((item) => !isOpportunityPublicPool(item) && canViewOpportunity(state, viewer, item))
+    .filter((item) => !isOpportunityPublicPool(item, state) && canViewOpportunity(state, viewer, item))
     .filter((item) => findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED)
     .map((item) => opportunityView(state, item));
   const publicItems = visiblePublicPoolOpportunities(state, viewer).map((opportunity) => {
     const customer = findCustomer(state.customers || [], opportunity.customerId);
-    return sanitizePublicPoolOpportunity(customer, opportunity);
+    return sanitizePublicPoolOpportunity(state, customer, opportunity);
   });
   return {
     backendVersion: BACKEND_VERSION,
     moneyUnit: MONEY_UNIT,
-    stages: state.stages || STAGES,
+    businessConfig: getBusinessConfig(state),
+    stages: stageNames(state, { includeInactive: true, includeUsed: true }),
     items: privateOpportunities,
-    counts: Object.fromEntries((state.stages || STAGES).map((stage) => [stage, privateOpportunities.filter((item) => item.stage === stage).length])),
+    counts: Object.fromEntries(stageNames(state, { includeInactive: true, includeUsed: true }).map((stage) => [stage, privateOpportunities.filter((item) => item.stage === stage).length])),
     publicPool: { count: publicItems.length, items: publicItems }
   };
 }
@@ -3224,7 +3658,7 @@ function publicUser(user = {}) {
 function toMiniState(state, viewer = null) {
   const next = publicState(state, viewer);
   const privateOpportunities = (state.opportunities || [])
-    .filter((item) => !isOpportunityPublicPool(item) && canViewOpportunity(state, viewer, item))
+    .filter((item) => !isOpportunityPublicPool(item, state) && canViewOpportunity(state, viewer, item))
     .filter((item) => findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED);
   const privateCustomerIds = new Set(privateOpportunities.map((item) => Number(item.customerId)));
   return {
@@ -3237,7 +3671,7 @@ function toMiniState(state, viewer = null) {
 function scopeStateForUser(state, viewer = null) {
   if (!viewer) return state;
   const user = state.users.find((item) => Number(item.id) === Number(viewer.id)) || viewer;
-  const opportunities = (state.opportunities || []).filter((item) => canViewOpportunity(state, user, item) || isOpportunityPublicPool(item));
+  const opportunities = (state.opportunities || []).filter((item) => canViewOpportunity(state, user, item) || isOpportunityPublicPool(item, state));
   const opportunityCustomerIds = new Set(opportunities.map((item) => Number(item.customerId)));
   return {
     ...state,
@@ -3516,15 +3950,15 @@ function buildTargetManagement(state, viewer, month) {
   };
 }
 
-function validateCustomerBusinessUpdate(previous = {}, body = {}, creating = false) {
+function validateCustomerBusinessUpdate(previous = {}, body = {}, creating = false, state = {}) {
   const nextStage = body.stage || previous.stage || "名单";
   const stageChanged = creating || nextStage !== previous.stage;
   const demoAt = body.demoAt !== undefined ? body.demoAt : previous.demoAt;
   const contractAmount = body.contractAmount !== undefined ? normalizeMoney(body.contractAmount) : normalizeMoney(previous.contractAmount);
   const paymentAmount = body.paymentAmount !== undefined ? normalizeMoney(body.paymentAmount) : normalizeMoney(previous.paymentAmount);
   const paymentDate = body.paymentDate !== undefined ? body.paymentDate : previous.paymentDate;
-  if (stageChanged && STAGES.indexOf(nextStage) >= STAGES.indexOf("商机") && !demoAt) return "进入商机前必须填写有效演示时间";
-  if (stageChanged && nextStage === "成交" && contractAmount <= 0) return "进入成交前必须填写合同金额";
+  if (stageChanged && stageRank(state, nextStage) >= stageRank(state, "商机") && !demoAt) return "进入商机前必须填写有效演示时间";
+  if (stageChanged && isWonStage(state, nextStage) && contractAmount <= 0) return "进入成交前必须填写合同金额";
   if (paymentAmount > 0 && !paymentDate) return "填写实际进款后必须选择进款日期";
   if (paymentDate && paymentAmount <= 0) return "填写进款日期前必须填写实际进款金额";
   return "";
@@ -3602,21 +4036,29 @@ function buildTrend(customers, range, revenueCustomers = customers) {
   return [...buckets.values()].map((item) => ({ ...item, revenue: normalizeMoney(item.revenue), contract: normalizeMoney(item.contract) }));
 }
 
-function buildFunnel(customers, range) {
+function buildFunnel(customers, range, state = {}) {
   const rollingStart = addDays(range.end, -89);
-  const fields = ["createdAt", "leadAt", "opportunityAt", "dealAt"];
-  const thresholds = [7, 15, 30, 0];
-  return STAGES.map((stage, index) => {
-    const field = fields[index];
-    const nextField = fields[index + 1];
+  const fieldForStage = (stage) => {
+    if (stage === "名单") return "createdAt";
+    if (stage === "线索") return "leadAt";
+    if (stage === "商机") return "opportunityAt";
+    if (stage === "成交") return "dealAt";
+    return "createdAt";
+  };
+  const stages = getStageDefs(state, { includeInactive: false });
+  const fallbackStages = DEFAULT_STAGE_DEFS;
+  return (stages.length ? stages : fallbackStages).map((stageDef, index, list) => {
+    const stage = stageDef.name;
+    const field = fieldForStage(stage);
+    const nextField = list[index + 1] ? fieldForStage(list[index + 1].name) : "";
     const periodCount = customers.filter((item) => inRange(item[field], range.start, range.end)).length;
     const cohort = customers.filter((item) => inRange(item[field], rollingStart, range.end));
     const converted = nextField ? cohort.filter((item) => item[nextField] && item[nextField] <= range.end).length : cohort.length;
     const stayValues = customers
       .filter((item) => item[field] && item[field] <= range.end)
       .map((item) => daysBetween(item[field], item[nextField] && item[nextField] <= range.end ? item[nextField] : range.end));
-    const overdue = thresholds[index]
-      ? customers.filter((item) => item.stage === stage && item[field] && daysBetween(item[field], range.end) > thresholds[index]).length
+    const overdue = stageDef.overdueDays
+      ? customers.filter((item) => item.stage === stage && item[field] && daysBetween(item[field], range.end) > stageDef.overdueDays).length
       : 0;
     return {
       stage,
@@ -3624,7 +4066,7 @@ function buildFunnel(customers, range) {
       conversionRate: nextField ? percentage(converted, cohort.length) : 100,
       averageStayDays: average(stayValues),
       overdue,
-      thresholdDays: thresholds[index]
+      thresholdDays: stageDef.overdueDays || 0
     };
   });
 }
@@ -3755,7 +4197,7 @@ function buildDashboard(state, viewer, query = {}) {
   const activeCustomers = (state.customers || []).filter((item) => item.lifecycleStatus !== LIFECYCLE_ARCHIVED);
   const activeCustomerIds = new Set(activeCustomers.map((item) => Number(item.id)));
   const activeOpportunities = (state.opportunities || [])
-    .filter((item) => activeCustomerIds.has(Number(item.customerId)) && !isOpportunityPublicPool(item))
+    .filter((item) => activeCustomerIds.has(Number(item.customerId)) && !isOpportunityPublicPool(item, state))
     .map((item) => opportunityView(state, item));
   const dashboardState = { ...state, customers: activeOpportunities };
   const publicPoolCount = visiblePublicPoolOpportunities(state, viewer).filter((item) => recordMatchesScope(state, opportunityView(state, item), scope)).length;
@@ -3778,7 +4220,7 @@ function buildDashboard(state, viewer, query = {}) {
   const rollingDeals = rollingOpportunities.filter((item) => item.dealAt && item.dealAt <= range.end);
   const overdueOpportunities = customers.filter((item) => item.stage === "商机" && item.nextFollow && item.nextFollow < today());
   const target = effectiveTarget(state, range.month, scope);
-  const funnel = buildFunnel(customers, range);
+  const funnel = buildFunnel(customers, range, state);
   const summary = {
     revenue: normalizeMoney(revenue),
     contract: normalizeMoney(contract),
@@ -3814,6 +4256,8 @@ function buildDashboard(state, viewer, query = {}) {
     range,
     scope,
     scopeOptions,
+    businessConfig: getBusinessConfig(state),
+    enabledTargetFields: getBusinessConfig(state).performance.enabledTargetFields,
     canManageTargets: canManageTargets(state, viewer),
     target,
     summary,
@@ -3836,7 +4280,7 @@ function canAssignCustomers(state, user) {
 
 function buildAssignedCustomer(state, viewer, customer, target, body = {}) {
   const previousStage = customer.stage;
-  const wasPublicPool = isCustomerPublicPool(customer);
+  const wasPublicPool = isCustomerPublicPool(customer, state);
   const note = `${viewer.name || "管理员"}已将客户分配给${target.name}。`;
   const next = normalizeCustomer({
     ...customer,
@@ -3848,7 +4292,7 @@ function buildAssignedCustomer(state, viewer, customer, target, body = {}) {
     zone: target.zone || "",
     region: target.zone || customer.region,
     ownershipStatus: wasPublicPool ? OWNERSHIP_PENDING : OWNERSHIP_LOCKED,
-    claimUntil: wasPublicPool ? addDaysToIso(new Date().toISOString(), CUSTOMER_CLAIM_DAYS) : customer.claimUntil,
+    claimUntil: wasPublicPool ? addDaysToIso(new Date().toISOString(), claimProtectionDays(state)) : customer.claimUntil,
     effectiveFollowUpAt: wasPublicPool ? "" : customer.effectiveFollowUpAt,
     publicPoolAt: "",
     publicPoolReason: "",
@@ -3872,8 +4316,8 @@ function buildAssignedCustomer(state, viewer, customer, target, body = {}) {
   return { next, previousStage };
 }
 
-function isCustomerAssignable(customer = {}) {
-  if (isCustomerPublicPool(customer)) return customer.stage !== "成交";
+function isCustomerAssignable(customer = {}, state = {}) {
+  if (isCustomerPublicPool(customer, state)) return !isWonStage(state, customer.stage);
   if (customer.stage === "名单") return true;
   if (!["线索", "商机"].includes(customer.stage)) return false;
   const latest = latestCustomerFollow(customer);
@@ -4275,6 +4719,7 @@ async function importCustomers(req, viewer, target = "") {
     zone: ownerUser.zone || "",
     channelSource: multipart.fields.channelSource || "其他",
     channelSources: state.channelSources || CHANNEL_SOURCES,
+    businessConfig: state.businessConfig,
     createdBy: viewer.name,
     followPerson: ownerUser.name,
     inputMoneyUnit: multipart.fields.inputMoneyUnit || (multipart.fields.moneyUnit === MONEY_UNIT ? MONEY_UNIT : "wan")
@@ -4323,6 +4768,14 @@ async function importCustomers(req, viewer, target = "") {
       failed.push({ rowNumber, name: row.name || "", phone: row.phone || "", reason: "同城存在名称相似客户，请单个添加并确认" });
       return;
     }
+    const customerCustomFields = normalizeCustomFields(row.customerCustomFields || {}, customFieldDefs(state, "customer", true));
+    const opportunityCustomFields = normalizeCustomFields(row.opportunityCustomFields || {}, customFieldDefs(state, "opportunity", true));
+    const customerFieldError = !customer ? validateCustomFieldValues(state, "customer", customerCustomFields) : "";
+    const opportunityFieldError = validateCustomFieldValues(state, "opportunity", opportunityCustomFields);
+    if (customerFieldError || opportunityFieldError) {
+      failed.push({ rowNumber, name: row.name || "", phone: row.phone || "", reason: customerFieldError || opportunityFieldError });
+      return;
+    }
     const now = new Date().toISOString();
     if (!customer) {
       customer = normalizeCustomer({
@@ -4335,6 +4788,7 @@ async function importCustomers(req, viewer, target = "") {
         address: row.address,
         city: row.city || extractCity(row.address || row.region) || "待识别",
         region: row.region,
+        customFields: customerCustomFields,
         competitorProfiles: normalizeCompetitorProfiles([], state.competitors, row.software),
         createdAt: today(),
         location: { latitude: 0, longitude: 0, province: "", city: row.city || extractCity(row.address || row.region) || "", district: "", address: row.address || "", status: row.address ? "pending" : "unknown" },
@@ -4360,8 +4814,9 @@ async function importCustomers(req, viewer, target = "") {
       createdBy: viewer.name,
       createdAt: today(),
       amount: row.amountProvided ? row.amount : normalizeMoney(product.price) || DEFAULT_EXPECTED_AMOUNT,
+      customFields: opportunityCustomFields,
       ownershipStatus: rowImportToPublicPool ? OWNERSHIP_PUBLIC : OWNERSHIP_PENDING,
-      claimUntil: rowImportToPublicPool ? "" : addDaysToIso(now, CUSTOMER_CLAIM_DAYS),
+      claimUntil: rowImportToPublicPool ? "" : addDaysToIso(now, claimProtectionDays(state)),
       effectiveFollowUpAt: "",
       publicPoolAt: rowImportToPublicPool ? now : "",
       publicPoolReason: rowImportToPublicPool ? "operations_import" : "",
@@ -4436,10 +4891,11 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
   if (!rows.length) return [];
   const sourceHeaders = rows[0].map((cell) => String(cell || "").trim());
   const rawHeaders = sourceHeaders.map((cell) => normalizeHeader(cell));
-  const hasHeader = rawHeaders.some((header) => ["name", "phone", "channelSource", "address", "stage"].includes(header) || IMPORT_STATUSES.includes(header));
+  const configuredImportStatuses = [...stageNames({ businessConfig: defaults.businessConfig || DEFAULT_BUSINESS_CONFIG }), PUBLIC_POOL_STATUS];
+  const hasHeader = rawHeaders.some((header) => ["name", "phone", "channelSource", "address", "stage"].includes(header) || configuredImportStatuses.includes(header));
   const headers = hasHeader ? rawHeaders : ["name", "phone", "region", "amount", "software"];
   const dataRows = hasHeader ? rows.slice(1) : rows;
-  const stageHeader = rawHeaders.find((header) => IMPORT_STATUSES.includes(header));
+  const stageHeader = rawHeaders.find((header) => configuredImportStatuses.includes(header));
   const amountHeaderIndex = rawHeaders.findIndex((header) => header === "amount");
   const amountHeaderText = amountHeaderIndex >= 0 ? sourceHeaders[amountHeaderIndex] : "";
   const inputMoneyUnit = /万/.test(amountHeaderText) ? "wan" : /元/.test(amountHeaderText) ? MONEY_UNIT : defaults.inputMoneyUnit || "wan";
@@ -4482,7 +4938,7 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
         record[header] = row[index];
       });
       const stageCell = row[headers.findIndex((header) => header === "stage")];
-      const requestedStatus = normalizeImportStatus(stageCell) || normalizeImportStatus(stageHeader) || normalizeImportStatus(defaults.stage) || "名单";
+      const requestedStatus = normalizeImportStatus(stageCell, defaults) || normalizeImportStatus(stageHeader, defaults) || normalizeImportStatus(defaults.stage, defaults) || "名单";
       const importToPublicPool = requestedStatus === PUBLIC_POOL_STATUS;
       const stage = importToPublicPool ? "名单" : requestedStatus;
       const amountProvided = String(record.amount || "").trim() !== "";
@@ -4506,6 +4962,8 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
         amountProvided,
         software: record.software || "待补充",
         productName: record.productName || "",
+        customerCustomFields: importCustomFieldsFromRecord(record, defaults, "customer"),
+        opportunityCustomFields: importCustomFieldsFromRecord(record, defaults, "opportunity"),
         lastNote: record.lastNote || record.followRecord || "名单文件导入。",
         lastFollow: normalizeDateText(record.lastFollow || ""),
         nextFollow: normalizeDateText(record.nextFollow || ""),
@@ -4544,9 +5002,10 @@ function normalizeHeader(value) {
   return "";
 }
 
-function normalizeImportStatus(value) {
+function normalizeImportStatus(value, defaults = {}) {
   const text = String(value || "").trim();
-  return IMPORT_STATUSES.includes(text) ? text : "";
+  const configured = [...stageNames({ businessConfig: defaults.businessConfig || DEFAULT_BUSINESS_CONFIG }), PUBLIC_POOL_STATUS];
+  return configured.includes(text) ? text : "";
 }
 
 function normalizeChannelSource(value, sources = CHANNEL_SOURCES) {
@@ -4840,11 +5299,11 @@ function canViewMapCustomer(state, viewer, customer) {
 function customerMapAccess(state, viewer, customer = {}) {
   if (!viewer || !customer?.id) return { mode: "none", opportunities: [] };
   const opportunities = (state.opportunities || []).filter((item) => Number(item.customerId) === Number(customer.id));
-  const privateOpportunities = opportunities.filter((item) => !isOpportunityPublicPool(item) && canViewOpportunity(state, viewer, item));
+  const privateOpportunities = opportunities.filter((item) => !isOpportunityPublicPool(item, state) && canViewOpportunity(state, viewer, item));
   if (privateOpportunities.length || (!opportunities.length && canViewRecord(state, viewer, customer))) {
     return { mode: "private", opportunities: privateOpportunities };
   }
-  const publicOpportunities = opportunities.filter(isOpportunityPublicPool);
+  const publicOpportunities = opportunities.filter((item) => isOpportunityPublicPool(item, state));
   if (customer.lifecycleStatus !== LIFECYCLE_ARCHIVED && publicOpportunities.length) {
     return { mode: "public", opportunities: publicOpportunities };
   }
@@ -5107,6 +5566,10 @@ function buildCustomerAiContext(state, customer, opportunity = null, viewer = nu
     visits: visits.slice(0, 10),
     software: customer.software,
     competitorProfiles: customer.competitorProfiles || [],
+    customFields: {
+      ...(customer.customFields || {}),
+      ...(opportunity.customFields || {})
+    },
     demoAt: selected.demoAt || "",
     quoteAmount: selected.quoteAmount || 0,
     expectedDealDate: selected.expectedDealDate || "",

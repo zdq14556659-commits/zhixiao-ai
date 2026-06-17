@@ -41,6 +41,18 @@ const DEFAULT_PRODUCTS = [
   { id: "product-render", name: "渲染软件", price: 0, active: true },
   { id: "product-other", name: "其他", price: 0, active: true }
 ];
+const DEFAULT_BUSINESS_CONFIG = {
+  salesStages: [
+    { id: "stage-list", name: "名单", legacyName: "名单", sort: 10, active: true, type: "start" },
+    { id: "stage-lead", name: "线索", legacyName: "线索", sort: 20, active: true, type: "normal" },
+    { id: "stage-opportunity", name: "商机", legacyName: "商机", sort: 30, active: true, type: "normal" },
+    { id: "stage-deal", name: "成交", legacyName: "成交", sort: 40, active: true, type: "won" }
+  ],
+  customFields: [],
+  followTemplates: [],
+  map: { pointPopupFields: ["name", "stage", "productName", "owner", "phone", "address"], visitFields: ["factory", "phone", "status", "software", "result", "photos"] },
+  performance: { claimProtectionDays: 3, publicPoolDays: 30 }
+};
 const LEGACY_DEMO_UNIT_IDS = [
   "unit-east-custom",
   "unit-south-custom",
@@ -116,6 +128,7 @@ function migrateLocalState(state = seedState) {
     ...state,
     version: "mini-v7",
     channelSources,
+    businessConfig: state.businessConfig || DEFAULT_BUSINESS_CONFIG,
     products: state.products?.length ? state.products : DEFAULT_PRODUCTS,
     units: (state.units || []).filter((unit) => unit && !LEGACY_DEMO_UNIT_IDS.includes(unit.id)),
     users: (state.users || []).map((user) => LEGACY_DEMO_UNIT_IDS.includes(user.unitId)
@@ -128,6 +141,7 @@ const seedState = {
   version: "mini-v6",
   currentUserId: 0,
   stages: ["名单", "线索", "商机", "成交"],
+  businessConfig: DEFAULT_BUSINESS_CONFIG,
   zones: ZONES,
   products: DEFAULT_PRODUCTS,
   channelSources: CHANNEL_SOURCES,
@@ -280,6 +294,7 @@ App({
     backendVersion: "backend-v9",
     moneyUnit: "yuan",
     channelSources: CHANNEL_SOURCES,
+    businessConfig: DEFAULT_BUSINESS_CONFIG,
     stageColors: {
       名单: "#64748b",
       线索: "#409eff",
@@ -314,6 +329,7 @@ App({
       .map((item) => String(typeof item === "string" ? item : item.name || "").trim())
       .filter(Boolean);
     this.globalData.channelSources = [...new Set([...(state.channelSources?.length ? [] : CHANNEL_SOURCES), ...sources])];
+    this.globalData.businessConfig = state.businessConfig || DEFAULT_BUSINESS_CONFIG;
     wx.setStorageSync(STORAGE_KEY, state);
     this.saveRemoteState(state);
   },
@@ -436,6 +452,7 @@ App({
             .map((item) => String(typeof item === "string" ? item : item.name || "").trim())
             .filter(Boolean);
           this.globalData.channelSources = [...new Set([...(nextState.channelSources?.length ? [] : CHANNEL_SOURCES), ...sources])];
+          this.globalData.businessConfig = nextState.businessConfig || DEFAULT_BUSINESS_CONFIG;
           wx.setStorageSync(STORAGE_KEY, nextState);
           if (callback) callback(nextState);
         } else if (res.statusCode === 401) {
@@ -487,6 +504,44 @@ App({
   getRoles() {
     const state = this.getState();
     return state.roles && state.roles.length ? state.roles : DEFAULT_ROLES;
+  },
+
+  businessConfig() {
+    const state = this.getState();
+    return { ...DEFAULT_BUSINESS_CONFIG, ...(state.businessConfig || {}), map: { ...DEFAULT_BUSINESS_CONFIG.map, ...(state.businessConfig?.map || {}) }, performance: { ...DEFAULT_BUSINESS_CONFIG.performance, ...(state.businessConfig?.performance || {}) } };
+  },
+
+  stageDefs(includeInactive = false) {
+    return (this.businessConfig().salesStages || DEFAULT_BUSINESS_CONFIG.salesStages)
+      .filter((stage) => includeInactive || stage.active !== false)
+      .sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0));
+  },
+
+  activeStageNames() {
+    const names = this.stageDefs(false).map((stage) => stage.name).filter(Boolean);
+    return names.length ? names : ["名单", "线索", "商机", "成交"];
+  },
+
+  isWonStage(stageName) {
+    const stage = this.stageDefs(true).find((item) => item.name === stageName || item.legacyName === stageName) || {};
+    return stage.type === "won" || stageName === "成交";
+  },
+
+  stageRank(stageName) {
+    return this.stageDefs(true).findIndex((item) => item.name === stageName || item.legacyName === stageName);
+  },
+
+  customFieldDefs(module) {
+    return (this.businessConfig().customFields || [])
+      .filter((field) => field.module === module && field.active !== false)
+      .sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0));
+  },
+
+  followTemplates(stageName = "") {
+    const stage = this.stageDefs(true).find((item) => item.name === stageName || item.legacyName === stageName) || {};
+    return (this.businessConfig().followTemplates || [])
+      .filter((item) => item.active !== false && (!item.stageId || item.stageId === stage.id))
+      .sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0));
   },
 
   getUnits() {

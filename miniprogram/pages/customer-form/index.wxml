@@ -52,6 +52,13 @@
           <input name="amount" type="digit" value="{{form.amount}}" placeholder="150000" />
         </view>
       </view>
+      <view wx:if="{{customerCustomFields.length}}" class="section-divider">客户自定义字段</view>
+      <view wx:for="{{customerCustomFields}}" wx:key="key" class="form-item">
+        <text class="label">{{item.label}}{{item.required ? ' *' : ''}}</text>
+        <textarea wx:if="{{item.type === 'textarea'}}" value="{{item.value}}" data-module="customer" data-index="{{index}}" bindinput="onCustomFieldInput" placeholder="{{item.placeholder}}"></textarea>
+        <switch wx:elif="{{item.type === 'boolean'}}" checked="{{item.checked}}" data-module="customer" data-index="{{index}}" bindchange="onCustomFieldSwitch" />
+        <input wx:else value="{{item.value}}" data-module="customer" data-index="{{index}}" bindinput="onCustomFieldInput" placeholder="{{item.placeholder || item.optionText}}" />
+      </view>
       <view class="section-divider row">
         <text>联系人档案</text>
         <button class="plain-btn section-add" type="button" bindtap="addContact">添加联系人</button>
@@ -146,6 +153,13 @@
       <view class="form-item">
         <text class="label">未成交原因</text>
         <input name="lossReason" value="{{form.lossReason}}" placeholder="如：预算、决策、竞品、暂缓上线" />
+      </view>
+      <view wx:if="{{opportunityCustomFields.length}}" class="section-divider">商机自定义字段</view>
+      <view wx:for="{{opportunityCustomFields}}" wx:key="key" class="form-item">
+        <text class="label">{{item.label}}{{item.required ? ' *' : ''}}</text>
+        <textarea wx:if="{{item.type === 'textarea'}}" value="{{item.value}}" data-module="opportunity" data-index="{{index}}" bindinput="onCustomFieldInput" placeholder="{{item.placeholder}}"></textarea>
+        <switch wx:elif="{{item.type === 'boolean'}}" checked="{{item.checked}}" data-module="opportunity" data-index="{{index}}" bindchange="onCustomFieldSwitch" />
+        <input wx:else value="{{item.value}}" data-module="opportunity" data-index="{{index}}" bindinput="onCustomFieldInput" placeholder="{{item.placeholder || item.optionText}}" />
       </view>
       <view class="form-item">
         <text class="label">客户地址</text>

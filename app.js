@@ -10,7 +10,7 @@ function getWebApiBase() {
 const API_BASE = getWebApiBase();
 const AUTH_KEY = "zhixiao-web-auth";
 const today = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
-const stages = ["名单", "线索", "商机", "成交"];
+let stages = ["名单", "线索", "商机", "成交"];
 const defaultChannelSources = ["自媒体", "官网留言", "自主注册", "渠道介绍", "企查查", "客源汇", "公众号", "地推", "其他"];
 let channelSources = [...defaultChannelSources];
 const zones = ["东部战区", "南部战区", "西部战区", "北部战区", "中部战区"];
@@ -32,6 +32,53 @@ const orgTypeOptions = [
   { value: "unit", label: "单位" },
   { value: "team", label: "小组" }
 ];
+const defaultBusinessConfig = {
+  version: 1,
+  mode: "single",
+  coreFields: [],
+  customFields: [],
+  salesStages: [
+    { id: "stage-list", name: "名单", legacyName: "名单", sort: 10, active: true, color: "#64748b", type: "start", requiredFields: [], overdueDays: 7 },
+    { id: "stage-lead", name: "线索", legacyName: "线索", sort: 20, active: true, color: "#409eff", type: "normal", requiredFields: [], overdueDays: 15 },
+    { id: "stage-opportunity", name: "商机", legacyName: "商机", sort: 30, active: true, color: "#8b5cf6", type: "normal", requiredFields: ["demoAt"], overdueDays: 30 },
+    { id: "stage-deal", name: "成交", legacyName: "成交", sort: 40, active: true, color: "#67c23a", type: "won", requiredFields: ["contractAmount", "paymentOwnerId"], overdueDays: 0 }
+  ],
+  followTemplates: [],
+  map: {
+    pointPopupFields: ["name", "stage", "productName", "owner", "phone", "address", "competitor", "equipment", "lastVisitedAt"],
+    filters: ["stage", "pointStatus", "ownerId", "unitId", "zone", "city", "software", "equipment"],
+    visitFields: ["factory", "phone", "status", "software", "cuttingDevice", "drillingDevice", "lossReason", "result", "photos"]
+  },
+  performance: {
+    enabledTargetFields: ["revenueTarget", "contractTarget", "listTarget", "leadTarget", "opportunityTarget", "dealTarget"],
+    claimProtectionDays: 3,
+    publicPoolDays: 30,
+    revenueAttribution: "paymentOwner"
+  }
+};
+const customFieldTypes = [
+  { value: "text", label: "单行文本" },
+  { value: "textarea", label: "多行文本" },
+  { value: "number", label: "数字" },
+  { value: "money", label: "金额" },
+  { value: "date", label: "日期" },
+  { value: "select", label: "单选" },
+  { value: "multi_select", label: "多选" },
+  { value: "boolean", label: "开关" }
+];
+const customFieldModules = [
+  { value: "customer", label: "客户主档" },
+  { value: "opportunity", label: "销售机会" },
+  { value: "visit", label: "地推拜访" }
+];
+const targetFieldLabels = {
+  revenueTarget: "进款目标",
+  contractTarget: "签单目标",
+  listTarget: "新增名单",
+  leadTarget: "转化线索",
+  opportunityTarget: "转化商机",
+  dealTarget: "成交客户"
+};
 
 let state = { users: [], customers: [], opportunities: [], products: [], visits: [], knowledge: [], stages, roles: defaultRoles, units: [], competitors: [], routes: [], channelSources: [] };
 let currentStage = "名单";
@@ -61,6 +108,108 @@ let collapsedUserUnitIds = new Set();
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
+
+function businessConfig() {
+  const incoming = state.businessConfig || {};
+  return {
+    ...defaultBusinessConfig,
+    ...incoming,
+    salesStages: Array.isArray(incoming.salesStages) && incoming.salesStages.length ? incoming.salesStages : defaultBusinessConfig.salesStages,
+    customFields: Array.isArray(incoming.customFields) ? incoming.customFields : [],
+    followTemplates: Array.isArray(incoming.followTemplates) ? incoming.followTemplates : defaultBusinessConfig.followTemplates,
+    map: { ...defaultBusinessConfig.map, ...(incoming.map || {}) },
+    performance: { ...defaultBusinessConfig.performance, ...(incoming.performance || {}) }
+  };
+}
+
+function configuredStageDefs(options = {}) {
+  const used = new Set([...(state.stages || []), ...(state.opportunities || []).map((item) => item.stage), ...(state.customers || []).map((item) => item.stage)].filter(Boolean));
+  return (businessConfig().salesStages || [])
+    .filter((stage) => options.includeInactive || stage.active !== false || used.has(stage.name))
+    .sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0));
+}
+
+function activeStageNames() {
+  return configuredStageDefs().map((stage) => stage.name);
+}
+
+function allStageNames() {
+  return configuredStageDefs({ includeInactive: true }).map((stage) => stage.name);
+}
+
+function stageDefByName(name) {
+  const text = String(name || "").trim();
+  return configuredStageDefs({ includeInactive: true }).find((stage) => stage.name === text || stage.legacyName === text) || {};
+}
+
+function isWonStageName(name) {
+  return stageDefByName(name).type === "won" || name === "成交";
+}
+
+function stageRankName(name) {
+  const list = configuredStageDefs({ includeInactive: true });
+  return list.findIndex((stage) => stage.name === name || stage.legacyName === name);
+}
+
+function nextStageName(current) {
+  const list = configuredStageDefs();
+  const index = list.findIndex((stage) => stage.name === current || stage.legacyName === current);
+  return list[index + 1]?.name || "";
+}
+
+function updateConfiguredStagesFromState() {
+  const names = configuredStageDefs({ includeInactive: true }).map((stage) => stage.name);
+  stages = names.length ? names : ["名单", "线索", "商机", "成交"];
+}
+
+function customFieldDefs(module, options = {}) {
+  return (businessConfig().customFields || [])
+    .filter((field) => field.module === module && (options.includeInactive || field.active !== false))
+    .sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0));
+}
+
+function customFieldValueHtml(field, value = "") {
+  if (field.type === "textarea") return `<textarea name="${escapeHtml(field.key)}" rows="2" placeholder="${escapeHtml(field.placeholder || "")}">${escapeHtml(value || "")}</textarea>`;
+  if (field.type === "date") return `<input name="${escapeHtml(field.key)}" type="date" value="${escapeHtml(value || "")}" />`;
+  if (field.type === "number" || field.type === "money") return `<input name="${escapeHtml(field.key)}" type="number" step="${field.type === "money" ? "0.01" : "1"}" value="${escapeHtml(value || "")}" placeholder="${escapeHtml(field.placeholder || "")}" />`;
+  if (field.type === "boolean") return `<label class="checkbox-line compact"><input name="${escapeHtml(field.key)}" type="checkbox" ${value ? "checked" : ""} />${escapeHtml(field.label)}</label>`;
+  if (field.type === "select") {
+    return `<select name="${escapeHtml(field.key)}"><option value="">请选择</option>${(field.options || []).map((option) => `<option value="${escapeHtml(option)}" ${String(value || "") === option ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}</select>`;
+  }
+  if (field.type === "multi_select") {
+    const values = Array.isArray(value) ? value.map(String) : String(value || "").split(/,|，/).map((item) => item.trim()).filter(Boolean);
+    return `<div class="check-grid compact">${(field.options || []).map((option) => `<label><input name="${escapeHtml(field.key)}" type="checkbox" value="${escapeHtml(option)}" ${values.includes(option) ? "checked" : ""} /> ${escapeHtml(option)}</label>`).join("")}</div>`;
+  }
+  return `<input name="${escapeHtml(field.key)}" value="${escapeHtml(value || "")}" placeholder="${escapeHtml(field.placeholder || "")}" />`;
+}
+
+function renderCustomFieldEditor(containerId, module, values = {}) {
+  const container = $(`#${containerId}`);
+  if (!container) return;
+  const fields = customFieldDefs(module);
+  container.innerHTML = fields.length ? fields.map((field) => {
+    if (field.type === "boolean") return `<div class="custom-field-row" data-custom-field="${escapeHtml(field.key)}" data-type="${escapeHtml(field.type)}">${customFieldValueHtml(field, values[field.key])}</div>`;
+    return `<label class="custom-field-row" data-custom-field="${escapeHtml(field.key)}" data-type="${escapeHtml(field.type)}">${escapeHtml(field.label)}${field.required ? ' <span class="required-mark">*</span>' : ""}${customFieldValueHtml(field, values[field.key])}</label>`;
+  }).join("") : '<small class="muted">暂无自定义字段</small>';
+}
+
+function readCustomFieldEditor(containerId) {
+  const container = $(`#${containerId}`);
+  if (!container) return {};
+  const result = {};
+  container.querySelectorAll("[data-custom-field]").forEach((row) => {
+    const key = row.dataset.customField;
+    const type = row.dataset.type;
+    if (type === "multi_select") {
+      result[key] = [...row.querySelectorAll("input[type='checkbox']:checked")].map((input) => input.value);
+    } else if (type === "boolean") {
+      result[key] = Boolean(row.querySelector("input")?.checked);
+    } else {
+      result[key] = row.querySelector("input, textarea, select")?.value || "";
+    }
+  });
+  return result;
+}
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -267,7 +416,7 @@ function stageTimeConfig(stage = currentStage) {
   if (stage === "全部") return { label: "阶段时间", field: "createdAt" };
   if (stage === "公海") return { label: "进入公海", field: "publicPoolAt" };
   if (stage === "名单") return { label: "录入时间", field: "createdAt" };
-  if (stage === "成交") return { label: "成交时间", field: "dealAt" };
+  if (isWonStageName(stage)) return { label: "成交时间", field: "dealAt" };
   return { label: "转化时间", field: stage === "商机" ? "opportunityAt" : "leadAt" };
 }
 
@@ -470,6 +619,7 @@ async function trackGeocodeProgress() {
 async function loadState() {
   state = await api("/state");
   updateChannelSourcesFromState();
+  updateConfiguredStagesFromState();
   render();
 }
 
@@ -777,7 +927,7 @@ function renderDashboardSummary(data) {
 function renderCustomers() {
   const customers = scopeOpportunityRows();
   const stageTime = stageTimeConfig();
-  const customerTabs = [...stages, "公海"];
+  const customerTabs = [...allStageNames(), "公海"];
   const currentFilters = {
     channel: $("#channelFilter")?.value || "",
     createdBy: $("#createdByFilter")?.value || "",
@@ -811,7 +961,7 @@ function renderCustomers() {
   $("#batchOwnerSelect").innerHTML = ownerOptions.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
   $("#batchOwnerField")?.classList.toggle("hidden", currentStage === "公海");
   $("#assignOwnerSelect").innerHTML = ownerOptions.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
-  $("#customerStageSelect").innerHTML = stages.map((stage) => `<option>${stage}</option>`).join("");
+  $("#customerStageSelect").innerHTML = activeStageNames().map((stage) => `<option>${stage}</option>`).join("");
   $("#customerChannelSelect").innerHTML = channelSources.map((source) => `<option>${source}</option>`).join("");
   const productOptions = productOptionsHtml();
   $("#customerProductSelect").innerHTML = productOptions;
@@ -890,6 +1040,11 @@ function customerRow(item) {
   const ownership = ownershipLabel(item);
   const primaryContact = (item.contacts || []).find((contact) => contact.isPrimary) || (item.contacts || [])[0] || { phone: item.phone };
   const contactCount = (item.contacts || []).length;
+  const customList = customFieldDefs("customer").concat(customFieldDefs("opportunity"))
+    .filter((field) => field.showInList && item.customFields && item.customFields[field.key] !== undefined && item.customFields[field.key] !== "")
+    .slice(0, 3)
+    .map((field) => `${field.label}：${Array.isArray(item.customFields[field.key]) ? item.customFields[field.key].join(",") : item.customFields[field.key]}`)
+    .join(" · ");
   const phoneHtml = isPublicPool
     ? `<span class="pool-private-value">认领后可见</span>`
     : `<a href="tel:${escapeHtml(primaryContact.phone || item.phone)}">${escapeHtml(primaryContact.phone || item.phone)}</a>${contactCount > 1 ? `<small>另有${contactCount - 1}位联系人</small>` : ""}`;
@@ -900,11 +1055,11 @@ function customerRow(item) {
     ? (canOwnCustomer(currentUser())
         ? `<button class="primary" data-action="claim" data-id="${item.id}">认领</button>`
         : `<span class="pool-action-hint">${assignable ? "请勾选后分配" : "不在您的分配范围"}</span>`)
-    : `<button data-action="follow" data-id="${item.id}">跟进</button><button data-action="ai" data-id="${item.id}">小智</button>${item.stage === "成交" ? `<button class="primary" data-action="new-opportunity" data-id="${item.id}">新增机会</button>` : `<button data-action="advance" data-id="${item.id}">推进</button>`}`;
+    : `<button data-action="follow" data-id="${item.id}">跟进</button><button data-action="ai" data-id="${item.id}">小智</button>${isWonStageName(item.stage) ? `<button class="primary" data-action="new-opportunity" data-id="${item.id}">新增机会</button>` : `<button data-action="advance" data-id="${item.id}">推进</button>`}`;
   return `
     <tr>
       <td class="select-cell"><input type="checkbox" class="customer-select" data-id="${item.id}" ${checked} ${disabled} title="${title}" /></td>
-      <td><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.stage || "")}${ownership ? ` · <span class="ownership-state ${item.ownershipStatus}">${escapeHtml(ownership)}</span>` : ""}</small></td>
+      <td><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.stage || "")}${ownership ? ` · <span class="ownership-state ${item.ownershipStatus}">${escapeHtml(ownership)}</span>` : ""}${customList ? ` · ${escapeHtml(customList)}` : ""}</small></td>
       <td><span class="tag">${escapeHtml(item.productName || "待确认产品")}</span></td>
       <td>${phoneHtml}</td>
       <td>${escapeHtml(item.city || "待识别")}</td>
@@ -1086,7 +1241,11 @@ function openCustomerDialog(customer = null) {
   }
   form.productId.value = productId;
   form.channelSource.value = normalizeChannelSource(customer?.channelSource || "其他");
-  form.stage.value = customer?.stage || (stages.includes(currentStage) ? currentStage : "名单");
+  const selectableStages = activeStageNames();
+  if (customer?.stage && !selectableStages.includes(customer.stage)) {
+    form.stage.add(new Option(`${customer.stage}（历史）`, customer.stage));
+  }
+  form.stage.value = customer?.stage || (selectableStages.includes(currentStage) ? currentStage : selectableStages[0] || "名单");
   form.owner.value = customer?.ownerId
     ? String(customer.ownerId)
     : String((visibleFollowUsers().find((user) => user.name === (customer?.followPerson || customer?.owner)) || {}).id || $("#customerOwnerSelect").value || "");
@@ -1114,6 +1273,8 @@ function openCustomerDialog(customer = null) {
   form.phone.classList.toggle("locked-input", identityLocked);
   form.channelSource.classList.toggle("locked-input", identityLocked);
   form.createdBy.classList.toggle("locked-input", identityLocked);
+  renderCustomFieldEditor("customerCustomFieldsEditor", "customer", customer?.customFields || {});
+  renderCustomFieldEditor("opportunityCustomFieldsEditor", "opportunity", customer?.customFields || {});
   renderContactsEditor(customer?.contacts || []);
   renderCompetitorProfilesEditor(customer?.competitorProfiles || []);
   $("#customerAiBtn").classList.toggle("hidden", !customer);
@@ -1152,6 +1313,8 @@ async function saveCustomer(event) {
   const primaryContact = contacts.find((item) => item.isPrimary) || contacts[0] || {};
   const competitorProfiles = readCompetitorProfilesEditor();
   const metadataLocked = Boolean(id) && !canAdmin();
+  const customerCustomFields = readCustomFieldEditor("customerCustomFieldsEditor");
+  const opportunityCustomFields = readCustomFieldEditor("opportunityCustomFieldsEditor");
   const customer = {
     id: id || Date.now(),
     name: String(form.get("name")).trim(),
@@ -1187,7 +1350,9 @@ async function saveCustomer(event) {
     createdAt: id ? undefined : today,
     lastFollow: today,
     nextFollow: String(form.get("nextFollow") || ""),
-    lastNote: note || (id ? undefined : "新增客户。")
+    lastNote: note || (id ? undefined : "新增客户。"),
+    customerCustomFields,
+    opportunityCustomFields
   };
   try {
     if (id) {
@@ -1232,9 +1397,10 @@ function claimCustomer(id) {
   const form = $("#claimForm");
   form.reset();
   form.opportunityId.value = id;
+  const claimDays = businessConfig().performance.claimProtectionDays || 3;
   $("#claimSummary").textContent = customer
-    ? `${customer.name} · 认领后获得3天临时保护，请及时提交有效跟进。`
-    : "认领后获得3天临时保护，请及时提交有效跟进。";
+    ? `${customer.name} · 认领后获得${claimDays}天临时保护，请及时提交有效跟进。`
+    : `认领后获得${claimDays}天临时保护，请及时提交有效跟进。`;
   $("#claimProductSelect").innerHTML = productOptionsHtml("请选择意向产品");
   const productId = customer && !isPlaceholderProduct(customer) ? customer.productId : "";
   $("#claimProductSelect").value = selectableProducts().some((item) => item.id === productId) ? productId : "";
@@ -1266,9 +1432,8 @@ async function submitClaim(event) {
 async function advanceCustomer(id) {
   const customer = scopeOpportunityRows().find((item) => Number(item.id) === Number(id));
   if (!customer) return;
-  const index = stages.indexOf(customer.stage);
-  if (index >= stages.length - 1) return;
-  const nextStage = stages[index + 1];
+  const nextStage = nextStageName(customer.stage);
+  if (!nextStage) return;
   const form = $("#advanceForm");
   form.reset();
   form.opportunityId.value = id;
@@ -1279,9 +1444,9 @@ async function advanceCustomer(id) {
   form.nextFollow.value = customer.nextFollow || "";
   $("#advanceDialogTitle").textContent = `推进为${nextStage}`;
   $("#advanceDialogSummary").textContent = `${customer.name} · ${customer.productName || "待确认产品"}`;
-  $$(".advance-demo-field").forEach((node) => node.classList.toggle("hidden", nextStage !== "商机"));
-  $$(".advance-deal-field").forEach((node) => node.classList.toggle("hidden", nextStage !== "成交"));
-  $("#advanceNextFollowRequired")?.classList.toggle("hidden", nextStage === "成交");
+  $$(".advance-demo-field").forEach((node) => node.classList.toggle("hidden", stageRankName(nextStage) < stageRankName("商机")));
+  $$(".advance-deal-field").forEach((node) => node.classList.toggle("hidden", !isWonStageName(nextStage)));
+  $("#advanceNextFollowRequired")?.classList.toggle("hidden", isWonStageName(nextStage));
   const paymentOwners = roleForUser(currentUser()).customerScope === "self" ? [currentUser()] : visibleUsers();
   $("#advancePaymentOwnerSelect").innerHTML = paymentOwners.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
   $("#advancePaymentOwnerSelect").value = String(customer.paymentOwnerId || currentUser().id || "");
@@ -1294,17 +1459,18 @@ async function submitAdvance(event) {
   const id = Number(form.get("opportunityId"));
   const opportunity = scopeOpportunityRows().find((item) => Number(item.id) === id);
   if (!opportunity) return toast("销售机会不存在");
-  const nextStage = stages[stages.indexOf(opportunity.stage) + 1];
+  const nextStage = nextStageName(opportunity.stage);
+  if (!nextStage) return toast("该销售机会已到最后阶段");
   const note = String(form.get("note") || "").trim();
   const nextFollow = String(form.get("nextFollow") || "");
   const demoAt = String(form.get("demoAt") || "");
   const contractAmount = Number(form.get("contractAmount") || 0);
   const paymentOwnerId = Number(form.get("paymentOwnerId") || 0);
   if (!note) return toast("请填写：本次跟进内容");
-  if (nextStage === "商机" && !demoAt) return toast("请填写：有效演示日期");
-  if (nextStage === "成交" && contractAmount <= 0) return toast("请填写：合同金额");
-  if (nextStage === "成交" && !paymentOwnerId) return toast("请选择：业绩归属人");
-  if (nextStage !== "成交" && !nextFollow) return toast("请选择：下次跟进时间");
+  if (stageRankName(nextStage) >= stageRankName("商机") && !demoAt) return toast("请填写：有效演示日期");
+  if (isWonStageName(nextStage) && contractAmount <= 0) return toast("请填写：合同金额");
+  if (isWonStageName(nextStage) && !paymentOwnerId) return toast("请选择：业绩归属人");
+  if (!isWonStageName(nextStage) && !nextFollow) return toast("请选择：下次跟进时间");
   await api(`/opportunities/${id}/advance`, {
     method: "POST",
     body: {
@@ -1333,6 +1499,7 @@ function openNewOpportunityDialog(opportunityId) {
   $("#newOpportunitySummary").textContent = `${row.name}已有成交机会，新产品将从线索阶段重新轮转。`;
   $("#newOpportunityOwnerSelect").innerHTML = visibleFollowUsers().map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
   $("#newOpportunityOwnerSelect").value = String(row.ownerId || currentUser().id || "");
+  renderCustomFieldEditor("newOpportunityCustomFieldsEditor", "opportunity", {});
   form.amount.value = productDefaultAmount(form.productId.value);
   form.nextFollow.value = today;
   $("#newOpportunityDialog").showModal();
@@ -1352,7 +1519,7 @@ async function submitNewOpportunity(event) {
   if (!nextFollow) return toast("请选择：下次跟进时间");
   await api(`/customers/${customerId}/opportunities`, {
     method: "POST",
-    body: { productId, ownerId, amount: Number(form.get("amount") || productDefaultAmount(productId)), note, nextFollow }
+    body: { productId, ownerId, amount: Number(form.get("amount") || productDefaultAmount(productId)), note, nextFollow, opportunityCustomFields: readCustomFieldEditor("newOpportunityCustomFieldsEditor") }
   });
   $("#newOpportunityDialog").close();
   currentStage = "线索";
@@ -1401,7 +1568,7 @@ async function batchImport(event) {
   const owner = ownerUser.name || "";
   const file = form.get("file");
   const importBody = new FormData();
-  importBody.append("stage", stages.includes(currentStage) ? currentStage : "名单");
+  importBody.append("stage", activeStageNames().includes(currentStage) ? currentStage : (activeStageNames()[0] || "名单"));
   if (!importToPublicPool) {
     importBody.append("owner", owner);
     importBody.append("ownerId", ownerUser.id || "");
@@ -1549,14 +1716,15 @@ function markerStyleForPoint(point) {
 
 function showFieldPointInfo(point, position) {
   if (!point || !fieldInfoWindow) return;
+  const labelMap = { name: "客户", stage: "阶段", productName: "产品", owner: "负责人", phone: "电话", address: "地址", competitor: "现用软件", equipment: "设备", lastVisitedAt: "最近拜访", city: "城市", pointStatus: "状态" };
+  const rows = (businessConfig().map.pointPopupFields || defaultBusinessConfig.map.pointPopupFields)
+    .filter((field) => point[field] !== undefined && point[field] !== "")
+    .map((field) => `<p>${escapeHtml(labelMap[field] || field)}：${escapeHtml(Array.isArray(point[field]) ? point[field].join(",") : point[field])}</p>`)
+    .join("");
   fieldInfoWindow.setPosition(position || new TMap.LatLng(Number(point.latitude), Number(point.longitude)));
   fieldInfoWindow.setContent(`
     <strong>${escapeHtml(point.name || "未命名工厂")}</strong>
-    <p>${escapeHtml(point.stage)} · ${escapeHtml(point.city || "未知城市")} · 拜访${point.visitCount || 0}次</p>
-    <p>${escapeHtml(point.address || "")}</p>
-    ${point.phone ? `<p>主联系人：${escapeHtml(point.phone)}</p>` : ""}
-    <p>现用软件：${escapeHtml(point.competitor || point.software || "待补充")}</p>
-    <p>${escapeHtml(point.equipment || "设备待补充")}</p>
+    ${rows || `<p>${escapeHtml(point.stage)} · ${escapeHtml(point.city || "未知城市")} · 拜访${point.visitCount || 0}次</p>`}
     <button type="button" onclick="openCustomerFromMap(${Number(point.customerId)})">查看客户与拜访轨迹</button>
   `);
   fieldInfoWindow.open();
@@ -1659,13 +1827,19 @@ async function renderField() {
     renderFieldSummary(result);
     renderFieldMap(fieldPoints);
     const customerById = new Map(state.customers.map((item) => [Number(item.id), item]));
+    const mapLabelMap = { name: "客户", stage: "阶段", productName: "产品", owner: "负责人", phone: "电话", address: "地址", competitor: "现用软件", equipment: "设备", lastVisitedAt: "最近拜访", city: "城市", pointStatus: "状态" };
+    const mapFields = (businessConfig().map.pointPopupFields || defaultBusinessConfig.map.pointPopupFields).filter((field) => field !== "name");
     $("#visitList").innerHTML = fieldPoints.length
       ? fieldPoints.slice(0, 20).map((point) => {
           const customer = customerById.get(Number(point.customerId)) || {};
+          const meta = mapFields
+            .filter((field) => point[field] !== undefined && point[field] !== "")
+            .slice(0, 4)
+            .map((field) => `${mapLabelMap[field] || field}：${Array.isArray(point[field]) ? point[field].join(",") : point[field]}`)
+            .join(" · ");
           return `<article>
             <b>${escapeHtml(point.name)}</b><span>${escapeHtml(point.stage)} · 拜访${point.visitCount}次</span>
-            <p>${escapeHtml(point.city || "未知城市")} · ${escapeHtml(point.address || "")}</p>
-            <p>现用软件：${escapeHtml(point.competitor || point.software || "待补充")}</p>
+            <p>${escapeHtml(meta || `${point.city || "未知城市"} · ${point.address || ""}`)}</p>
             <button type="button" data-map-customer="${point.customerId}">查看客户与拜访轨迹</button>
           </article>`;
         }).join("")
@@ -1799,10 +1973,248 @@ async function addKnowledge(event) {
   toast("知识库已添加");
 }
 
+function configCsv(value = []) {
+  return (Array.isArray(value) ? value : []).join(",");
+}
+
+function csvValues(value = "") {
+  return String(value || "").split(/,|，|\n/).map((item) => item.trim()).filter(Boolean);
+}
+
+function makeConfigId(prefix, value) {
+  return `${prefix}-${String(value || Date.now()).trim().toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/gi, "-").replace(/^-|-$/g, "")}-${Date.now().toString(36)}`;
+}
+
+async function saveBusinessConfig(nextConfig) {
+  state.businessConfig = await api("/business-config", { method: "PUT", body: nextConfig });
+  updateConfiguredStagesFromState();
+  renderAdmin();
+  renderCustomers();
+}
+
+function renderBusinessConfig() {
+  if (!$("#settingsBusinessPane")) return;
+  const config = businessConfig();
+  const stageSelectOptions = configuredStageDefs({ includeInactive: true })
+    .map((stage) => `<option value="${escapeHtml(stage.id)}">${escapeHtml(stage.name)}</option>`).join("");
+  $("#followTemplateStageSelect").innerHTML = stageSelectOptions;
+  $("#customFieldModuleSelect").innerHTML = customFieldModules.map((item) => `<option value="${item.value}">${item.label}</option>`).join("");
+  $("#customFieldTypeSelect").innerHTML = customFieldTypes.map((item) => `<option value="${item.value}">${item.label}</option>`).join("");
+  $("#stageConfigList").innerHTML = configuredStageDefs({ includeInactive: true }).map((stage) => `
+    <article>
+      <b><i class="competitor-swatch" style="background:${escapeHtml(stage.color || "#64748b")}"></i>${escapeHtml(stage.name)}</b>
+      <span>${stage.active === false ? "停用" : "启用"} · ${stage.type === "won" ? "赢单" : stage.type === "start" ? "起始" : "普通"} · 超期${Number(stage.overdueDays || 0)}天</span>
+      <p>必填：${escapeHtml((stage.requiredFields || []).join(",") || "无")}</p>
+      <div class="inline-actions"><button data-action="edit-stage-config" data-id="${escapeHtml(stage.id)}">编辑</button><button data-action="toggle-stage-config" data-id="${escapeHtml(stage.id)}">${stage.active === false ? "启用" : "停用"}</button></div>
+    </article>`).join("");
+  $("#customFieldList").innerHTML = (config.customFields || []).map((field) => `
+    <article>
+      <b>${escapeHtml(field.label)}</b>
+      <span>${customFieldModules.find((item) => item.value === field.module)?.label || field.module} · ${customFieldTypes.find((item) => item.value === field.type)?.label || field.type} · ${field.active === false ? "停用" : "启用"}</span>
+      <p>${field.required ? "必填 · " : ""}${escapeHtml((field.options || []).join(",") || field.placeholder || "无选项")}</p>
+      <div class="inline-actions"><button data-action="edit-custom-field" data-id="${escapeHtml(field.key)}">编辑</button><button data-action="toggle-custom-field" data-id="${escapeHtml(field.key)}">${field.active === false ? "启用" : "停用"}</button></div>
+    </article>`).join("") || '<article class="empty">暂无自定义字段</article>';
+  $("#followTemplateList").innerHTML = (config.followTemplates || []).map((item) => {
+    const stage = configuredStageDefs({ includeInactive: true }).find((stage) => stage.id === item.stageId) || {};
+    return `<article>
+      <b>${escapeHtml(item.name)}</b>
+      <span>${escapeHtml(stage.name || "通用")} · ${escapeHtml(item.scene || "未分类")} · ${item.active === false ? "停用" : "启用"}</span>
+      <p>${escapeHtml(item.content || "")}</p>
+      <div class="inline-actions"><button data-action="edit-follow-template" data-id="${escapeHtml(item.id)}">编辑</button><button data-action="toggle-follow-template" data-id="${escapeHtml(item.id)}">${item.active === false ? "启用" : "停用"}</button></div>
+    </article>`;
+  }).join("") || '<article class="empty">暂无跟进模板</article>';
+  const rulesForm = $("#businessRulesForm");
+  if (rulesForm) {
+    rulesForm.pointPopupFields.value = configCsv(config.map.pointPopupFields);
+    rulesForm.filters.value = configCsv(config.map.filters);
+    rulesForm.visitFields.value = configCsv(config.map.visitFields);
+    rulesForm.claimProtectionDays.value = config.performance.claimProtectionDays || 3;
+    rulesForm.publicPoolDays.value = config.performance.publicPoolDays || 30;
+    rulesForm.revenueAttribution.value = config.performance.revenueAttribution || "paymentOwner";
+    $("#targetRuleFields").innerHTML = Object.entries(targetFieldLabels).map(([key, label]) => `
+      <label><input type="checkbox" name="enabledTargetFields" value="${key}" ${(config.performance.enabledTargetFields || []).includes(key) ? "checked" : ""} /> ${label}</label>
+    `).join("");
+  }
+}
+
+function resetStageConfigForm() {
+  const form = $("#stageConfigForm");
+  form.reset();
+  form.id.value = "";
+  form.sort.value = "100";
+  form.color.value = "#64748b";
+  form.type.value = "normal";
+  form.active.checked = true;
+}
+
+function editStageConfig(id) {
+  const stage = configuredStageDefs({ includeInactive: true }).find((item) => item.id === id);
+  const form = $("#stageConfigForm");
+  if (!stage || !form) return;
+  form.id.value = stage.id;
+  form.name.value = stage.name || "";
+  form.sort.value = Number(stage.sort || 100);
+  form.color.value = stage.color || "#64748b";
+  form.type.value = stage.type || "normal";
+  form.overdueDays.value = Number(stage.overdueDays || 0);
+  form.requiredFields.value = configCsv(stage.requiredFields || []);
+  form.active.checked = stage.active !== false;
+  form.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+async function saveStageConfig(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const config = businessConfig();
+  const id = String(form.get("id") || makeConfigId("stage", form.get("name")));
+  const nextStage = {
+    id,
+    name: String(form.get("name") || "").trim(),
+    legacyName: (config.salesStages || []).find((item) => item.id === id)?.legacyName || String(form.get("name") || "").trim(),
+    sort: Number(form.get("sort") || 100),
+    color: String(form.get("color") || "#64748b"),
+    type: String(form.get("type") || "normal"),
+    overdueDays: Number(form.get("overdueDays") || 0),
+    requiredFields: csvValues(form.get("requiredFields")),
+    active: form.get("active") === "on"
+  };
+  const next = { ...config, salesStages: [...(config.salesStages || []).filter((item) => item.id !== id), nextStage] };
+  await saveBusinessConfig(next);
+  resetStageConfigForm();
+  toast("销售阶段已保存");
+}
+
+function resetCustomFieldForm() {
+  const form = $("#customFieldForm");
+  form.reset();
+  form.key.value = "";
+  form.sort.value = "100";
+  form.active.checked = true;
+}
+
+function editCustomField(key) {
+  const field = (businessConfig().customFields || []).find((item) => item.key === key);
+  const form = $("#customFieldForm");
+  if (!field || !form) return;
+  form.key.value = field.key;
+  form.label.value = field.label || "";
+  form.module.value = field.module || "customer";
+  form.type.value = field.type || "text";
+  form.sort.value = Number(field.sort || 100);
+  form.options.value = configCsv(field.options || []);
+  form.placeholder.value = field.placeholder || "";
+  form.required.checked = Boolean(field.required);
+  form.showInList.checked = Boolean(field.showInList);
+  form.active.checked = field.active !== false;
+  form.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+async function saveCustomField(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const config = businessConfig();
+  const key = String(form.get("key") || makeConfigId("field", form.get("label"))).replace(/[^a-zA-Z0-9_-]/g, "");
+  const field = {
+    key,
+    label: String(form.get("label") || "").trim(),
+    module: String(form.get("module") || "customer"),
+    type: String(form.get("type") || "text"),
+    sort: Number(form.get("sort") || 100),
+    options: csvValues(form.get("options")),
+    placeholder: String(form.get("placeholder") || "").trim(),
+    required: form.get("required") === "on",
+    showInList: form.get("showInList") === "on",
+    active: form.get("active") === "on"
+  };
+  await saveBusinessConfig({ ...config, customFields: [...(config.customFields || []).filter((item) => item.key !== key), field] });
+  resetCustomFieldForm();
+  toast("自定义字段已保存");
+}
+
+function resetFollowTemplateForm() {
+  const form = $("#followTemplateForm");
+  form.reset();
+  form.id.value = "";
+  form.nextFollowDays.value = "1";
+  form.active.checked = true;
+}
+
+function editFollowTemplate(id) {
+  const item = (businessConfig().followTemplates || []).find((template) => template.id === id);
+  const form = $("#followTemplateForm");
+  if (!item || !form) return;
+  form.id.value = item.id;
+  form.name.value = item.name || "";
+  form.stageId.value = item.stageId || "";
+  form.scene.value = item.scene || "";
+  form.nextFollowDays.value = Number(item.nextFollowDays || 0);
+  form.content.value = item.content || "";
+  form.active.checked = item.active !== false;
+  form.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+async function saveFollowTemplate(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const config = businessConfig();
+  const id = String(form.get("id") || makeConfigId("follow", form.get("name")));
+  const item = {
+    id,
+    name: String(form.get("name") || "").trim(),
+    stageId: String(form.get("stageId") || ""),
+    scene: String(form.get("scene") || "").trim(),
+    nextFollowDays: Number(form.get("nextFollowDays") || 0),
+    content: String(form.get("content") || "").trim(),
+    active: form.get("active") === "on"
+  };
+  await saveBusinessConfig({ ...config, followTemplates: [...(config.followTemplates || []).filter((template) => template.id !== id), item] });
+  resetFollowTemplateForm();
+  toast("跟进模板已保存");
+}
+
+async function saveBusinessRules(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const config = businessConfig();
+  await saveBusinessConfig({
+    ...config,
+    map: {
+      ...config.map,
+      pointPopupFields: csvValues(form.get("pointPopupFields")),
+      filters: csvValues(form.get("filters")),
+      visitFields: csvValues(form.get("visitFields"))
+    },
+    performance: {
+      ...config.performance,
+      enabledTargetFields: form.getAll("enabledTargetFields"),
+      claimProtectionDays: Number(form.get("claimProtectionDays") || 3),
+      publicPoolDays: Number(form.get("publicPoolDays") || 30),
+      revenueAttribution: String(form.get("revenueAttribution") || "paymentOwner")
+    }
+  });
+  toast("地图与业绩规则已保存");
+}
+
+async function toggleConfigItem(type, id) {
+  const config = businessConfig();
+  if (type === "stage") {
+    await saveBusinessConfig({ ...config, salesStages: (config.salesStages || []).map((item) => item.id === id ? { ...item, active: item.active === false } : item) });
+  }
+  if (type === "field") {
+    await saveBusinessConfig({ ...config, customFields: (config.customFields || []).map((item) => item.key === id ? { ...item, active: item.active === false } : item) });
+  }
+  if (type === "template") {
+    await saveBusinessConfig({ ...config, followTemplates: (config.followTemplates || []).map((item) => item.id === id ? { ...item, active: item.active === false } : item) });
+  }
+  toast("配置状态已更新");
+}
+
 function renderAdmin() {
   $("#settingsAccountsPane").classList.toggle("active", currentSettingsTab === "accounts");
   $("#settingsKnowledgePane").classList.toggle("active", currentSettingsTab === "knowledge");
+  $("#settingsBusinessPane").classList.toggle("active", currentSettingsTab === "business");
   $$("#settingsTabs button").forEach((button) => button.classList.toggle("active", button.dataset.settingsTab === currentSettingsTab));
+  renderBusinessConfig();
   $("#knowledgeList").innerHTML = (state.knowledge || [])
     .map((item) => {
       const fileUrl = item.fileUrl ? (item.fileUrl.startsWith("http") ? item.fileUrl : `${window.location.origin}${item.fileUrl}`) : "";
@@ -1832,10 +2244,14 @@ function renderAdmin() {
   $("#productList").innerHTML = (state.products || []).map((item) => `
     <article>
       <b>${escapeHtml(item.name)}</b>
-      <span>${item.active === false ? "停用" : "启用"} · ${escapeHtml(formatMoney(item.price || 0))}</span>
+      <span>${item.active === false ? "停用" : "启用"} · ${escapeHtml(item.category || "未分类")} · ${escapeHtml(formatMoney(item.price || 0))}</span>
+      <p>${escapeHtml(item.note || "暂无备注")}</p>
       <div class="inline-actions">
-        <input type="number" min="0" step="0.01" value="${Number(item.price || 0)}" data-product-price="${escapeHtml(item.id)}" aria-label="${escapeHtml(item.name)}价格" />
-        <button data-action="update-product-price" data-id="${escapeHtml(item.id)}">保存价格</button>
+        <input type="number" min="0" step="0.01" value="${Number(item.price || 0)}" data-product-field="price" data-id="${escapeHtml(item.id)}" aria-label="${escapeHtml(item.name)}价格" />
+        <input value="${escapeHtml(item.category || "")}" data-product-field="category" data-id="${escapeHtml(item.id)}" aria-label="${escapeHtml(item.name)}分类" placeholder="分类" />
+        <input value="${escapeHtml(item.note || "")}" data-product-field="note" data-id="${escapeHtml(item.id)}" aria-label="${escapeHtml(item.name)}备注" placeholder="备注" />
+        <button data-action="update-product" data-id="${escapeHtml(item.id)}">保存</button>
+        <button data-action="toggle-product" data-id="${escapeHtml(item.id)}">${item.active === false ? "启用" : "停用"}</button>
       </div>
     </article>`).join("");
   $("#channelSourceList").innerHTML = (state.channelSources || [])
@@ -1986,7 +2402,15 @@ async function addCompetitor(event) {
 async function addProduct(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
-  await api("/products", { method: "POST", body: { name: String(form.get("name") || "").trim(), price: Number(form.get("price") || 0) } });
+  await api("/products", {
+    method: "POST",
+    body: {
+      name: String(form.get("name") || "").trim(),
+      price: Number(form.get("price") || 0),
+      category: String(form.get("category") || "").trim(),
+      note: String(form.get("note") || "").trim()
+    }
+  });
   event.currentTarget.reset();
   await loadState();
   showSuccessFeedback("产品添加成功", "产品已加入销售机会和客户导入选项。 ");
@@ -2003,20 +2427,25 @@ async function addChannelSource(event) {
   showSuccessFeedback("渠道来源添加成功", `${name} 已同步到客户表单、筛选和导入模板。`);
 }
 
-async function updateProductPrice(productId) {
+async function updateProduct(productId, patch = {}) {
   const product = productById(productId);
   if (!product.id) return;
-  const input = [...document.querySelectorAll("[data-product-price]")].find((item) => item.dataset.productPrice === productId);
+  const fields = Object.fromEntries([...document.querySelectorAll("[data-product-field]")]
+    .filter((input) => input.dataset.id === productId)
+    .map((input) => [input.dataset.productField, input.value]));
   await api(`/products/${encodeURIComponent(productId)}`, {
     method: "PUT",
     body: {
       name: product.name,
-      price: Number(input?.value || 0),
-      active: product.active !== false
+      price: Number(fields.price ?? product.price ?? 0),
+      category: fields.category ?? product.category ?? "",
+      note: fields.note ?? product.note ?? "",
+      sort: product.sort,
+      active: patch.active ?? (product.active !== false)
     }
   });
   await loadState();
-  toast("产品价格已更新");
+  toast("产品已更新");
 }
 
 async function toggleChannelSource(sourceId) {
@@ -2336,6 +2765,24 @@ function wireEvents() {
   $("#claimForm").addEventListener("submit", submitClaim);
   $("#assignForm").addEventListener("submit", batchAssignCustomers);
   $("#targetForm").addEventListener("submit", saveTarget);
+  $("#stageConfigForm").addEventListener("submit", saveStageConfig);
+  $("#resetStageConfigBtn").addEventListener("click", resetStageConfigForm);
+  $("#customFieldForm").addEventListener("submit", saveCustomField);
+  $("#resetCustomFieldBtn").addEventListener("click", resetCustomFieldForm);
+  $("#followTemplateForm").addEventListener("submit", saveFollowTemplate);
+  $("#resetFollowTemplateBtn").addEventListener("click", resetFollowTemplateForm);
+  $("#businessRulesForm").addEventListener("submit", saveBusinessRules);
+  $("#settingsBusinessPane").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button) return;
+    const id = button.dataset.id;
+    if (button.dataset.action === "edit-stage-config") editStageConfig(id);
+    if (button.dataset.action === "toggle-stage-config") toggleConfigItem("stage", id).catch((error) => toast(error.message));
+    if (button.dataset.action === "edit-custom-field") editCustomField(id);
+    if (button.dataset.action === "toggle-custom-field") toggleConfigItem("field", id).catch((error) => toast(error.message));
+    if (button.dataset.action === "edit-follow-template") editFollowTemplate(id);
+    if (button.dataset.action === "toggle-follow-template") toggleConfigItem("template", id).catch((error) => toast(error.message));
+  });
   $("#recommendBtn").addEventListener("click", recommend);
   $("#aiResult").addEventListener("click", (event) => {
     if (event.target.closest("#saveAiFollowBtn")) saveAiFollowDraft().catch((error) => toast(error.message));
@@ -2375,8 +2822,13 @@ function wireEvents() {
     if (button.dataset.action === "add-child-unit") resetUnitForm(button.dataset.id);
   });
   $("#productList").addEventListener("click", (event) => {
-    const button = event.target.closest("button[data-action='update-product-price']");
-    if (button) updateProductPrice(button.dataset.id).catch((error) => toast(error.message));
+    const button = event.target.closest("button[data-action]");
+    if (!button) return;
+    if (button.dataset.action === "update-product") updateProduct(button.dataset.id).catch((error) => toast(error.message));
+    if (button.dataset.action === "toggle-product") {
+      const product = productById(button.dataset.id);
+      updateProduct(button.dataset.id, { active: product.active === false }).catch((error) => toast(error.message));
+    }
   });
   $("#channelSourceList").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-action]");
