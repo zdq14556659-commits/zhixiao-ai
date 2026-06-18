@@ -25,7 +25,7 @@
         <input class="{{metadataLocked ? 'locked-input' : ''}}" name="createdBy" value="{{form.createdBy || ''}}" disabled="{{metadataLocked}}" placeholder="录入员工姓名" />
       </view>
       <view class="grid-2">
-        <view class="form-item"><text class="label">意向产品</text><picker range="{{products}}" range-key="name" value="{{productIndex}}" bindchange="onProduct"><view class="picker-box">{{products[productIndex].name || '请选择'}}</view></picker></view>
+        <view class="form-item"><text class="label">意向产品 <text class="required-mark">*</text></text><picker range="{{products}}" range-key="name" value="{{productIndex}}" bindchange="onProduct"><view class="picker-box">{{products[productIndex].name || '请选择'}}</view></picker><text class="form-hint">销售跟进提交必填项</text></view>
         <view class="form-item"><text class="label">城市</text><input name="city" value="{{form.city}}" placeholder="可从地址自动识别" /></view>
       </view>
       <view class="grid-2">
@@ -144,8 +144,14 @@
         </picker>
       </view>
       <view class="form-item">
-        <text class="label">未成交原因</text>
-        <input name="lossReason" value="{{form.lossReason}}" placeholder="如：预算、决策、竞品、暂缓上线" />
+        <text class="label">目前未成交原因</text>
+        <picker range="{{lossReasons}}" value="{{lossReasonIndex}}" bindchange="onLossReason">
+          <view class="picker-box">{{lossReasons[lossReasonIndex]}}</view>
+        </picker>
+      </view>
+      <view wx:if="{{lossReasons[lossReasonIndex] === '功能原因'}}" class="form-item">
+        <text class="label">具体功能原因</text>
+        <textarea name="lossReasonDetail" value="{{form.lossReasonDetail}}" placeholder="例如：缺少设备对接、报价逻辑不适配、门板造型库不够"></textarea>
       </view>
       <view class="form-item">
         <text class="label">客户地址</text>

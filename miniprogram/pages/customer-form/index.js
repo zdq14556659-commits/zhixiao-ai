@@ -12,6 +12,8 @@ Page({
     paymentOwnerIndex: 0,
     channelSources: [],
     channelIndex: 0,
+    lossReasons: ["请选择目前未成交原因"],
+    lossReasonIndex: 0,
     nextFollow: "",
     demoAt: "",
     expectedDealDate: "",
@@ -43,6 +45,13 @@ Page({
     const ownerIndex = Math.max(0, owners.indexOf(customer?.owner || customer?.followPerson || owners[0]));
     const channelSources = app.globalData.channelSources;
     const channelIndex = Math.max(0, channelSources.indexOf(app.normalizeChannelSource(customer?.channelSource || "其他")));
+    const currentLossReason = String(customer?.lossReason || "");
+    const lossReasons = ["请选择目前未成交原因", ...(state.lossReasons || [])
+      .filter((item) => item.active !== false || (currentLossReason && item.name === currentLossReason))
+      .sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0) || String(left.name || "").localeCompare(String(right.name || ""), "zh-Hans-CN"))
+      .map((item) => item.name)];
+    if (currentLossReason && !lossReasons.includes(currentLossReason)) lossReasons.push(currentLossReason);
+    const lossReasonIndex = Math.max(0, lossReasons.indexOf(currentLossReason));
     const paymentOwnerIndex = Math.max(0, paymentOwners.findIndex((user) => Number(user.id) === Number(customer?.paymentOwnerId || currentUser.id)));
     const contacts = customer?.contacts?.length
       ? customer.contacts.map((item) => ({ ...item }))
@@ -50,7 +59,10 @@ Page({
     const competitorProfiles = customer?.competitorProfiles?.length
       ? customer.competitorProfiles.map((item, index) => ({ ...item, isPrimary: index === 0, expanded: false }))
       : [{ competitorId: state.competitors?.[0]?.id || "", brand: state.competitors?.[0]?.name || "其他", isPrimary: true, expanded: false }];
-    const products = (state.products || []).filter((item) => item.active !== false).map((item) => ({ ...item }));
+    const products = (state.products || [])
+      .filter((item) => item.active !== false && !this.isPlaceholderProduct(item))
+      .sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0) || String(left.name || "").localeCompare(String(right.name || ""), "zh-Hans-CN"))
+      .map((item) => ({ ...item }));
     let productIndex = products.findIndex((item) => item.id === opportunity?.productId);
     if (opportunity?.productId && productIndex < 0) {
       products.push({ id: opportunity.productId, name: opportunity.productName || "历史产品（待补充）", active: true, legacy: true });
@@ -69,6 +81,8 @@ Page({
       paymentOwnerIndex,
       channelSources,
       channelIndex,
+      lossReasons,
+      lossReasonIndex,
       editingId: customer ? Number(customer.id) : 0,
       editingOpportunityId: opportunity ? Number(opportunity.id) : 0,
       products,
@@ -99,6 +113,10 @@ Page({
     this.setData({ channelIndex: Number(event.detail.value) });
   },
 
+  onLossReason(event) {
+    this.setData({ lossReasonIndex: Number(event.detail.value) });
+  },
+
   onProduct(event) {
     const productIndex = Number(event.detail.value);
     const product = this.data.products[productIndex] || {};
@@ -106,6 +124,11 @@ Page({
       productIndex,
       form: { ...this.data.form, amount: app.productDefaultAmount(product.id) }
     });
+  },
+
+  isPlaceholderProduct(product = {}) {
+    const name = String(product.name || product.productName || "").trim();
+    return !name || name === "待确认产品";
   },
 
   onPaymentOwner(event) {
@@ -249,6 +272,7 @@ Page({
       wx.showToast({ title: "请选择进款金额", icon: "none" });
       return;
     }
+    const lossReason = this.data.lossReasonIndex > 0 ? this.data.lossReasons[this.data.lossReasonIndex] : "";
     const ownerUser = this.data.ownerUsers[this.data.ownerIndex] || {};
     const customer = {
       ...previous,
@@ -282,7 +306,8 @@ Page({
       paymentAmount,
       paymentDate: this.data.paymentDate,
       paymentOwnerId: (this.data.paymentOwners[this.data.paymentOwnerIndex] || app.getCurrentUser()).id,
-      lossReason: form.lossReason || "",
+      lossReason,
+      lossReasonDetail: lossReason === "功能原因" ? String(form.lossReasonDetail || "").trim() : "",
       createdAt: previous.createdAt || app.globalData.today,
       lastFollow: app.globalData.today,
       nextFollow: this.data.nextFollow,

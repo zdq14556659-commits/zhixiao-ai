@@ -10,6 +10,12 @@
   color: #e5484d;
   font-weight: 700;
 }
+.form-hint {
+  display: block;
+  margin-top: 6rpx;
+  color: #8a97a8;
+  font-size: 22rpx;
+}
 
 .section-divider {
   margin: 26rpx 0 18rpx;

@@ -33,7 +33,7 @@ const orgTypeOptions = [
   { value: "team", label: "小组" }
 ];
 
-let state = { users: [], customers: [], opportunities: [], products: [], visits: [], knowledge: [], stages, roles: defaultRoles, units: [], competitors: [], routes: [], channelSources: [] };
+let state = { users: [], customers: [], opportunities: [], products: [], visits: [], knowledge: [], stages, roles: defaultRoles, units: [], competitors: [], routes: [], channelSources: [], lossReasons: [] };
 let currentStage = "名单";
 let currentView = "dashboard";
 let currentSettingsTab = "accounts";
@@ -234,7 +234,9 @@ function isPlaceholderProduct(product = {}) {
 }
 
 function selectableProducts() {
-  return (state.products || []).filter((item) => item.active !== false && !isPlaceholderProduct(item));
+  return (state.products || [])
+    .filter((item) => item.active !== false && !isPlaceholderProduct(item))
+    .sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0) || String(left.name || "").localeCompare(String(right.name || ""), "zh-Hans-CN"));
 }
 
 function productOptionsHtml(placeholder = "请选择意向产品") {
@@ -251,6 +253,33 @@ function productDefaultAmount(productId) {
 function fillAmountFromProduct(form, productId) {
   if (!form?.amount) return;
   form.amount.value = productDefaultAmount(productId);
+}
+
+function selectableLossReasons(options = {}) {
+  const currentValue = String(options.includeValue || "").trim();
+  const reasons = (state.lossReasons || [])
+    .filter((item) => item.active !== false || (currentValue && item.name === currentValue))
+    .sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0) || String(left.name || "").localeCompare(String(right.name || ""), "zh-Hans-CN"));
+  if (currentValue && !reasons.some((item) => item.name === currentValue)) {
+    reasons.push({ id: `current-${currentValue}`, name: currentValue, active: true, sort: 999 });
+  }
+  return reasons;
+}
+
+function lossReasonOptionsHtml(selected = "") {
+  return `<option value="">请选择目前未成交原因</option>${selectableLossReasons({ includeValue: selected })
+    .map((item) => `<option value="${escapeHtml(item.name)}" ${item.name === selected ? "selected" : ""}>${escapeHtml(item.name)}</option>`)
+    .join("")}`;
+}
+
+function toggleLossReasonDetailField(form = $("#customerForm")) {
+  if (!form) return;
+  const field = $("#lossReasonDetailField");
+  const detailInput = form.elements.lossReasonDetail;
+  const selected = String(form.elements.lossReason?.value || "").trim();
+  const shouldShow = selected === "功能原因";
+  field?.classList.toggle("hidden", !shouldShow);
+  if (!shouldShow && detailInput) detailInput.value = "";
 }
 
 function latestFollow(customer = {}) {
@@ -391,14 +420,15 @@ function showSuccessFeedback(title, detail) {
 }
 
 function showImportFeedback(result, entityLabel = "客户") {
-  const total = Number(result.total || 0);
-  const imported = Number(result.imported || 0);
-  const duplicates = Number(result.duplicates || 0);
-  const failed = Number(result.failed || 0);
-  const pendingLocation = Number(result.pendingLocation || 0);
+  const normalized = normalizeImportResult(result);
+  const total = normalized.total;
+  const imported = normalized.imported;
+  const duplicates = normalized.duplicates;
+  const failed = normalized.failed;
+  const pendingLocation = normalized.pendingLocation;
   const details = [
-    ...(Array.isArray(result.skipped) ? result.skipped : []),
-    ...(Array.isArray(result.failures) ? result.failures : [])
+    ...normalized.skipped,
+    ...normalized.failures
   ];
   $("#importResultTitle").textContent = failed && !imported && !duplicates
     ? `${entityLabel}导入失败`
@@ -419,9 +449,9 @@ function showImportFeedback(result, entityLabel = "客户") {
     }).join("")
     : `<div class="empty">本次没有未导入${entityLabel}</div>`;
   const link = $("#importResultDownload");
-  if (result.reportUrl) {
+  if (normalized.reportUrl) {
     const apiOrigin = API_BASE.replace(/\/api\/?$/, "");
-    link.href = result.reportUrl.startsWith("http") ? result.reportUrl : `${apiOrigin}${result.reportUrl}`;
+    link.href = normalized.reportUrl.startsWith("http") ? normalized.reportUrl : `${apiOrigin}${normalized.reportUrl}`;
     link.hidden = false;
   } else {
     link.hidden = true;
@@ -429,6 +459,22 @@ function showImportFeedback(result, entityLabel = "客户") {
   }
   const dialog = $("#importResultDialog");
   if (!dialog.open) dialog.showModal();
+}
+
+function normalizeImportResult(result = {}) {
+  const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+  const failures = Array.isArray(result.failures) ? result.failures : [];
+  return {
+    total: Number(result.total || 0),
+    imported: Number(result.imported || 0),
+    duplicates: Number(result.duplicates ?? skipped.length ?? 0),
+    failed: Number(result.failed ?? failures.length ?? 0),
+    pendingLocation: Number(result.pendingLocation || 0),
+    pendingGeocode: Number(result.pendingGeocode || 0),
+    reportUrl: result.reportUrl || "",
+    skipped,
+    failures
+  };
 }
 
 function importErrorResult(error) {
@@ -570,6 +616,57 @@ async function resetPassword(event) {
     toast(error.message || "密码重置失败");
   } finally {
     setFormSubmitting(formNode, false, "重置中...");
+  }
+}
+
+function openEditUserDialog(id) {
+  const user = state.users.find((item) => Number(item.id) === Number(id));
+  if (!user) return;
+  const form = $("#editUserForm");
+  form.reset();
+  form.elements.userId.value = user.id;
+  form.elements.name.value = user.name || "";
+  form.elements.account.value = user.account || user.username || user.phone || "";
+  form.elements.status.value = user.status || "启用";
+  $("#editUserRoleSelect").innerHTML = roles()
+    .map((role) => `<option value="${escapeHtml(role.id)}" ${role.id === user.roleId || role.name === user.role ? "selected" : ""}>${escapeHtml(role.name)}</option>`)
+    .join("");
+  $("#editUserUnitSelect").innerHTML = renderUnitOptions(user.unitId);
+  $("#editUserSummary").textContent = `调整 ${user.name} 的角色、单位或账号状态；不会删除原账号和客户资料。`;
+  $("#editUserDialog").showModal();
+}
+
+async function submitEditUser(event) {
+  event.preventDefault();
+  const formNode = event.currentTarget;
+  const form = new FormData(formNode);
+  const userId = Number(form.get("userId"));
+  const role = roles().find((item) => item.id === form.get("roleId"));
+  const unit = (state.units || []).find((item) => item.id === form.get("unitId"));
+  const name = String(form.get("name") || "").trim();
+  if (!name) return toast("请填写员工姓名");
+  if (!role) return toast("请选择角色");
+  if (!unit) return toast("请选择单位");
+  setFormSubmitting(formNode, true, "保存中...");
+  try {
+    await api(`/users/${userId}`, {
+      method: "PUT",
+      body: {
+        name,
+        roleId: role.id,
+        role: role.name,
+        unitId: unit.id,
+        unit: unit.name,
+        status: form.get("status") || "启用"
+      }
+    });
+    $("#editUserDialog").close();
+    await loadState();
+    showSuccessFeedback("员工信息已更新", `${name} 的角色、单位和权限已更新；该员工重新登录后生效。`);
+  } catch (error) {
+    toast(error.message || "员工信息保存失败");
+  } finally {
+    setFormSubmitting(formNode, false, "保存中...");
   }
 }
 
@@ -768,7 +865,8 @@ function renderDashboardSummary(data) {
   $("#dashboardIndustry").innerHTML = [
     analysisBlock("现用软件", data.industry.software),
     analysisBlock("设备品牌", data.industry.equipmentBrands),
-    analysisBlock("未成交原因", data.industry.lossReasons),
+    analysisBlock("目前未成交原因", data.industry.lossReasons),
+    analysisBlock("功能原因细分", data.industry.functionLossReasons || []),
     analysisBlock("地推城市", data.industry.cities)
   ].join("");
   $("#dashboardInsights").innerHTML = data.insights.map((item) => `<article class="insight-item"><b>${escapeHtml(item.title)}</b><p>${escapeHtml(item.detail)}</p></article>`).join("");
@@ -839,7 +937,7 @@ function renderCustomers() {
     const source = `${item.name} ${item.phone}`.toLowerCase();
     if (dashboardDrilldownIds && !dashboardDrilldownIds.has(Number(item.id)) && !dashboardDrilldownIds.has(Number(item.customerId))) return false;
     const isPublicPool = item.ownershipStatus === "public_pool";
-    if (currentStage === "公海" ? !isPublicPool : (isPublicPool || item.stage !== currentStage)) return false;
+    if (!dashboardDrilldownIds && (currentStage === "公海" ? !isPublicPool : (isPublicPool || item.stage !== currentStage))) return false;
     if (keyword && !source.includes(keyword)) return false;
     if (channel && normalizeChannelSource(item.channelSource) !== channel) return false;
     if (createdBy && item.createdBy !== createdBy) return false;
@@ -852,7 +950,7 @@ function renderCustomers() {
     return true;
   });
   currentFilteredCustomerRows = filteredRows;
-  $("#customerResultCount").textContent = `${dashboardDrilldownIds ? "看板下钻 · " : ""}当前${currentStage}：${filteredRows.length}条`;
+  $("#customerResultCount").textContent = dashboardDrilldownIds ? `看板下钻：${filteredRows.length}条` : `当前${currentStage}：${filteredRows.length}条`;
   const totalPages = Math.max(Math.ceil(filteredRows.length / customerPageSize), 1);
   customerPage = Math.min(Math.max(customerPage, 1), totalPages);
   const start = (customerPage - 1) * customerPageSize;
@@ -893,9 +991,11 @@ function customerRow(item) {
   const phoneHtml = isPublicPool
     ? `<span class="pool-private-value">认领后可见</span>`
     : `<a href="tel:${escapeHtml(primaryContact.phone || item.phone)}">${escapeHtml(primaryContact.phone || item.phone)}</a>${contactCount > 1 ? `<small>另有${contactCount - 1}位联系人</small>` : ""}`;
+  const followCount = (item.followUps || []).length;
+  const lastNote = String(item.lastNote || "").trim();
   const followHtml = isPublicPool
     ? `<small class="pool-private-value">认领后可查看跟进历史</small>`
-    : `<small>${escapeHtml(item.lastNote || "暂无跟进记录")}</small><button class="history-link" data-action="history" data-id="${item.id}">查看历史(${(item.followUps || []).length})</button>${photoHtml}`;
+    : `${lastNote ? `<small>${escapeHtml(lastNote)}</small>` : ""}<button class="history-link" data-action="history" data-id="${item.id}">查看历史(${followCount})</button>${photoHtml}`;
   const actions = isPublicPool
     ? (canOwnCustomer(currentUser())
         ? `<button class="primary" data-action="claim" data-id="${item.id}">认领</button>`
@@ -916,7 +1016,7 @@ function customerRow(item) {
       <td>${latestFollow(item) || "-"}</td>
       <td class="${dueClass}">${item.nextFollow || "未设置"}</td>
       <td>${escapeHtml(item.unit || "待分配")}</td>
-      <td>${escapeHtml(item.address || item.region || "待补充")}</td>
+      <td>${escapeHtml(item.address || "-")}</td>
       <td>${actions}</td>
     </tr>`;
 }
@@ -1043,11 +1143,22 @@ function renderUserOrgTree() {
     (children.get(String(unitId)) || []).forEach((child) => { count += countForUnit(child.id); });
     return count;
   };
-  const renderUserCard = (user) => `<article class="user-card">
-    <b>${escapeHtml(user.name)}</b><span>${user.status || "启用"}</span>
-    <p>${escapeHtml(user.role)} · ${escapeHtml(user.orgPath || user.unit || "待分配")} · ${escapeHtml(user.zone || "未分战区")} · 账号：${escapeHtml(user.account || user.username || user.phone || "-")}</p>
-    <div class="user-actions">${Number(user.id) === Number(currentUser().id) ? "" : `<button data-action="reset-password" data-id="${user.id}">重置密码</button><button data-action="offboard-user" data-id="${user.id}">离职交接</button><button data-action="delete-user" data-id="${user.id}">删除员工</button>`}</div>
-  </article>`;
+  const renderUserCard = (user) => {
+    const orgLabel = user.orgPath || user.unit || "待分配";
+    const zoneUnit = battleZoneForUser(user);
+    const zoneLabel = zoneUnit?.name || (zones.includes(user.zone) ? user.zone : "");
+    const meta = [
+      user.role || "未设置角色",
+      orgLabel,
+      zoneLabel && !String(orgLabel).includes(zoneLabel) ? zoneLabel : "",
+      `账号：${user.account || user.username || user.phone || "-"}`
+    ].filter(Boolean).join(" · ");
+    return `<article class="user-card">
+      <b>${escapeHtml(user.name)}</b><span>${user.status || "启用"}</span>
+      <p>${escapeHtml(meta)}</p>
+      <div class="user-actions">${Number(user.id) === Number(currentUser().id) ? "" : `<button data-action="edit-user" data-id="${user.id}">编辑员工</button><button data-action="reset-password" data-id="${user.id}">重置密码</button><button data-action="offboard-user" data-id="${user.id}">离职交接</button><button data-action="delete-user" data-id="${user.id}">删除员工</button>`}</div>
+    </article>`;
+  };
   const renderNode = (unit) => {
     const unitId = String(unit.id);
     const collapsed = collapsedUserUnitIds.has(unitId);
@@ -1073,6 +1184,9 @@ function renderUserOrgTree() {
 function openCustomerDialog(customer = null) {
   const form = $("#customerForm");
   form.reset();
+  const editingExisting = Boolean(customer);
+  form.classList.toggle("follow-mode", editingExisting);
+  $$(".customer-dialog-create-field").forEach((node) => node.classList.toggle("hidden", editingExisting));
   form.id.value = customer?.customerId || customer?.id || "";
   form.opportunityId.value = customer?.opportunityId || "";
   form.name.value = customer?.name || "";
@@ -1100,7 +1214,10 @@ function openCustomerDialog(customer = null) {
   form.paymentAmount.value = customer?.paymentAmount || "";
   form.paymentDate.value = customer?.paymentDate || "";
   form.paymentOwnerId.value = customer?.paymentOwnerId || currentUser().id || "";
+  form.lossReason.innerHTML = lossReasonOptionsHtml(customer?.lossReason || "");
   form.lossReason.value = customer?.lossReason || "";
+  if (form.lossReasonDetail) form.lossReasonDetail.value = customer?.lossReasonDetail || "";
+  toggleLossReasonDetailField(form);
   form.note.value = "";
   form.nextFollow.value = customer?.nextFollow || today;
   const identityLocked = Boolean(customer) && !canAdmin();
@@ -1148,10 +1265,13 @@ async function saveCustomer(event) {
   const ownerUser = userById(form.get("owner"));
   const ownerUnit = unitForId(ownerUser.unitId);
   const note = String(form.get("note") || "").trim();
+  const productId = String(form.get("productId") || "");
+  if (!productId) return toast("请选择：意向产品");
   const contacts = readContactsEditor();
   const primaryContact = contacts.find((item) => item.isPrimary) || contacts[0] || {};
   const competitorProfiles = readCompetitorProfilesEditor();
   const metadataLocked = Boolean(id) && !canAdmin();
+  const lossReason = String(form.get("lossReason") || "");
   const customer = {
     id: id || Date.now(),
     name: String(form.get("name")).trim(),
@@ -1159,7 +1279,7 @@ async function saveCustomer(event) {
     contacts,
     competitorProfiles,
     opportunityId: opportunityId || undefined,
-    productId: String(form.get("productId") || ""),
+    productId,
     channelSource: metadataLocked
       ? event.currentTarget.dataset.originalChannelSource
       : normalizeChannelSource(form.get("channelSource") || "其他"),
@@ -1176,14 +1296,15 @@ async function saveCustomer(event) {
     unit: ownerUser.unit || ownerUnit.name || "",
     zone: ownerUser.zone || ownerUnit.zone || "",
     region: ownerUser.zone || ownerUnit.zone || "待分区",
-    amount: Number(form.get("amount") || productDefaultAmount(form.get("productId"))),
+    amount: Number(form.get("amount") || productDefaultAmount(productId)),
     demoAt: String(form.get("demoAt") || ""),
     expectedDealDate: String(form.get("expectedDealDate") || ""),
     contractAmount: Number(form.get("contractAmount") || 0),
     paymentAmount: Number(form.get("paymentAmount") || 0),
     paymentDate: String(form.get("paymentDate") || ""),
     paymentOwnerId: Number(form.get("paymentOwnerId") || currentUser().id),
-    lossReason: String(form.get("lossReason") || ""),
+    lossReason,
+    lossReasonDetail: lossReason === "功能原因" ? String(form.get("lossReasonDetail") || "").trim() : "",
     createdAt: id ? undefined : today,
     lastFollow: today,
     nextFollow: String(form.get("nextFollow") || ""),
@@ -1395,7 +1516,8 @@ async function batchAssignCustomers(event) {
 async function batchImport(event) {
   event.preventDefault();
   if (event.submitter?.value === "cancel") return $("#batchDialog").close();
-  const form = new FormData(event.currentTarget);
+  const formNode = event.currentTarget;
+  const form = new FormData(formNode);
   const importToPublicPool = currentStage === "公海";
   const ownerUser = importToPublicPool ? {} : userById(form.get("owner"));
   const owner = ownerUser.name || "";
@@ -1425,10 +1547,14 @@ async function batchImport(event) {
   try {
     const result = await api(endpoint, { method: "POST", body: importBody });
     $("#batchDialog").close();
-    event.currentTarget.reset();
+    formNode.reset();
     customerPage = 1;
-    await loadState();
     showImportFeedback(result);
+    try {
+      await loadState();
+    } catch (refreshError) {
+      toast(refreshError.message || "导入成功，但列表刷新失败，请稍后手动刷新");
+    }
     if (importToPublicPool && Number(result.pendingGeocode || 0)) trackGeocodeProgress();
   } catch (error) {
     $("#batchDialog").close();
@@ -1829,13 +1955,14 @@ function renderAdmin() {
   }
   $("#userList").innerHTML = renderUserOrgTree();
   $("#competitorList").innerHTML = (state.competitors || []).map((item) => `<article><b><i class="competitor-swatch" style="background:${escapeHtml(item.color)}"></i>${escapeHtml(item.name)}</b><span>${item.active === false ? "停用" : "启用"}</span></article>`).join("");
-  $("#productList").innerHTML = (state.products || []).map((item) => `
+  $("#productList").innerHTML = selectableProducts().map((item) => `
     <article>
       <b>${escapeHtml(item.name)}</b>
-      <span>${item.active === false ? "停用" : "启用"} · ${escapeHtml(formatMoney(item.price || 0))}</span>
+      <span>${item.active === false ? "停用" : "启用"} · ${escapeHtml(formatMoney(item.price || 0))} · 排序 ${Number(item.sort || 100)}</span>
       <div class="inline-actions">
         <input type="number" min="0" step="0.01" value="${Number(item.price || 0)}" data-product-price="${escapeHtml(item.id)}" aria-label="${escapeHtml(item.name)}价格" />
-        <button data-action="update-product-price" data-id="${escapeHtml(item.id)}">保存价格</button>
+        <input type="number" min="0" step="1" value="${Number(item.sort || 100)}" data-product-sort="${escapeHtml(item.id)}" aria-label="${escapeHtml(item.name)}排序" />
+        <button data-action="update-product-price" data-id="${escapeHtml(item.id)}">保存</button>
       </div>
     </article>`).join("");
   $("#channelSourceList").innerHTML = (state.channelSources || [])
@@ -1846,6 +1973,17 @@ function renderAdmin() {
         <div class="inline-actions">
           <button data-action="toggle-channel-source" data-id="${escapeHtml(item.id)}">${item.active === false ? "启用" : "停用"}</button>
           <button data-action="delete-channel-source" data-id="${escapeHtml(item.id)}">删除</button>
+        </div>
+      </article>`)
+    .join("");
+  $("#lossReasonList").innerHTML = (state.lossReasons || [])
+    .map((item) => `
+      <article>
+        <b>${escapeHtml(item.name)}</b>
+        <span>${item.active === false ? "停用" : "启用"}</span>
+        <div class="inline-actions">
+          <button data-action="toggle-loss-reason" data-id="${escapeHtml(item.id)}">${item.active === false ? "启用" : "停用"}</button>
+          <button data-action="delete-loss-reason" data-id="${escapeHtml(item.id)}">删除</button>
         </div>
       </article>`)
     .join("");
@@ -1986,8 +2124,9 @@ async function addCompetitor(event) {
 async function addProduct(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
-  await api("/products", { method: "POST", body: { name: String(form.get("name") || "").trim(), price: Number(form.get("price") || 0) } });
+  await api("/products", { method: "POST", body: { name: String(form.get("name") || "").trim(), price: Number(form.get("price") || 0), sort: Number(form.get("sort") || 100) } });
   event.currentTarget.reset();
+  event.currentTarget.elements.sort.value = "100";
   await loadState();
   showSuccessFeedback("产品添加成功", "产品已加入销售机会和客户导入选项。 ");
 }
@@ -2007,16 +2146,18 @@ async function updateProductPrice(productId) {
   const product = productById(productId);
   if (!product.id) return;
   const input = [...document.querySelectorAll("[data-product-price]")].find((item) => item.dataset.productPrice === productId);
+  const sortInput = [...document.querySelectorAll("[data-product-sort]")].find((item) => item.dataset.productSort === productId);
   await api(`/products/${encodeURIComponent(productId)}`, {
     method: "PUT",
     body: {
       name: product.name,
       price: Number(input?.value || 0),
+      sort: Number(sortInput?.value || product.sort || 100),
       active: product.active !== false
     }
   });
   await loadState();
-  toast("产品价格已更新");
+  toast("产品已更新");
 }
 
 async function toggleChannelSource(sourceId) {
@@ -2036,6 +2177,36 @@ async function deleteChannelSource(sourceId) {
   await api(`/channel-sources/${encodeURIComponent(sourceId)}`, { method: "DELETE" });
   await loadState();
   toast("渠道来源已删除");
+}
+
+async function addLossReason(event) {
+  event.preventDefault();
+  const formNode = event.currentTarget;
+  const name = String(new FormData(formNode).get("name") || "").trim();
+  if (!name) return toast("请填写目前未成交原因名称");
+  await api("/loss-reasons", { method: "POST", body: { name } });
+  formNode.reset();
+  await loadState();
+  showSuccessFeedback("目前未成交原因添加成功", `${name} 已同步到客户跟进表单。`);
+}
+
+async function toggleLossReason(reasonId) {
+  const reason = (state.lossReasons || []).find((item) => item.id === reasonId);
+  if (!reason) return;
+  await api(`/loss-reasons/${encodeURIComponent(reasonId)}`, {
+    method: "PUT",
+    body: { name: reason.name, active: reason.active === false }
+  });
+  await loadState();
+  toast("目前未成交原因已更新");
+}
+
+async function deleteLossReason(reasonId) {
+  const reason = (state.lossReasons || []).find((item) => item.id === reasonId);
+  if (!reason || !confirm(`确认删除目前未成交原因：${reason.name}？已有客户使用的原因不能删除。`)) return;
+  await api(`/loss-reasons/${encodeURIComponent(reasonId)}`, { method: "DELETE" });
+  await loadState();
+  toast("目前未成交原因已删除");
 }
 
 async function importUsers(event) {
@@ -2103,7 +2274,10 @@ function clearCustomerFilters() {
 }
 
 function openDashboardCustomers(customers = [], fallbackStage = "全部") {
-  const ids = customers.map((item) => Number(item.id)).filter(Boolean);
+  const ids = customers
+    .flatMap((item) => [item.id, item.opportunityId, item.customerId])
+    .map((id) => Number(id))
+    .filter(Boolean);
   const itemStages = [...new Set(customers.map((item) => item.stage).filter(Boolean))];
   dashboardDrilldownIds = new Set(ids);
   currentStage = itemStages.length === 1 ? itemStages[0] : fallbackStage;
@@ -2123,8 +2297,11 @@ function handleDashboardClick(event) {
   if (!actionButton) return;
   const action = dashboardData.actions.find((item) => item.key === actionButton.dataset.actionKey);
   if (!action?.count) return;
-  const customersById = new Map(scopeCustomers().map((item) => [Number(item.id), item]));
-  openDashboardCustomers((action.customerIds || []).map((id) => customersById.get(Number(id))).filter(Boolean));
+  const rows = scopeOpportunityRows();
+  const rowsByOpportunityId = new Map(rows.map((item) => [Number(item.id), item]));
+  const rowsByCustomerId = new Map(rows.map((item) => [Number(item.customerId), item]));
+  const ids = action.opportunityIds || action.customerIds || [];
+  openDashboardCustomers(ids.map((id) => rowsByOpportunityId.get(Number(id)) || rowsByCustomerId.get(Number(id))).filter(Boolean));
 }
 
 async function openTargetDialog() {
@@ -2196,6 +2373,7 @@ function wireEvents() {
   $("#logoutBtn").addEventListener("click", logout);
   $("#changePasswordForm").addEventListener("submit", changePassword);
   $("#resetPasswordForm").addEventListener("submit", resetPassword);
+  $("#editUserForm").addEventListener("submit", submitEditUser);
   $("#changePasswordNowBtn").addEventListener("click", () => {
     $("#passwordReminderDialog").close();
     openChangePasswordDialog();
@@ -2348,7 +2526,9 @@ function wireEvents() {
   $("#competitorForm").addEventListener("submit", addCompetitor);
   $("#productForm").addEventListener("submit", addProduct);
   $("#channelSourceForm").addEventListener("submit", addChannelSource);
+  $("#lossReasonForm").addEventListener("submit", addLossReason);
   $("#customerProductSelect").addEventListener("change", (event) => fillAmountFromProduct($("#customerForm"), event.target.value));
+  $("#customerLossReasonSelect").addEventListener("change", () => toggleLossReasonDetailField($("#customerForm")));
   $("#newOpportunityProductSelect").addEventListener("change", (event) => fillAmountFromProduct($("#newOpportunityForm"), event.target.value));
   $("#openUserImportBtn").addEventListener("click", () => $("#userImportDialog").showModal());
   $("#userImportForm").addEventListener("submit", importUsers);
@@ -2364,6 +2544,7 @@ function wireEvents() {
       return;
     }
     if (button.dataset.action === "delete-user") deleteUser(button.dataset.id);
+    if (button.dataset.action === "edit-user") openEditUserDialog(button.dataset.id);
     if (button.dataset.action === "reset-password") openResetPasswordDialog(button.dataset.id);
     if (button.dataset.action === "offboard-user") openOffboardDialog(button.dataset.id);
   });
@@ -2383,6 +2564,12 @@ function wireEvents() {
     if (!button) return;
     if (button.dataset.action === "toggle-channel-source") toggleChannelSource(button.dataset.id).catch((error) => toast(error.message));
     if (button.dataset.action === "delete-channel-source") deleteChannelSource(button.dataset.id).catch((error) => toast(error.message));
+  });
+  $("#lossReasonList").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button) return;
+    if (button.dataset.action === "toggle-loss-reason") toggleLossReason(button.dataset.id).catch((error) => toast(error.message));
+    if (button.dataset.action === "delete-loss-reason") deleteLossReason(button.dataset.id).catch((error) => toast(error.message));
   });
   $("#fieldModeSwitch").addEventListener("click", (event) => {
     const button = event.target.closest("[data-map-mode]");

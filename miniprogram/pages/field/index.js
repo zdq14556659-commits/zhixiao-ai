@@ -39,22 +39,7 @@ Page({
         .filter(Boolean);
       if (!softwareOptions.includes("其他")) softwareOptions.push("其他");
       this.setData({ currentUser: app.getCurrentUser(), visits: app.scopeVisits(), softwareOptions: softwareOptions.length ? softwareOptions : ["其他"] });
-      this.centerOnSelf(() => this.refreshMapData());
-    });
-  },
-
-  centerOnSelf(callback) {
-    wx.getLocation({
-      type: "gcj02",
-      isHighAccuracy: true,
-      success: (result) => {
-        this.setData({ latitude: Number(result.latitude.toFixed(6)), longitude: Number(result.longitude.toFixed(6)), scale: 13, hasCurrentLocation: true });
-        if (callback) callback();
-      },
-      fail: () => {
-        wx.showToast({ title: "未获取当前位置，可手动选择位置", icon: "none" });
-        if (callback) callback();
-      }
+      this.refreshMapData();
     });
   },
 
@@ -173,6 +158,10 @@ Page({
   },
 
   async loadNearby() {
+    if (!this.data.locationReady && !this.data.hasCurrentLocation) {
+      this.setData({ nearbyPoints: [] });
+      return;
+    }
     if (!this.data.latitude || !this.data.longitude) return;
     try {
       const radiusKm = this.data.radiusOptions[this.data.radiusIndex];

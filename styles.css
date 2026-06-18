@@ -582,6 +582,12 @@ button:disabled {
   color: #e5484d;
   font-weight: 700;
 }
+.field-hint {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
 
 .history-dialog-form {
   max-height: min(720px, calc(100vh - 48px));
@@ -1013,6 +1019,7 @@ dialog {
 
 dialog::backdrop { background: rgba(31, 45, 61, 0.38); }
 .dialog-form { padding: 24px; display: grid; gap: 12px; }
+.dialog-form.follow-mode .customer-follow-hide-field { display: none !important; }
 
 .success-dialog {
   width: min(400px, calc(100vw - 32px));

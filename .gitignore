@@ -1,5 +1,6 @@
 node_modules/
 npm-debug.log*
+local-backend*.log
 
 # Runtime data and uploaded visit photos
 backend/data/db.json

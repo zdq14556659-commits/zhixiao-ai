@@ -289,11 +289,8 @@ App({
   },
 
   onLaunch() {
-    if (!wx.getStorageSync(STORAGE_KEY)) {
-      wx.setStorageSync(STORAGE_KEY, seedState);
-    } else {
-      wx.setStorageSync(STORAGE_KEY, migrateLocalState(wx.getStorageSync(STORAGE_KEY)));
-    }
+    wx.removeStorageSync(STORAGE_KEY);
+    this.setLocalState(seedState);
     const session = this.getSession();
     if (session && session.user) {
       this.applySessionToState(session.user);
@@ -302,19 +299,24 @@ App({
   },
 
   getState() {
-    return migrateLocalState(wx.getStorageSync(STORAGE_KEY) || seedState);
+    return this.globalData.state || this.setLocalState(seedState);
   },
 
-  setState(nextState) {
+  setLocalState(nextState = seedState) {
     const session = this.getSession();
-    const state = migrateLocalState({ ...nextState });
+    const state = migrateLocalState(nextState || seedState);
     if (session && session.user) state.currentUserId = session.user.id;
     const sources = (state.channelSources || [])
       .filter((item) => typeof item === "string" || item.active !== false)
       .map((item) => String(typeof item === "string" ? item : item.name || "").trim())
       .filter(Boolean);
     this.globalData.channelSources = [...new Set([...(state.channelSources?.length ? [] : CHANNEL_SOURCES), ...sources])];
-    wx.setStorageSync(STORAGE_KEY, state);
+    this.globalData.state = state;
+    return state;
+  },
+
+  setState(nextState) {
+    const state = this.setLocalState({ ...nextState });
     this.saveRemoteState(state);
   },
 
@@ -364,7 +366,7 @@ App({
       wx.setStorageSync(AUTH_KEY, { token: data.token, user: data.user, loginAt: Date.now() });
       const remoteState = data.state || this.getState();
       remoteState.currentUserId = data.user.id;
-      wx.setStorageSync(STORAGE_KEY, remoteState);
+      this.setLocalState(remoteState);
       return data;
     });
   },
@@ -374,7 +376,7 @@ App({
     wx.removeStorageSync(AUTH_KEY);
     const state = this.getState();
     state.currentUserId = 0;
-    wx.setStorageSync(STORAGE_KEY, state);
+    this.setLocalState(state);
     if (session && session.token) {
       wx.request({
         url: `${API_BASE}/auth/logout`,
@@ -412,7 +414,7 @@ App({
     const exists = state.users.some((item) => item.id === user.id);
     state.currentUserId = user.id;
     if (!exists) state.users.unshift(user);
-    wx.setStorageSync(STORAGE_KEY, state);
+    this.setLocalState(state);
   },
 
   loadRemoteState(callback) {
@@ -436,7 +438,7 @@ App({
             .map((item) => String(typeof item === "string" ? item : item.name || "").trim())
             .filter(Boolean);
           this.globalData.channelSources = [...new Set([...(nextState.channelSources?.length ? [] : CHANNEL_SOURCES), ...sources])];
-          wx.setStorageSync(STORAGE_KEY, nextState);
+          this.setLocalState(nextState);
           if (callback) callback(nextState);
         } else if (res.statusCode === 401) {
           wx.removeStorageSync(AUTH_KEY);

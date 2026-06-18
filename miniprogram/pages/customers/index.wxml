@@ -171,7 +171,7 @@
     <button class="plain-btn" bindtap="resetFilters">一键重置筛选</button>
   </view>
   <view class="empty" wx:elif="{{currentStage !== '公海' && !customerBoardLoading && !customerBoardError && currentStageTotal === 0}}">当前阶段暂无客户</view>
-  <view class="page-tools" wx:if="{{filtered.length}}">
+  <view class="page-tools" wx:if="{{filteredCount}}">
     <picker range="{{pageSizes}}" value="{{pageSizeIndex}}" bindchange="onPageSize">
       <view class="page-size">每页 {{pageSize}} 条⌄</view>
     </picker>
@@ -180,14 +180,14 @@
       <input type="number" value="{{pageSizeInput}}" bindinput="onPageSizeInput" />
       <button class="plain-btn mini-btn" bindtap="applyPageSizeInput">应用</button>
     </view>
-    <text>共 {{filtered.length}} 条</text>
+    <text>共 {{filteredCount}} 条</text>
   </view>
-  <view class="pager" wx:if="{{filtered.length > pageSize}}">
+  <view class="pager" wx:if="{{filteredCount > pageSize}}">
     <button class="plain-btn" bindtap="prevPage" disabled="{{page <= 1}}">上一页</button>
     <text>{{page}} / {{totalPages}}</text>
     <button class="plain-btn" bindtap="nextPage" disabled="{{page >= totalPages}}">下一页</button>
   </view>
-  <view class="jump-pager" wx:if="{{filtered.length > pageSize}}">
+  <view class="jump-pager" wx:if="{{filteredCount > pageSize}}">
     <text>跳至</text>
     <input type="number" value="{{jumpPageInput}}" bindinput="onJumpPageInput" />
     <text>页</text>

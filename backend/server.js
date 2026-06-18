@@ -25,6 +25,7 @@ const PUBLIC_POOL_STATUS = "公海";
 const IMPORT_STATUSES = [...STAGES, PUBLIC_POOL_STATUS];
 const STAGE_TIME_FIELDS = { 线索: "leadAt", 商机: "opportunityAt", 成交: "dealAt" };
 const CHANNEL_SOURCES = ["自媒体", "官网留言", "自主注册", "渠道介绍", "企查查", "客源汇", "公众号", "地推", "其他"];
+const LOSS_REASONS = ["客户原因", "价格原因", "功能原因"];
 const ZONES = ["东部战区", "南部战区", "西部战区", "北部战区", "中部战区"];
 const TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 const PASSWORD_MIN_LENGTH = 6;
@@ -94,11 +95,11 @@ const DEFAULT_COMPETITORS = [
   { id: "competitor-other", name: "其他", color: "#64748b", active: true }
 ];
 const DEFAULT_PRODUCTS = [
-  { id: "product-v1", name: "V1", price: 0, active: true },
-  { id: "product-v3-upgrade", name: "V3升级", price: 0, active: true },
-  { id: "product-erp", name: "ERP", price: 0, active: true },
-  { id: "product-render", name: "渲染软件", price: 0, active: true },
-  { id: "product-other", name: "其他", price: 0, active: true }
+  { id: "product-v1", name: "V1", price: 0, sort: 10, active: true },
+  { id: "product-v3-upgrade", name: "V3升级", price: 0, sort: 20, active: true },
+  { id: "product-erp", name: "ERP", price: 0, sort: 30, active: true },
+  { id: "product-render", name: "渲染软件", price: 0, sort: 40, active: true },
+  { id: "product-other", name: "其他", price: 0, sort: 100, active: true }
 ];
 const LEGACY_DEMO_UNIT_IDS = new Set([
   "unit-east-custom",
@@ -301,7 +302,7 @@ async function routeApi(req, res, url) {
     if ((state.products || []).some((item) => cleanText(item.name) === cleanText(name))) {
       return sendJson(res, 409, { error: "产品已存在" });
     }
-    const product = normalizeProduct({ id: body.id || stableId("product", name), name, price: body.price, active: body.active !== false });
+    const product = normalizeProduct({ id: body.id || stableId("product", name), name, price: body.price, sort: body.sort, active: body.active !== false });
     state.products.push(product);
     writeState(state);
     return sendJson(res, 201, product);
@@ -324,6 +325,7 @@ async function routeApi(req, res, url) {
       ...state.products[index],
       name,
       price: body.price,
+      sort: body.sort,
       active: body.active !== false
     });
     state.products[index] = product;
@@ -385,6 +387,69 @@ async function routeApi(req, res, url) {
     const used = (state.customers || []).some((customer) => cleanText(customer.channelSource) === cleanText(source.name));
     if (used) return sendJson(res, 409, { error: "已有客户使用该渠道来源，请先停用，不能删除" });
     state.channelSources.splice(index, 1);
+    writeState(state);
+    return sendJson(res, 200, { ok: true });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/loss-reasons") {
+    return sendJson(res, 200, authState.lossReasons || normalizeLossReasons());
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/loss-reasons") {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无目前未成交原因管理权限" });
+    const name = String(body.name || "").trim();
+    if (!name) return sendJson(res, 400, { error: "请填写目前未成交原因名称" });
+    state.lossReasons = normalizeLossReasons(state.lossReasons || []);
+    if (state.lossReasons.some((item) => cleanText(item.name) === cleanText(name))) {
+      return sendJson(res, 409, { error: "目前未成交原因已存在" });
+    }
+    const reason = normalizeLossReasonItem({ id: body.id || stableId("loss-reason", name), name, active: body.active !== false, sort: body.sort });
+    state.lossReasons.push(reason);
+    writeState(state);
+    return sendJson(res, 201, reason);
+  }
+
+  const lossReasonUpdate = url.pathname.match(/^\/api\/loss-reasons\/([^/]+)$/);
+  if ((req.method === "PUT" || req.method === "PATCH") && lossReasonUpdate) {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无目前未成交原因管理权限" });
+    state.lossReasons = normalizeLossReasons(state.lossReasons || []);
+    const index = state.lossReasons.findIndex((item) => item.id === lossReasonUpdate[1]);
+    if (index < 0) return sendJson(res, 404, { error: "目前未成交原因不存在" });
+    const name = String(body.name || state.lossReasons[index].name || "").trim();
+    if (!name) return sendJson(res, 400, { error: "请填写目前未成交原因名称" });
+    if (state.lossReasons.some((item, itemIndex) => itemIndex !== index && cleanText(item.name) === cleanText(name))) {
+      return sendJson(res, 409, { error: "目前未成交原因已存在" });
+    }
+    const reason = normalizeLossReasonItem({
+      ...state.lossReasons[index],
+      name,
+      active: body.active !== false,
+      sort: body.sort ?? state.lossReasons[index].sort
+    });
+    state.lossReasons[index] = reason;
+    writeState(state);
+    return sendJson(res, 200, reason);
+  }
+
+  if (req.method === "DELETE" && lossReasonUpdate) {
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无目前未成交原因管理权限" });
+    state.lossReasons = normalizeLossReasons(state.lossReasons || []);
+    const index = state.lossReasons.findIndex((item) => item.id === lossReasonUpdate[1]);
+    if (index < 0) return sendJson(res, 404, { error: "目前未成交原因不存在" });
+    const reason = state.lossReasons[index];
+    const used = (state.opportunities || []).some((opportunity) => cleanText(opportunity.lossReason) === cleanText(reason.name))
+      || (state.customers || []).some((customer) => cleanText(customer.lossReason) === cleanText(reason.name))
+      || (state.visits || []).some((visit) => cleanText(visit.lossReason) === cleanText(reason.name));
+    if (used) return sendJson(res, 409, { error: "已有客户使用该目前未成交原因，请先停用，不能删除" });
+    state.lossReasons.splice(index, 1);
     writeState(state);
     return sendJson(res, 200, { ok: true });
   }
@@ -522,6 +587,7 @@ async function routeApi(req, res, url) {
     if (!note) return sendJson(res, 400, { error: "请填写跟进内容" });
     const next = normalizeOpportunity({
       ...previous,
+      nextFollow: String(body.nextFollow || ""),
       followUps: [...(previous.followUps || []), normalizeFollowUp({ date: body.date || today(), createdAt: new Date().toISOString(), author: viewer.name, note, nextFollow: body.nextFollow || "", isSystem: false }, previous)]
     }, state);
     lockOpportunityOwnership(next, viewer, "提交有效跟进");
@@ -919,6 +985,7 @@ async function routeApi(req, res, url) {
       nextFollow: body.nextFollow || "",
       isSystem: false
     });
+    opportunity.nextFollow = String(body.nextFollow || "");
     lockOpportunityOwnership(opportunity, viewer, "提交有效跟进");
     syncCustomerCompatibility(state, customer.id);
     writeState(state);
@@ -1037,7 +1104,7 @@ async function routeApi(req, res, url) {
     if (identityChanged && !body.confirmSimilar && findSimilarCustomer(state, { ...previous, ...body }, previous.id)) {
       return sendJson(res, 409, { error: "发现同城名称相似的客户，请确认后继续保存", code: "SIMILAR_CUSTOMER_WARNING" });
     }
-    const salesFields = ["productId", "productName", "stage", "owner", "ownerId", "followPerson", "unitId", "unit", "zone", "region", "amount", "demoAt", "quoteAmount", "expectedDealDate", "contractAmount", "paymentAmount", "paymentDate", "paymentOwnerId", "paymentOwner", "lossReason", "ownershipStatus", "claimUntil", "effectiveFollowUpAt", "publicPoolAt", "publicPoolReason", "ownershipHistory", "leadAt", "opportunityAt", "dealAt", "followUps", "lastNote", "note", "lastFollow", "nextFollow"];
+    const salesFields = ["productId", "productName", "stage", "owner", "ownerId", "followPerson", "unitId", "unit", "zone", "region", "amount", "demoAt", "quoteAmount", "expectedDealDate", "contractAmount", "paymentAmount", "paymentDate", "paymentOwnerId", "paymentOwner", "lossReason", "lossReasonDetail", "ownershipStatus", "claimUntil", "effectiveFollowUpAt", "publicPoolAt", "publicPoolReason", "ownershipHistory", "leadAt", "opportunityAt", "dealAt", "followUps", "lastNote", "note", "lastFollow", "nextFollow"];
     const customerBody = { ...body };
     salesFields.forEach((field) => delete customerBody[field]);
     customerBody.city = body.city || (body.address !== undefined ? extractCity(body.address) || "待识别" : previous.city);
@@ -1059,8 +1126,10 @@ async function routeApi(req, res, url) {
       const validationError = validateOpportunityBusinessUpdate(opportunity, opportunityBody);
       if (validationError) return sendJson(res, 400, { error: validationError });
       const updated = normalizeOpportunity({ ...opportunity, ...opportunityBody }, state);
+      if (body.nextFollow !== undefined) updated.nextFollow = String(body.nextFollow || "");
       if (String(body.lastNote || body.note || "").trim()) {
         updated.followUps.push(normalizeFollowUp({ date: body.lastFollow || today(), createdAt: new Date().toISOString(), author: viewer.name, note: body.lastNote || body.note, nextFollow: body.nextFollow || "", isSystem: false }, opportunity));
+        updated.nextFollow = String(body.nextFollow || "");
         lockOpportunityOwnership(updated, viewer, "兼容接口提交有效跟进");
       }
       if (body.stage && body.stage !== opportunity.stage) {
@@ -1187,6 +1256,52 @@ async function routeApi(req, res, url) {
     state.users.push(user);
     writeState(state);
     return sendJson(res, 201, publicUser(user));
+  }
+
+  const userUpdate = url.pathname.match(/^\/api\/users\/(\d+)$/);
+  if (req.method === "PUT" && userUpdate) {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无员工编辑权限" });
+    const id = Number(userUpdate[1]);
+    if (Number(viewer.id) === id) return sendJson(res, 400, { error: "不能在这里修改当前登录账号" });
+    const index = state.users.findIndex((user) => Number(user.id) === id);
+    if (index < 0) return sendJson(res, 404, { error: "员工不存在" });
+    if (!visibleUsers(state, viewer).some((user) => Number(user.id) === id)) {
+      return sendJson(res, 403, { error: "不能编辑权限范围外员工" });
+    }
+    const target = state.users[index];
+    const role = (state.roles || []).find((item) => body.roleId && item.id === body.roleId)
+      || (state.roles || []).find((item) => cleanText(item.name) === cleanText(body.role || ""));
+    if (!role?.id) return sendJson(res, 400, { error: "请选择有效角色" });
+    const unit = unitById(state.units || [], body.unitId || target.unitId);
+    if (!unit?.id) return sendJson(res, 400, { error: "请选择有效单位" });
+    const nextName = String(body.name || target.name || "").trim();
+    if (!nextName) return sendJson(res, 400, { error: "员工姓名必填" });
+    const nextStatus = ["启用", "停用"].includes(String(body.status || "")) ? String(body.status) : (target.status || "启用");
+    const before = publicUser(target);
+    const next = applyUnitToUser({
+      ...target,
+      name: nextName,
+      role: role.name,
+      roleId: role.id,
+      status: nextStatus,
+      authVersion: Number(target.authVersion || 1) + 1
+    }, unit);
+    state.users[index] = next;
+    appendSecurityLog(state, {
+      type: "update_user",
+      actorId: viewer.id,
+      actorName: viewer.name,
+      targetId: next.id,
+      targetName: next.name,
+      sourceIp: getRequestIp(req),
+      beforeRole: before.role,
+      afterRole: next.role
+    });
+    writeState(state);
+    return sendJson(res, 200, { ok: true, user: publicUser(next) });
   }
 
   const userPasswordUpdate = url.pathname.match(/^\/api\/users\/(\d+)\/password$/);
@@ -1506,6 +1621,7 @@ function normalizeIncomingState(input) {
     targets: mergeById(current.targets, input.targets),
     competitors: mergeById(current.competitors, input.competitors),
     channelSources: mergeById(current.channelSources, input.channelSources),
+    lossReasons: mergeById(current.lossReasons, input.lossReasons),
     routes: mergeById(current.routes, input.routes),
     geocodeJobs: mergeById(current.geocodeJobs, input.geocodeJobs),
     knowledge: input.knowledge || current.knowledge || [],
@@ -1563,13 +1679,14 @@ function migrateState(state) {
   const competitors = normalizeCompetitors(source.competitors || []);
   const products = normalizeProducts(source.products || []);
   const channelSources = normalizeChannelSources(source.channelSources || []);
+  const lossReasons = normalizeLossReasons(source.lossReasons || []);
   const users = ensureSystemAdminUser(normalizeUsers(source.users || [], {
     roles,
     units,
     resetAdminPassword: !["backend-v3", "backend-v4", "backend-v5", "backend-v6", "backend-v7", "backend-v8", "backend-v9"].includes(source.version)
   }), roles, units);
   const activities = source.activities || [];
-  const context = { roles, units, users, activities, competitors, products, channelSources, legacyOwnership };
+  const context = { roles, units, users, activities, competitors, products, channelSources, lossReasons, legacyOwnership };
   const customers = (source.customers || []).map((customer) => normalizeCustomer(customer, context));
   const opportunitySource = Array.isArray(source.opportunities) && source.opportunities.length
     ? source.opportunities
@@ -1596,6 +1713,7 @@ function migrateState(state) {
     competitors,
     products,
     channelSources,
+    lossReasons,
     users,
     customers,
     opportunities,
@@ -1640,10 +1758,13 @@ function normalizeProducts(products = []) {
   (Array.isArray(products) ? products : []).forEach((item) => {
     const normalized = normalizeProduct(item);
     const index = merged.findIndex((entry) => entry.id === normalized.id || cleanText(entry.name) === cleanText(normalized.name));
-    if (index >= 0) merged[index] = { ...merged[index], ...normalized };
+    if (index >= 0) {
+      const hasExplicitSort = item && item.sort !== undefined && item.sort !== null && String(item.sort).trim() !== "";
+      merged[index] = { ...merged[index], ...normalized, sort: hasExplicitSort ? normalized.sort : merged[index].sort };
+    }
     else merged.push(normalized);
   });
-  return merged;
+  return merged.sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0) || String(left.name).localeCompare(String(right.name), "zh-Hans-CN"));
 }
 
 function normalizeProduct(product = {}) {
@@ -1652,6 +1773,7 @@ function normalizeProduct(product = {}) {
     id: product.id || stableId("product", name),
     name,
     price: normalizeMoney(product.price),
+    sort: Number.isFinite(Number(product.sort)) ? Number(product.sort) : 100,
     active: product.active !== false
   };
 }
@@ -1674,6 +1796,30 @@ function normalizeChannelSourceItem(item = {}) {
   const name = String(item.name || item.value || item.label || "").trim();
   return {
     id: String(item.id || stableId("channel", name || Date.now())),
+    name,
+    active: item.active !== false,
+    sort: Number.isFinite(Number(item.sort)) ? Number(item.sort) : 100
+  };
+}
+
+function normalizeLossReasons(reasons = []) {
+  const incoming = Array.isArray(reasons) ? reasons : [];
+  const base = incoming.length ? [] : LOSS_REASONS.map((name, index) => ({ id: stableId("loss-reason", name), name, sort: index + 1 }));
+  const merged = base.map(normalizeLossReasonItem);
+  incoming.forEach((item, index) => {
+    const normalized = normalizeLossReasonItem(typeof item === "string" ? { name: item, sort: LOSS_REASONS.length + index + 1 } : item);
+    if (!normalized.name) return;
+    const existingIndex = merged.findIndex((entry) => entry.id === normalized.id || cleanText(entry.name) === cleanText(normalized.name));
+    if (existingIndex >= 0) merged[existingIndex] = { ...merged[existingIndex], ...normalized, id: merged[existingIndex].id };
+    else merged.push(normalized);
+  });
+  return merged.sort((left, right) => Number(left.sort || 100) - Number(right.sort || 100));
+}
+
+function normalizeLossReasonItem(item = {}) {
+  const name = String(item.name || item.value || item.label || "").trim();
+  return {
+    id: String(item.id || stableId("loss-reason", name || Date.now())),
     name,
     active: item.active !== false,
     sort: Number.isFinite(Number(item.sort)) ? Number(item.sort) : 100
@@ -1921,8 +2067,8 @@ function normalizeUser(user = {}, index = 0, context = {}) {
     roleId: roleDef.id,
     unitId: unit.id,
     unit: unit.name || user.unit || user.region || "待分配",
-    zone: unit.zone || normalizeZone(user.zone || user.region || user.unit),
-    region: user.region || unit.zone || unit.name || "待分区",
+    zone: unit.id ? (unit.zone || "") : normalizeZone(user.zone || user.region || user.unit),
+    region: unit.id ? (unit.zone || unit.name || "待分区") : (user.region || "待分区"),
     orgPath: unit.path || user.orgPath || unit.name || "",
     status: user.status || "启用",
     createdAt: user.createdAt || today()
@@ -2108,8 +2254,8 @@ function applyUnitToUser(user = {}, unit = {}) {
     ...user,
     unitId: unit.id || "",
     unit: unit.name || user.unit || "待分配",
-    zone: unit.zone || normalizeZone(user.zone || user.region || unit.name),
-    region: unit.zone || user.region || "待分区",
+    zone: unit.id ? (unit.zone || "") : normalizeZone(user.zone || user.region || unit.name),
+    region: unit.id ? (unit.zone || unit.name || "待分区") : (user.region || "待分区"),
     orgPath: unit.path || unit.name || ""
   };
 }
@@ -2120,8 +2266,8 @@ function syncUnitReferences(state, unitId) {
   const applyRecordUnit = (record) => {
     if (String(record.unitId || "") !== String(unitId)) return;
     record.unit = unit.name || record.unit || "";
-    record.zone = unit.zone || record.zone || "";
-    record.region = unit.zone || record.region || "";
+    record.zone = unit.zone || "";
+    record.region = unit.zone || unit.name || record.region || "";
     record.orgPath = unit.path || record.orgPath || "";
   };
   state.users = (state.users || []).map((user) => String(user.unitId || "") === String(unitId) ? applyUnitToUser(user, unit) : user);
@@ -2174,7 +2320,7 @@ function normalizeCustomer(customer, context = {}) {
   const competitorProfiles = normalizeCompetitorProfiles(customer.competitorProfiles || [], context.competitors || DEFAULT_COMPETITORS, customer.software);
   const primarySoftware = (competitorProfiles.find((item) => item.isPrimary) || competitorProfiles[0] || {}).brand || customer.software || "待补充";
   const location = normalizeLocation(customer.location || {}, customer);
-  const city = location.city || customer.city || extractCity(customer.address || customer.region) || "待识别";
+  const city = location.city || customer.city || extractCity(customer.address) || "待识别";
   return {
     id: Number(customer.id || Date.now()),
     name: customer.name || "",
@@ -2204,6 +2350,7 @@ function normalizeCustomer(customer, context = {}) {
     paymentOwnerId: customer.paymentOwnerId || (customer.paymentAmount ? ownerId : ""),
     paymentOwner: customer.paymentOwner || (customer.paymentAmount ? owner : ""),
     lossReason: customer.lossReason || "",
+    lossReasonDetail: customer.lossReasonDetail || customer.functionLossReason || customer.lossReasonSpecific || "",
     software: primarySoftware,
     competitorProfiles,
     location: { ...location, city: location.city || (city === "待识别" ? "" : city) },
@@ -2252,6 +2399,7 @@ function opportunityFromLegacyCustomer(customer = {}) {
     paymentOwnerId: customer.paymentOwnerId,
     paymentOwner: customer.paymentOwner,
     lossReason: customer.lossReason,
+    lossReasonDetail: customer.lossReasonDetail,
     ownershipStatus: customer.ownershipStatus,
     claimUntil: customer.claimUntil,
     effectiveFollowUpAt: customer.effectiveFollowUpAt,
@@ -2309,6 +2457,8 @@ function normalizeOpportunity(opportunity = {}, context = {}) {
     paymentOwnerId: opportunity.paymentOwnerId || (opportunity.paymentAmount ? opportunity.ownerId || ownerUser.id : ""),
     paymentOwner: opportunity.paymentOwner || (opportunity.paymentAmount ? opportunity.owner || ownerUser.name : ""),
     lossReason: opportunity.lossReason || "",
+    lossReasonDetail: opportunity.lossReasonDetail || opportunity.functionLossReason || opportunity.lossReasonSpecific || "",
+    nextFollow: latest.nextFollow || opportunity.nextFollow || "",
     ownershipStatus: [OWNERSHIP_PENDING, OWNERSHIP_LOCKED, OWNERSHIP_PUBLIC, OWNERSHIP_CLAIMABLE].includes(opportunity.ownershipStatus)
       ? opportunity.ownershipStatus
       : OWNERSHIP_LOCKED,
@@ -2336,7 +2486,7 @@ function syncCustomerCompatibility(state, customerId) {
   const customer = findCustomer(state.customers || [], customerId);
   const opportunity = primaryOpportunity(state, customerId);
   if (!customer || !opportunity) return customer;
-  ["stage", "owner", "ownerId", "followPerson", "unitId", "unit", "zone", "region", "orgPath", "amount", "demoAt", "quoteAmount", "expectedDealDate", "contractAmount", "paymentAmount", "paymentDate", "paymentOwnerId", "paymentOwner", "lossReason", "ownershipStatus", "claimUntil", "effectiveFollowUpAt", "publicPoolAt", "publicPoolReason", "ownershipHistory", "leadAt", "opportunityAt", "dealAt", "followUps"].forEach((field) => {
+  ["stage", "owner", "ownerId", "followPerson", "unitId", "unit", "zone", "region", "orgPath", "amount", "demoAt", "quoteAmount", "expectedDealDate", "contractAmount", "paymentAmount", "paymentDate", "paymentOwnerId", "paymentOwner", "lossReason", "lossReasonDetail", "ownershipStatus", "claimUntil", "effectiveFollowUpAt", "publicPoolAt", "publicPoolReason", "ownershipHistory", "leadAt", "opportunityAt", "dealAt", "followUps"].forEach((field) => {
     customer[field] = opportunity[field];
   });
   return customer;
@@ -2370,7 +2520,7 @@ function opportunityView(state, opportunity) {
     claimable: publicPool.isPublic,
     claimDaysRemaining: opportunity.ownershipStatus === OWNERSHIP_PENDING ? claimDaysRemaining(opportunity.claimUntil) : 0,
     lastFollow: latest.date || "",
-    nextFollow: latest.nextFollow || "",
+    nextFollow: latest.nextFollow || opportunity.nextFollow || "",
     lastNote: latest.note || "",
     followUps: (opportunity.followUps || []).map((item) => normalizeFollowUp(item, opportunity))
   };
@@ -2718,6 +2868,7 @@ function normalizeVisit(visit = {}, context = {}) {
     software: visit.software || visit.currentSoftware || "待补充",
     softwarePrice: visit.softwarePrice || "",
     lossReason: visit.lossReason || visit.reason || "",
+    lossReasonDetail: visit.lossReasonDetail || visit.functionLossReason || visit.lossReasonSpecific || "",
     objections: visit.objections || "",
     result: visit.result || visit.note || "",
     status: normalizeVisitStage(visit.status),
@@ -3713,7 +3864,16 @@ function buildUnitRanking(state, viewer, selectedScope, range, scopedCustomers) 
 }
 
 function actionCustomer(item) {
-  return { id: item.id, name: item.name, stage: item.stage, owner: item.owner, nextFollow: item.nextFollow || "", amount: item.contractAmount || item.amount || 0 };
+  return {
+    id: item.id,
+    opportunityId: item.opportunityId || item.id,
+    customerId: item.customerId || item.id,
+    name: item.name,
+    stage: item.stage,
+    owner: item.owner,
+    nextFollow: item.nextFollow || "",
+    amount: item.contractAmount || item.amount || 0
+  };
 }
 
 function buildActions(customers, range) {
@@ -3727,7 +3887,14 @@ function buildActions(customers, range) {
   ];
   return groups.map((group) => {
     const matches = customers.filter(group.test);
-    return { key: group.key, label: group.label, count: matches.length, customerIds: matches.map((item) => item.id), customers: matches.slice(0, 8).map(actionCustomer) };
+    return {
+      key: group.key,
+      label: group.label,
+      count: matches.length,
+      customerIds: matches.map((item) => item.id),
+      opportunityIds: matches.map((item) => item.opportunityId || item.id),
+      customers: matches.slice(0, 8).map(actionCustomer)
+    };
   });
 }
 
@@ -3744,7 +3911,9 @@ function buildInsights(summary, funnel, actions, industry, target) {
   const pendingPayment = actions.find((item) => item.key === "paymentPending")?.count || 0;
   if (pendingPayment) insights.push({ title: `${pendingPayment}家成交客户尚未足额进款`, detail: "请核对合同金额、实际进款和进款日期，避免成交与现金结果脱节。" });
   const topLoss = industry.lossReasons[0];
-  if (topLoss) insights.push({ title: `主要未成交原因：${topLoss.name}`, detail: `当前记录${topLoss.count}家，建议将成功案例和标准应对话术补入知识库。` });
+  if (topLoss) insights.push({ title: `主要目前未成交原因：${topLoss.name}`, detail: `当前记录${topLoss.count}家，建议将成功案例和标准应对话术补入知识库。` });
+  const topFunctionLoss = industry.functionLossReasons?.[0];
+  if (topFunctionLoss) insights.push({ title: `高频功能缺口：${topFunctionLoss.name}`, detail: `功能原因中该项出现${topFunctionLoss.count}次，可汇总给技术评估产品计划。` });
   return insights.slice(0, 4);
 }
 
@@ -3794,10 +3963,15 @@ function buildDashboard(state, viewer, query = {}) {
     publicPool: publicPoolCount
   };
   const lossReasons = distribution([...customers.map((item) => item.lossReason), ...visits.map((item) => item.lossReason)]);
+  const functionLossReasons = distribution([
+    ...customers.filter((item) => item.lossReason === "功能原因").map((item) => item.lossReasonDetail),
+    ...visits.filter((item) => item.lossReason === "功能原因").map((item) => item.lossReasonDetail)
+  ]);
   const industry = {
     software: distribution(customerMasters.flatMap((item) => softwareNames(primaryCompetitorName(item) || item.software))),
     equipmentBrands: distribution(visits.flatMap((item) => [item.cuttingBrand, item.drillingBrand]).filter(Boolean)),
     lossReasons,
+    functionLossReasons,
     cities: distribution(visits.map((item) => item.city || item.address)),
     profileCompleteness: percentage(customerMasters.filter((item) => item.phone && item.address && (primaryCompetitorName(item) || item.software) && (item.contacts || []).length).length, customerMasters.length)
   };
@@ -4279,9 +4453,33 @@ async function importCustomers(req, viewer, target = "") {
     followPerson: ownerUser.name,
     inputMoneyUnit: multipart.fields.inputMoneyUnit || (multipart.fields.moneyUnit === MONEY_UNIT ? MONEY_UNIT : "wan")
   };
+  const rawRowsText = String(multipart.fields.rows || "");
   const rows = file
     ? parseCustomerImportFile(file, defaults)
-    : parseCustomerRows(multipart.fields.rows || "", defaults);
+    : parseCustomerRows(rawRowsText, defaults);
+  if (!rows.length && (file || rawRowsText.trim())) {
+    const failure = {
+      rowNumber: "",
+      name: file?.filename || "导入数据",
+      phone: "",
+      reason: "未识别到客户数据，请检查表头是否包含客户名称、客户电话，或粘贴格式是否为：客户名称,手机号,渠道来源,客户地址"
+    };
+    const reportUrl = writeImportReport([failure]);
+    return {
+      total: 1,
+      imported: 0,
+      duplicates: 0,
+      failed: 1,
+      pendingLocation: 0,
+      pendingGeocode: 0,
+      reportUrl,
+      skipped: [],
+      failures: [failure],
+      message: "导入失败：未识别到客户数据。",
+      customers: [],
+      opportunities: []
+    };
+  }
   const hasPublicRows = importToPublicPool || rows.some((row) => row.importToPublicPool);
   const hasPrivateRows = !importToPublicPool && rows.some((row) => !row.importToPublicPool);
   if (hasPublicRows && !canImportPublicPool(state, viewer)) throw new Error("仅运营、总负责人和管理员可以导入公海");
@@ -4332,12 +4530,18 @@ async function importCustomers(req, viewer, target = "") {
         phoneNormalized,
         channelSource: row.channelSource,
         createdBy: viewer.name,
+        owner: rowImportToPublicPool ? "公海" : ownerUser.name,
+        ownerId: rowImportToPublicPool ? "" : ownerUser.id,
+        followPerson: rowImportToPublicPool ? "公海" : ownerUser.name,
+        unitId: rowImportToPublicPool ? "" : ownerUser.unitId || "",
+        unit: rowImportToPublicPool ? "" : ownerUser.unit || "",
+        zone: rowImportToPublicPool ? "" : ownerUser.zone || "",
         address: row.address,
-        city: row.city || extractCity(row.address || row.region) || "待识别",
-        region: row.region,
+        city: row.city || extractCity(row.address) || "",
+        region: rowImportToPublicPool ? "" : row.region,
         competitorProfiles: normalizeCompetitorProfiles([], state.competitors, row.software),
         createdAt: today(),
-        location: { latitude: 0, longitude: 0, province: "", city: row.city || extractCity(row.address || row.region) || "", district: "", address: row.address || "", status: row.address ? "pending" : "unknown" },
+        location: { latitude: 0, longitude: 0, province: "", city: row.city || extractCity(row.address) || "", district: "", address: row.address || "", status: row.address ? "pending" : "unknown" },
         followUps: []
       }, state);
       state.customers.unshift(customer);
@@ -4356,7 +4560,7 @@ async function importCustomers(req, viewer, target = "") {
       unitId: rowImportToPublicPool ? "" : ownerUser.unitId || "",
       unit: rowImportToPublicPool ? "" : ownerUser.unit || "",
       zone: rowImportToPublicPool ? "" : ownerUser.zone || "",
-      region: row.region,
+      region: row.region || "",
       createdBy: viewer.name,
       createdAt: today(),
       amount: row.amountProvided ? row.amount : normalizeMoney(product.price) || DEFAULT_EXPECTED_AMOUNT,
@@ -4457,7 +4661,7 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
           createdBy: defaults.createdBy || defaults.owner || "未记录",
           followPerson: defaults.followPerson || defaults.owner || "未分配",
           address: thirdLooksLikeChannel ? row[3] || "" : "",
-          city: thirdLooksLikeChannel ? extractCity(row[3] || "") : extractCity(third),
+          city: thirdLooksLikeChannel ? extractCity(row[3] || "") : "",
           stage: defaults.stage || "名单",
           importToPublicPool: defaults.stage === PUBLIC_POOL_STATUS,
           owner: defaults.owner || "未分配",
@@ -4465,7 +4669,7 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
           unitId: defaults.unitId || "",
           unit: defaults.unit || "",
           zone: defaults.zone || "",
-          region: thirdLooksLikeChannel ? row[3] || defaults.zone || "待分区" : third || defaults.zone || "待分区",
+          region: thirdLooksLikeChannel ? "" : third || "",
           amount: normalizeImportedAmount(amountValue, inputMoneyUnit),
           amountProvided: String(amountValue || "").trim() !== "",
           software: thirdLooksLikeChannel ? row[4] || "待补充" : row[4] || "待补充",
@@ -4493,7 +4697,7 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
         createdBy: record.createdBy || defaults.createdBy || defaults.owner || "未记录",
         followPerson: record.followPerson || defaults.followPerson || defaults.owner || "未分配",
         address: record.address || "",
-        city: record.city || extractCity(record.address || record.region) || "",
+        city: record.city || extractCity(record.address || "") || "",
         stage,
         importToPublicPool,
         owner: record.owner || defaults.owner || record.followPerson || "未分配",
@@ -4501,7 +4705,7 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
         unitId: defaults.unitId || "",
         unit: record.unit || defaults.unit || "",
         zone: defaults.zone || "",
-        region: record.region || record.address || defaults.zone || "待分区",
+        region: record.region || "",
         amount: normalizeImportedAmount(record.amount, inputMoneyUnit),
         amountProvided,
         software: record.software || "待补充",
@@ -5112,6 +5316,7 @@ function buildCustomerAiContext(state, customer, opportunity = null, viewer = nu
     expectedDealDate: selected.expectedDealDate || "",
     contractAmount: selected.contractAmount || 0,
     lossReason: selected.lossReason || "",
+    lossReasonDetail: selected.lossReasonDetail || "",
     opportunities: opportunities.map((item) => ({ id: item.id, productName: item.productName, stage: item.stage, owner: item.owner })),
     equipment: visits[0]?.line || ""
   };
@@ -5152,7 +5357,7 @@ function structuredAdviceFallback(question, customer, citations) {
   const latest = (customer.followUps || [])[customer.followUps.length - 1] || {};
   return {
     intention: customer.stage === "商机" ? "中高意向，需围绕演示结果和决策链继续推进" : `当前处于${customer.stage || "名单"}阶段，需补充关键需求`,
-    coreObjection: question || latest.note || customer.lossReason || "尚未记录明确异议",
+    coreObjection: question || latest.note || [customer.lossReason, customer.lossReasonDetail].filter(Boolean).join("：") || "尚未记录明确异议",
     recommendedScript: citations[0]?.summary || "建议用客户真实订单演示从设计、报价、拆单到开料的完整流程，并量化错单和返工成本。",
     communicationGoal: "确认决策人、现用软件痛点、设备适配情况和下一次演示安排",
     nextAction: customer.demoAt ? "根据演示反馈安排报价和决策人复盘" : "邀请老板、设计主管和生产主管共同参加真实订单演示",
@@ -5162,7 +5367,7 @@ function structuredAdviceFallback(question, customer, citations) {
 }
 
 function rankKnowledgeWithContext(question, knowledge, customer) {
-  const terms = [question, customer.stage, customer.software, customer.lossReason, ...(customer.competitorProfiles || []).map((item) => item.brand), ...(customer.contacts || []).map((item) => item.decisionRole)].join(" ");
+  const terms = [question, customer.stage, customer.software, customer.lossReason, customer.lossReasonDetail, ...(customer.competitorProfiles || []).map((item) => item.brand), ...(customer.contacts || []).map((item) => item.decisionRole)].join(" ");
   const words = terms.split(/[，。；、\s]+/).filter(Boolean);
   return [...knowledge].map((item) => {
     const tags = normalizeKnowledgeTags(item.tags || {});

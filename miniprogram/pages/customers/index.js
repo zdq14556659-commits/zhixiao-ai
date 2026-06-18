@@ -6,6 +6,7 @@ Page({
     stageTabs: [],
     customers: [],
     filtered: [],
+    filteredCount: 0,
     keyword: "",
     channelSources: ["全部"],
     channelIndex: 0,
@@ -106,6 +107,7 @@ Page({
       ? this.privateOpportunityItems
       : app.scopeOpportunityRows();
     const customers = this.data.currentStage === "公海" ? (this.publicPoolItems || []) : privateCustomers;
+    this.customerItems = customers;
     const channelSources = ["全部", ...app.globalData.channelSources];
     const canFilterOwner = role.customerScope !== "self" && this.data.currentStage !== "公海";
     const owners = canFilterOwner ? ["全部", ...app.visibleFollowUsers().map((user) => user.name)] : ["全部"];
@@ -124,7 +126,6 @@ Page({
     }));
     const currentStageTotal = stageTabs.find((item) => item.name === this.data.currentStage)?.count || 0;
     this.setData({
-      customers,
       channelSources,
       channelIndex,
       owners,
@@ -134,7 +135,9 @@ Page({
       ownerIndex,
       regionIndex,
       cityIndex,
-      products: (state.products || []).filter((item) => item.active !== false && !this.isPlaceholderProduct(item)),
+      products: (state.products || [])
+        .filter((item) => item.active !== false && !this.isPlaceholderProduct(item))
+        .sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0) || String(left.name || "").localeCompare(String(right.name || ""), "zh-Hans-CN")),
       stageTimeLabel: this.stageTimeConfig(this.data.currentStage).label,
       canAssign: this.canAssignCustomers(),
       canImportPublic: app.canImportPublicPool(),
@@ -147,19 +150,32 @@ Page({
 
   loadCustomerBoard() {
     this.setData({ customerBoardLoading: true, customerBoardError: "", publicPoolLoading: true, publicPoolLoaded: false, publicPoolError: "", publicPoolFilteredOut: false });
-    return app.requestApi("/customer-board")
-      .then((result) => {
+    return Promise.all([
+      app.requestApi("/customer-board"),
+      app.requestApi("/public-pool").catch((error) => ({ error }))
+    ])
+      .then(([result, publicPoolResult]) => {
         if (result.backendVersion !== "backend-v9") throw new Error("后端版本尚未更新，请等待部署完成后重试");
+        const publicPoolFromBoard = result.publicPool || {};
+        const publicPoolLoadFailed = Boolean(publicPoolResult?.error);
+        const publicPoolItems = publicPoolLoadFailed
+          ? (Array.isArray(publicPoolFromBoard.items) ? publicPoolFromBoard.items : [])
+          : (Array.isArray(publicPoolResult.items) ? publicPoolResult.items : []);
+        const publicPoolCount = publicPoolLoadFailed
+          ? Number(publicPoolFromBoard.count ?? publicPoolItems.length)
+          : Number(publicPoolResult.count ?? publicPoolItems.length);
         this.privateOpportunityItems = Array.isArray(result.items) ? result.items : [];
-        this.publicPoolItems = Array.isArray(result.publicPool?.items) ? result.publicPool.items : [];
-        this.publicPoolCount = Number(result.publicPool?.count ?? this.publicPoolItems.length);
+        this.publicPoolItems = publicPoolItems;
+        this.publicPoolCount = publicPoolCount;
         this.setData({
           customerBoardLoading: false,
           customerBoardError: "",
           publicPoolLoading: false,
           publicPoolLoaded: true,
           publicPoolTotal: this.publicPoolCount,
-          publicPoolError: ""
+          publicPoolError: publicPoolLoadFailed && this.data.currentStage === "公海" && !this.publicPoolItems.length
+            ? (publicPoolResult.error.message || "公海加载失败，请重新加载")
+            : ""
         }, () => this.loadData());
       })
       .catch((error) => {
@@ -287,6 +303,37 @@ Page({
     return String(customer[config.field] || "").slice(0, 10);
   },
 
+  displayRow(item = {}) {
+    const firstPhoto = String(item.firstPhoto || "");
+    const safePhoto = firstPhoto && firstPhoto.length < 500 && !firstPhoto.startsWith("data:") ? firstPhoto : "";
+    const note = String(item.lastNote || "");
+    return {
+      id: item.id,
+      customerId: item.customerId,
+      name: String(item.name || "未命名客户").slice(0, 40),
+      phone: item.phone || "",
+      stage: item.stage || "名单",
+      ownershipStatus: item.ownershipStatus || "",
+      ownershipLabel: item.ownershipLabel || "",
+      isPublicPool: Boolean(item.isPublicPool),
+      canClaim: Boolean(item.canClaim),
+      canAssign: Boolean(item.canAssign),
+      channelLabel: item.channelLabel || "其他",
+      productName: item.productName || "待确认产品",
+      city: item.city || "待识别",
+      followPerson: item.followPerson || "",
+      owner: item.owner || "",
+      stageDate: item.stageDate || "",
+      primarySoftware: item.primarySoftware || "软件待补充",
+      nextFollow: item.nextFollow || "",
+      lastNote: note.length > 80 ? `${note.slice(0, 80)}...` : note,
+      poolHint: item.poolHint || "",
+      publicPoolAt: item.publicPoolAt || "",
+      photoCount: item.photoCount || 0,
+      firstPhoto: safePhoto
+    };
+  },
+
   inDateRange(value, start, end) {
     if (start && (!value || value < start)) return false;
     if (end && (!value || value > end)) return false;
@@ -294,14 +341,16 @@ Page({
   },
 
   applyFilters() {
-    const role = app.getRole(app.getCurrentUser());
+    const currentUser = app.getCurrentUser();
+    const role = app.getRole(currentUser);
+    const sourceCustomers = Array.isArray(this.customerItems) ? this.customerItems : [];
     const keyword = this.data.keyword.trim().toLowerCase();
     const channel = this.data.channelSources[this.data.channelIndex];
     const owner = this.data.owners[this.data.ownerIndex];
     const region = this.data.regions[this.data.regionIndex];
     const city = this.data.cities[this.data.cityIndex];
     const status = this.data.followStatuses[this.data.followStatusIndex];
-    const filtered = this.data.customers.filter((item) => {
+    const filtered = sourceCustomers.filter((item) => {
       const itemChannel = app.normalizeChannelSource(item.channelSource);
       const primarySoftware = item.competitorProfiles?.find((profile) => profile.isPrimary)?.brand || item.software || "";
       const source = `${item.name} ${item.phone} ${primarySoftware} ${item.productName || ""} ${item.lastNote || ""}`.toLowerCase();
@@ -341,13 +390,16 @@ Page({
     const totalPages = Math.max(Math.ceil(filtered.length / this.data.pageSize), 1);
     const page = Math.min(this.data.page, totalPages);
     const start = (page - 1) * this.data.pageSize;
+    const pagedRows = filtered.slice(start, start + this.data.pageSize).map((item) => this.displayRow(item));
     const hasActiveFilters = this.hasActiveFilters();
     const filteredOut = this.data.currentStageTotal > 0 && filtered.length === 0;
+    this.filteredItems = filtered;
     this.setData({
-      filtered,
+      filtered: [],
+      filteredCount: filtered.length,
       page,
       totalPages,
-      paged: filtered.slice(start, start + this.data.pageSize),
+      paged: pagedRows,
       jumpPageInput: String(page),
       pageSizeInput: String(this.data.pageSize),
       hasActiveFilters,
@@ -377,6 +429,13 @@ Page({
   resetFilters() {
     this.dashboardCustomerIds = [];
     this.setData({ ...this.emptyFilters(), page: 1 }, () => this.applyFilters());
+  },
+
+  findVisibleItem(id) {
+    const itemId = Number(id);
+    return (this.filteredItems || []).find((item) => Number(item.id) === itemId)
+      || (this.data.paged || []).find((item) => Number(item.id) === itemId)
+      || (this.publicPoolItems || []).find((item) => Number(item.id) === itemId);
   },
 
   prevPage() {
@@ -434,7 +493,7 @@ Page({
 
   editCustomer(event) {
     const id = Number(event.currentTarget.dataset.id);
-    const customer = this.data.filtered.find((item) => Number(item.id) === id);
+    const customer = this.findVisibleItem(id);
     if (customer?.isPublicPool) {
       wx.showToast({ title: "请先认领公海客户", icon: "none" });
       return;
@@ -450,13 +509,13 @@ Page({
   previewCustomerPhoto(event) {
     const id = Number(event.currentTarget.dataset.id);
     const current = event.currentTarget.dataset.src;
-    const customer = this.data.filtered.find((item) => Number(item.id) === id);
+    const customer = this.findVisibleItem(id);
     const urls = customer && customer.photos && customer.photos.length ? customer.photos : [current];
     wx.previewImage({ current, urls });
   },
 
   goFollow(event) {
-    const opportunity = this.data.filtered.find((item) => Number(item.id) === Number(event.currentTarget.dataset.id));
+    const opportunity = this.findVisibleItem(event.currentTarget.dataset.id);
     if (!opportunity) return;
     this.preserveFiltersOnNextShow = true;
     wx.navigateTo({ url: `/pages/follow/index?id=${opportunity.customerId}&opportunityId=${opportunity.id}` });
@@ -464,7 +523,7 @@ Page({
 
   advanceCustomer(event) {
     const id = Number(event.currentTarget.dataset.id);
-    const customer = this.data.filtered.find((item) => Number(item.id) === id);
+    const customer = this.findVisibleItem(id);
     if (!customer) return;
     const stages = app.getState().stages;
     const stageIndex = stages.indexOf(customer.stage);
@@ -529,7 +588,7 @@ Page({
   },
 
   openNewOpportunity(event) {
-    const item = this.data.filtered.find((row) => Number(row.id) === Number(event.currentTarget.dataset.id));
+    const item = this.findVisibleItem(event.currentTarget.dataset.id);
     if (!item) return;
     this.setData({ newOpportunityOpen: true, newOpportunityCustomerId: item.customerId, productIndex: 0, newOpportunityNote: "", newOpportunityNextFollow: app.globalData.today });
   },
@@ -578,7 +637,7 @@ Page({
 
   claimCustomer(event) {
     const id = Number(event.currentTarget.dataset.id);
-    const item = this.data.filtered.find((row) => Number(row.id) === id) || (this.publicPoolItems || []).find((row) => Number(row.id) === id);
+    const item = this.findVisibleItem(id);
     const productIndex = item && !this.isPlaceholderProduct(item)
       ? this.data.products.findIndex((product) => product.id === item.productId)
       : -1;

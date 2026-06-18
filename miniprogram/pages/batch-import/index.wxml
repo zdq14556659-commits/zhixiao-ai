@@ -2,7 +2,7 @@
   <view class="header">
     <text class="crumb">客户管理 / 批量导入</text>
     <view class="title">{{targetPublicPool ? '批量导入公海' : '批量导入客户'}}</view>
-    <view class="subtitle">{{targetPublicPool ? '公海导入必须包含工厂名称、有效主联系人手机号和完整地址' : '每行一个客户：客户名称,手机号,渠道来源,客户地址,现用软件,预计金额（元）'}}</view>
+    <view class="subtitle">{{targetPublicPool ? '公海导入需包含工厂名称和有效主联系人手机号，地址建议填写；无地址会进入待补地址' : '每行一个客户：客户名称,手机号,渠道来源,客户地址,现用软件,预计金额（元）'}}</view>
   </view>
 
   <form bindsubmit="submitImport">

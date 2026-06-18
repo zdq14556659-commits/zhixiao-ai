@@ -24,6 +24,33 @@
     </view>
   </view>
 
+  <view wx:if="{{editUserId}}" class="success-mask" bindtap="closeEditUser">
+    <view class="reset-password-card" catchtap="noop">
+      <view class="section-title">编辑员工</view>
+      <view class="muted reset-summary">调整 {{editUserName}} 的角色、单位和账号状态，不会删除原客户资料。</view>
+      <view class="form-item"><text class="label">员工姓名</text><input value="{{editUserName}}" bindinput="onEditUserName" /></view>
+      <view class="form-item">
+        <text class="label">角色</text>
+        <picker range="{{roles}}" range-key="name" value="{{editRoleIndex}}" bindchange="onEditUserRole">
+          <view class="picker-box">{{roles[editRoleIndex].name}}</view>
+        </picker>
+      </view>
+      <view class="form-item">
+        <text class="label">单位</text>
+        <picker range="{{units}}" range-key="path" value="{{editUnitIndex}}" bindchange="onEditUserUnit">
+          <view class="picker-box">{{units[editUnitIndex].path || units[editUnitIndex].name || '请选择单位'}}</view>
+        </picker>
+      </view>
+      <view class="form-item">
+        <text class="label">状态</text>
+        <picker range="{{editStatuses}}" value="{{editStatusIndex}}" bindchange="onEditUserStatus">
+          <view class="picker-box">{{editStatuses[editStatusIndex]}}</view>
+        </picker>
+      </view>
+      <view class="reset-actions"><button class="plain-btn" bindtap="closeEditUser">取消</button><button class="primary-btn" loading="{{savingEditUser}}" disabled="{{savingEditUser}}" bindtap="submitEditUser">保存修改</button></view>
+    </view>
+  </view>
+
   <view class="setting-tabs">
     <view class="setting-tab {{activeTab === 'accounts' ? 'active' : ''}}" data-tab="accounts" bindtap="switchTab">账号管理</view>
     <view class="setting-tab {{activeTab === 'knowledge' ? 'active' : ''}}" data-tab="knowledge" bindtap="switchTab">知识库</view>
@@ -120,6 +147,7 @@
           <view class="muted">账号：{{item.account || item.username}}</view>
         </view>
         <view wx:if="{{currentUserId !== item.id}}" class="user-row-actions">
+          <button class="mini-action" data-id="{{item.id}}" bindtap="openEditUser">编辑</button>
           <button class="mini-action" data-id="{{item.id}}" bindtap="openResetPassword">重置密码</button>
           <button class="mini-danger" data-id="{{item.id}}" bindtap="deleteUser">删除</button>
         </view>

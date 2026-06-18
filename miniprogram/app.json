@@ -45,14 +45,8 @@
       }
     ]
   },
-  "permission": {
-    "scope.userLocation": {
-      "desc": "用于销售地推拜访时定位打卡"
-    }
-  },
   "requiredPrivateInfos": [
-    "chooseLocation",
-    "getLocation"
+    "chooseLocation"
   ],
   "style": "v2",
   "sitemapLocation": "sitemap.json"

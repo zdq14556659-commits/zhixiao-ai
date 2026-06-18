@@ -121,10 +121,14 @@ Page({
       header: session && session.token ? { Authorization: `Bearer ${session.token}` } : {},
       formData,
       success: (res) => {
-        wx.hideLoading();
+          wx.hideLoading();
         try {
           const data = JSON.parse(res.data);
-          if (res.statusCode < 200 || res.statusCode >= 300) throw new Error(data.error || `导入失败 ${res.statusCode}`);
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            const error = new Error(data.error || `导入失败 ${res.statusCode}`);
+            error.data = data;
+            throw error;
+          }
           app.loadRemoteState(() => {
             this.setData({ importing: false });
             this.showImportResult(data);

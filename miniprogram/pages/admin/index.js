@@ -13,6 +13,7 @@ Page({
     unitTypeIndex: 2,
     unitTypes: ["department", "battle_zone", "unit", "team"],
     unitTypeNames: ["一级部门", "战区", "单位", "小组"],
+    editStatuses: ["启用", "停用"],
     zoneIndex: 0,
     scopeIndex: 1,
     users: [],
@@ -37,6 +38,12 @@ Page({
     resetPassword: "",
     resetPasswordConfirm: "",
     resettingPassword: false,
+    editUserId: 0,
+    editUserName: "",
+    editRoleIndex: 0,
+    editUnitIndex: 0,
+    editStatusIndex: 0,
+    savingEditUser: false,
     userName: "",
     userAccount: "",
     userPassword: "",
@@ -225,6 +232,65 @@ Page({
       })
       .catch((error) => wx.showToast({ title: error.message || "重置失败", icon: "none" }))
       .finally(() => this.setData({ resettingPassword: false }));
+  },
+
+  openEditUser(event) {
+    const id = Number(event.currentTarget.dataset.id);
+    const user = this.data.users.find((item) => Number(item.id) === id);
+    if (!user) return;
+    const roleIndex = Math.max(0, this.data.roles.findIndex((role) => role.id === user.roleId || role.name === user.role));
+    const unitIndex = Math.max(0, this.data.units.findIndex((unit) => String(unit.id) === String(user.unitId)));
+    const editStatusIndex = Math.max(0, this.data.editStatuses.indexOf(user.status || "启用"));
+    this.setData({
+      editUserId: id,
+      editUserName: user.name || "",
+      editRoleIndex: roleIndex,
+      editUnitIndex: unitIndex,
+      editStatusIndex
+    });
+  },
+
+  closeEditUser() {
+    if (this.data.savingEditUser) return;
+    this.setData({ editUserId: 0, editUserName: "", editRoleIndex: 0, editUnitIndex: 0, editStatusIndex: 0 });
+  },
+
+  onEditUserName(event) {
+    this.setData({ editUserName: event.detail.value });
+  },
+
+  onEditUserRole(event) {
+    this.setData({ editRoleIndex: Number(event.detail.value) });
+  },
+
+  onEditUserUnit(event) {
+    this.setData({ editUnitIndex: Number(event.detail.value) });
+  },
+
+  onEditUserStatus(event) {
+    this.setData({ editStatusIndex: Number(event.detail.value) });
+  },
+
+  submitEditUser() {
+    const name = String(this.data.editUserName || "").trim();
+    const role = this.data.roles[this.data.editRoleIndex] || {};
+    const unit = this.data.units[this.data.editUnitIndex] || {};
+    const status = this.data.editStatuses[this.data.editStatusIndex] || "启用";
+    if (!name) return wx.showToast({ title: "请填写员工姓名", icon: "none" });
+    if (!role.id) return wx.showToast({ title: "请选择角色", icon: "none" });
+    if (!unit.id) return wx.showToast({ title: "请选择单位", icon: "none" });
+    this.setData({ savingEditUser: true });
+    app
+      .requestApi(`/users/${this.data.editUserId}`, {
+        method: "PUT",
+        data: { name, roleId: role.id, role: role.name, unitId: unit.id, unit: unit.name, status }
+      })
+      .then(() => {
+        this.setData({ savingEditUser: false, editUserId: 0, editUserName: "" });
+        this.reload(() => this.flashSuccess("员工信息已更新", `${name}重新登录后将使用新角色权限。`));
+      })
+      .catch((error) => wx.showToast({ title: error.message || "保存失败", icon: "none" }))
+      .finally(() => this.setData({ savingEditUser: false }));
   },
 
   submitUser(event) {
