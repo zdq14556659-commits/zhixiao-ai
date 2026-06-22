@@ -49,6 +49,7 @@ const OWNERSHIP_LOCKED = "locked";
 const OWNERSHIP_CLAIMABLE = "claimable";
 const OWNERSHIP_PUBLIC = "public_pool";
 const PUBLIC_POOL_DAYS = 30;
+const UNKNOWN_SOFTWARE = "未知";
 const LIFECYCLE_ACTIVE = "active";
 const LIFECYCLE_ARCHIVED = "archived";
 const DEFAULT_ADMIN_PASSWORD = "778899";
@@ -88,6 +89,7 @@ const DEFAULT_UNITS = [
   { id: ORG_ZONE_IDS["中部战区"], name: "中部战区", parentId: ORG_WAR_ID, type: "battle_zone", zone: "中部战区", sort: 50, active: true }
 ];
 const DEFAULT_COMPETITORS = [
+  { id: "competitor-unknown", name: "未知", color: "#94a3b8", active: true },
   { id: "competitor-3vjia", name: "三维家", color: "#4f7cff", active: true },
   { id: "competitor-yunxi", name: "云熙", color: "#8b5cf6", active: true },
   { id: "competitor-haixun", name: "海迅", color: "#f59e0b", active: true },
@@ -1057,6 +1059,42 @@ async function routeApi(req, res, url) {
     });
   }
 
+  if (req.method === "POST" && url.pathname === "/api/customers/channel-source") {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canBulkEditCustomerChannelSource(state, viewer)) return sendJson(res, 403, { error: "仅管理员和总负责人可以批量修改渠道来源" });
+    const ids = [...new Set((body.customerIds || body.ids || []).map((id) => Number(id)).filter(Boolean))];
+    if (!ids.length) return sendJson(res, 400, { error: "请选择要修改渠道的客户" });
+    const resolved = resolveChannelSource(body.channelSource, state.channelSources);
+    if (!resolved.raw || !resolved.recognized) return sendJson(res, 400, { error: "请选择有效渠道来源" });
+    const beforeCounts = {};
+    let updated = 0;
+    ids.forEach((id) => {
+      const index = state.customers.findIndex((item) => Number(item.id) === Number(id));
+      if (index < 0) return;
+      const customer = state.customers[index];
+      if (!canViewRecord(state, viewer, customer)) return;
+      beforeCounts[customer.channelSource || "其他"] = (beforeCounts[customer.channelSource || "其他"] || 0) + 1;
+      state.customers[index] = normalizeCustomer({ ...customer, channelSource: resolved.value }, state);
+      (state.opportunities || []).forEach((opportunity) => {
+        if (Number(opportunity.customerId) === Number(id)) opportunity.channelSource = resolved.value;
+      });
+      updated += 1;
+    });
+    if (!updated) return sendJson(res, 404, { error: "没有可修改的客户" });
+    appendSecurityLog(state, {
+      type: "bulk_update_customer_channel_source",
+      actorId: viewer.id,
+      actorName: viewer.name,
+      targetId: 0,
+      targetName: `${updated}个客户 -> ${resolved.value}`,
+      sourceIp: getRequestIp(req)
+    });
+    writeState(state);
+    return sendJson(res, 200, { updated, channelSource: resolved.value, beforeCounts });
+  }
+
   const customerPatch = url.pathname.match(/^\/api\/customers\/(\d+)$/);
   if ((req.method === "PATCH" || req.method === "PUT") && customerPatch) {
     const body = await readBody(req);
@@ -1835,6 +1873,13 @@ function channelSourceNames(sources = CHANNEL_SOURCES, options = {}) {
   return [...new Set([...CHANNEL_SOURCES, ...names])];
 }
 
+function channelSourceKey(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/[\s\u00a0\u1680\u180e\u2000-\u200f\u2028-\u202f\u205f\u3000\ufeff]+/g, "")
+    .toLowerCase();
+}
+
 function normalizeRoles(roles) {
   const incoming = Array.isArray(roles) ? roles : [];
   const merged = [...DEFAULT_ROLES];
@@ -2318,7 +2363,7 @@ function normalizeCustomer(customer, context = {}) {
   const contacts = normalizeContacts(customer.contacts || [], customer);
   const primaryContact = contacts.find((item) => item.isPrimary) || contacts[0] || {};
   const competitorProfiles = normalizeCompetitorProfiles(customer.competitorProfiles || [], context.competitors || DEFAULT_COMPETITORS, customer.software);
-  const primarySoftware = (competitorProfiles.find((item) => item.isPrimary) || competitorProfiles[0] || {}).brand || customer.software || "待补充";
+  const primarySoftware = displaySoftwareName((competitorProfiles.find((item) => item.isPrimary) || competitorProfiles[0] || {}).brand || customer.software);
   const location = normalizeLocation(customer.location || {}, customer);
   const city = location.city || customer.city || extractCity(customer.address) || "待识别";
   return {
@@ -2509,7 +2554,7 @@ function opportunityView(state, opportunity) {
     channelSource: customer.channelSource || "其他",
     address: customer.address || "",
     city: customer.city || customer.location?.city || extractCity(customer.address) || "待识别",
-    software: primaryCompetitorName(customer) || customer.software || "待补充",
+    software: displaySoftwareName(primaryCompetitorName(customer) || customer.software),
     competitorProfiles: customer.competitorProfiles || [],
     photos: customer.photos || [],
     location: customer.location || {},
@@ -2865,7 +2910,7 @@ function normalizeVisit(visit = {}, context = {}) {
     drillingCount: visit.drillingCount || "",
     drillingBrand: visit.drillingBrand || "",
     line: visit.line || buildVisitLine(visit) || "待补充",
-    software: visit.software || visit.currentSoftware || "待补充",
+    software: displaySoftwareName(visit.software || visit.currentSoftware),
     softwarePrice: visit.softwarePrice || "",
     lossReason: visit.lossReason || visit.reason || "",
     lossReasonDetail: visit.lossReasonDetail || visit.functionLossReason || visit.lossReasonSpecific || "",
@@ -2952,7 +2997,7 @@ function syncVisitToCustomer(state, visit) {
       ownerId,
       region: visit.city || visit.address || "待分区",
       amount: DEFAULT_EXPECTED_AMOUNT,
-      software: visit.software || "待补充",
+      software: displaySoftwareName(visit.software),
       photos: normalizePhotos(visit.photos),
       location: {
         latitude: visit.latitude,
@@ -3009,7 +3054,7 @@ function syncVisitToCustomer(state, visit) {
     address: visit.address || state.customers[index].address,
     phone: visit.phone || state.customers[index].phone,
     region: visit.city || state.customers[index].region,
-    competitorProfiles: visit.software && visit.software !== "待补充"
+    competitorProfiles: visit.software && !isUnknownSoftwareValue(visit.software)
       ? normalizeCompetitorProfiles([], state.competitors, visit.software)
       : state.customers[index].competitorProfiles,
     photos: mergePhotos(state.customers[index].photos, visit.photos)
@@ -3716,7 +3761,16 @@ function softwareNames(value) {
   return String(value || "")
     .split(/[+、，,\/]/)
     .map((item) => item.trim())
-    .filter((item) => item && item !== "待补充" && item !== "Excel排产" && item !== "手工报价");
+    .filter((item) => item && !isUnknownSoftwareValue(item) && item !== "Excel排产" && item !== "手工报价");
+}
+
+function isUnknownSoftwareValue(value) {
+  return /^(待补充|未知|未确认软件|软件待确认|未录入|无|暂无|-)$/.test(String(value || "").trim());
+}
+
+function displaySoftwareName(value) {
+  const text = String(value || "").trim();
+  return text && !/^(待补充|-)$/.test(text) ? text : UNKNOWN_SOFTWARE;
 }
 
 function buildTrend(customers, range, revenueCustomers = customers) {
@@ -3864,6 +3918,7 @@ function buildUnitRanking(state, viewer, selectedScope, range, scopedCustomers) 
 }
 
 function actionCustomer(item) {
+  const assignment = latestAssignmentActionToday(item) || {};
   return {
     id: item.id,
     opportunityId: item.opportunityId || item.id,
@@ -3871,14 +3926,64 @@ function actionCustomer(item) {
     name: item.name,
     stage: item.stage,
     owner: item.owner,
+    followPerson: item.followPerson || item.owner || "",
+    productName: item.productName || "",
+    assignedAt: assignment.createdAt || "",
+    assignedBy: assignment.operator || "",
     nextFollow: item.nextFollow || "",
     amount: item.contractAmount || item.amount || 0
   };
 }
 
+const ASSIGNMENT_ACTION_TYPES = new Set(["created", "assigned", "claimed_public_pool", "offboard_transfer"]);
+
+function latestAssignmentActionToday(item = {}, date = today()) {
+  const events = Array.isArray(item.ownershipHistory) ? item.ownershipHistory : [];
+  const candidates = events
+    .filter((event) => ASSIGNMENT_ACTION_TYPES.has(event.type))
+    .filter((event) => String(event.createdAt || "").slice(0, 10) === date)
+    .sort((left, right) => Date.parse(right.createdAt || 0) - Date.parse(left.createdAt || 0));
+  if (candidates[0]) return candidates[0];
+  if (String(item.createdAt || "").slice(0, 10) === date && (item.ownerId || item.owner)) {
+    return { type: "created", createdAt: item.createdAt, operator: item.createdBy || "" };
+  }
+  return null;
+}
+
+function hasManualFollowOnOrAfter(item = {}, actionAt = "") {
+  const actionTime = Date.parse(actionAt);
+  const actionDate = String(actionAt || "").slice(0, 10);
+  return (item.followUps || []).some((follow) => {
+    if (follow.isSystem || !String(follow.note || "").trim()) return false;
+    const followTime = Date.parse(follow.createdAt || "");
+    if (Number.isFinite(actionTime) && Number.isFinite(followTime)) return followTime >= actionTime;
+    const followDate = String(follow.date || follow.createdAt || "").slice(0, 10);
+    return actionDate && followDate >= actionDate;
+  });
+}
+
+function isAssignedTodayUnfollowed(item = {}) {
+  if (item.stage === "成交" || isOpportunityPublicPool(item)) return false;
+  const assignment = latestAssignmentActionToday(item);
+  if (!assignment?.createdAt) return false;
+  return !hasManualFollowOnOrAfter(item, assignment.createdAt);
+}
+
+function actionOwnerSummary(items = []) {
+  const groups = items.reduce((map, item) => {
+    const owner = item.followPerson || item.owner || "未分配";
+    map[owner] = (map[owner] || 0) + 1;
+    return map;
+  }, {});
+  return Object.entries(groups)
+    .map(([name, count]) => ({ name, count }))
+    .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name, "zh-Hans-CN"));
+}
+
 function buildActions(customers, range) {
   const groups = [
     { key: "today", label: "今日待跟进", test: (item) => item.nextFollow === today() },
+    { key: "assignedTodayUnfollowed", label: "今日分配未跟进", test: isAssignedTodayUnfollowed },
     { key: "overdue", label: "逾期跟进", test: (item) => item.nextFollow && item.nextFollow < today() },
     { key: "highIntent", label: "高意向商机", test: (item) => item.stage === "商机" && Boolean(item.demoAt) },
     { key: "contractPending", label: "待合同金额", test: (item) => item.stage === "成交" && Number(item.contractAmount || 0) <= 0 },
@@ -3893,6 +3998,7 @@ function buildActions(customers, range) {
       count: matches.length,
       customerIds: matches.map((item) => item.id),
       opportunityIds: matches.map((item) => item.opportunityId || item.id),
+      ownerSummary: actionOwnerSummary(matches),
       customers: matches.slice(0, 8).map(actionCustomer)
     };
   });
@@ -3973,7 +4079,7 @@ function buildDashboard(state, viewer, query = {}) {
     lossReasons,
     functionLossReasons,
     cities: distribution(visits.map((item) => item.city || item.address)),
-    profileCompleteness: percentage(customerMasters.filter((item) => item.phone && item.address && (primaryCompetitorName(item) || item.software) && (item.contacts || []).length).length, customerMasters.length)
+    profileCompleteness: percentage(customerMasters.filter((item) => item.phone && item.address && !isUnknownSoftwareValue(primaryCompetitorName(item) || item.software) && (item.contacts || []).length).length, customerMasters.length)
   };
   const actions = buildActions(customers, range);
   const drilldowns = {
@@ -4487,6 +4593,7 @@ async function importCustomers(req, viewer, target = "") {
   const createdCustomers = [];
   const skipped = [];
   const failed = [];
+  const warnings = [];
   const fileOpportunityKeys = new Set();
   if (hasPrivateRows && !canOwnCustomerUser(state, ownerUser)) {
     throw new Error("请选择销售、主管或区域经理作为默认跟进人");
@@ -4494,6 +4601,14 @@ async function importCustomers(req, viewer, target = "") {
   rows.forEach((row, index) => {
     const rowImportToPublicPool = importToPublicPool || row.importToPublicPool;
     const rowNumber = Number(row.rowNumber || index + 1);
+    if (row.channelSourceUnrecognized) {
+      warnings.push({
+        rowNumber,
+        name: row.name || "",
+        phone: row.phone || "",
+        reason: `渠道来源“${row.channelSourceRaw || ""}”未识别，已按其他处理`
+      });
+    }
     const phoneNormalized = normalizePhone(row.phone);
     if (!phoneNormalized) {
       failed.push({ rowNumber, name: row.name || "", phone: row.phone || "", reason: "手机号无效" });
@@ -4579,7 +4694,7 @@ async function importCustomers(req, viewer, target = "") {
   });
   if (importedOpportunities.length) writeState(state);
   if (createdCustomers.length) setTimeout(() => processGeocodeQueue().catch(() => {}), 20);
-  const reportRows = [...skipped, ...failed];
+  const reportRows = [...skipped, ...failed, ...warnings];
   const reportUrl = reportRows.length ? writeImportReport(reportRows) : "";
   const pendingLocation = createdCustomers.filter((item) => item.location?.status !== "resolved").length;
   const pendingGeocode = createdCustomers.filter((item) => String(item.address || "").trim() && item.location?.status !== "resolved").length;
@@ -4588,10 +4703,12 @@ async function importCustomers(req, viewer, target = "") {
     imported: importedOpportunities.length,
     duplicates: skipped.length,
     failed: failed.length,
+    channelUnrecognized: warnings.length,
     pendingLocation,
     pendingGeocode,
     reportUrl,
     skipped,
+    warnings,
     failures: failed,
     message: skipped.length
       ? `导入完成：成功${importedOpportunities.length}条，跳过${skipped.length}条。`
@@ -4652,31 +4769,37 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
       const rowNumber = rowIndex + (hasHeader ? 2 : 1);
       if (!hasHeader) {
         const third = String(row[2] || "").trim();
-        const thirdLooksLikeChannel = isKnownChannelText(third, defaults.channelSources) || row.length >= 6;
-        const amountValue = thirdLooksLikeChannel ? row[5] : row[3];
+        const thirdLooksLikeChannel = isKnownChannelText(third, defaults.channelSources);
+        const looksLikeTemplateOrder = !thirdLooksLikeChannel && row.length >= 6 && (!third || normalizeImportStatus(third) || row.length >= 10);
+        const channelRaw = looksLikeTemplateOrder ? row[5] : thirdLooksLikeChannel ? third : defaults.channelSource;
+        const channel = resolveChannelSource(channelRaw, defaults.channelSources);
+        const status = looksLikeTemplateOrder ? normalizeImportStatus(third) : "";
+        const amountValue = looksLikeTemplateOrder ? row[14] : thirdLooksLikeChannel ? row[5] : row[3];
         return {
           name: row[0] || "",
           phone: row[1] || "待补充",
-          channelSource: thirdLooksLikeChannel ? normalizeChannelSource(third, defaults.channelSources) : normalizeChannelSource(defaults.channelSource, defaults.channelSources),
-          createdBy: defaults.createdBy || defaults.owner || "未记录",
-          followPerson: defaults.followPerson || defaults.owner || "未分配",
-          address: thirdLooksLikeChannel ? row[3] || "" : "",
-          city: thirdLooksLikeChannel ? extractCity(row[3] || "") : "",
-          stage: defaults.stage || "名单",
-          importToPublicPool: defaults.stage === PUBLIC_POOL_STATUS,
-          owner: defaults.owner || "未分配",
+          channelSource: channel.value,
+          channelSourceRaw: channel.raw,
+          channelSourceUnrecognized: channel.unrecognized,
+          createdBy: looksLikeTemplateOrder ? row[8] || defaults.createdBy || defaults.owner || "未记录" : defaults.createdBy || defaults.owner || "未记录",
+          followPerson: looksLikeTemplateOrder ? row[9] || defaults.followPerson || defaults.owner || "未分配" : defaults.followPerson || defaults.owner || "未分配",
+          address: looksLikeTemplateOrder ? row[4] || "" : thirdLooksLikeChannel ? row[3] || "" : "",
+          city: looksLikeTemplateOrder ? row[3] || extractCity(row[4] || "") : thirdLooksLikeChannel ? extractCity(row[3] || "") : "",
+          stage: looksLikeTemplateOrder ? status || defaults.stage || "名单" : defaults.stage || "名单",
+          importToPublicPool: looksLikeTemplateOrder ? (status === PUBLIC_POOL_STATUS || defaults.stage === PUBLIC_POOL_STATUS) : defaults.stage === PUBLIC_POOL_STATUS,
+          owner: looksLikeTemplateOrder ? row[9] || defaults.owner || "未分配" : defaults.owner || "未分配",
           ownerId: defaults.ownerId || "",
           unitId: defaults.unitId || "",
-          unit: defaults.unit || "",
+          unit: looksLikeTemplateOrder ? row[7] || defaults.unit || "" : defaults.unit || "",
           zone: defaults.zone || "",
-          region: thirdLooksLikeChannel ? "" : third || "",
+          region: looksLikeTemplateOrder ? "" : thirdLooksLikeChannel ? "" : third || "",
           amount: normalizeImportedAmount(amountValue, inputMoneyUnit),
           amountProvided: String(amountValue || "").trim() !== "",
-          software: thirdLooksLikeChannel ? row[4] || "待补充" : row[4] || "待补充",
-          productName: row[6] || "",
-          lastNote: "名单文件导入。",
-          lastFollow: "",
-          nextFollow: "",
+          software: looksLikeTemplateOrder ? row[13] || "待补充" : thirdLooksLikeChannel ? row[4] || "待补充" : row[4] || "待补充",
+          productName: looksLikeTemplateOrder ? row[6] || "" : row[6] || "",
+          lastNote: looksLikeTemplateOrder ? row[10] || "名单文件导入。" : "名单文件导入。",
+          lastFollow: looksLikeTemplateOrder ? normalizeDateText(row[11] || "") : "",
+          nextFollow: looksLikeTemplateOrder ? normalizeDateText(row[12] || "") : "",
           rowNumber
         };
       }
@@ -4690,10 +4813,13 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
       const importToPublicPool = requestedStatus === PUBLIC_POOL_STATUS;
       const stage = importToPublicPool ? "名单" : requestedStatus;
       const amountProvided = String(record.amount || "").trim() !== "";
+      const channel = resolveChannelSource(record.channelSource || defaults.channelSource, defaults.channelSources);
       return {
         name: record.name || "",
         phone: record.phone || "待补充",
-        channelSource: normalizeChannelSource(record.channelSource || defaults.channelSource, defaults.channelSources),
+        channelSource: channel.value,
+        channelSourceRaw: channel.raw,
+        channelSourceUnrecognized: channel.unrecognized,
         createdBy: record.createdBy || defaults.createdBy || defaults.owner || "未记录",
         followPerson: record.followPerson || defaults.followPerson || defaults.owner || "未分配",
         address: record.address || "",
@@ -4754,31 +4880,39 @@ function normalizeImportStatus(value) {
 }
 
 function normalizeChannelSource(value, sources = CHANNEL_SOURCES) {
-  const text = String(value || "").trim();
-  if (!text) return "其他";
+  return resolveChannelSource(value, sources).value;
+}
+
+function resolveChannelSource(value, sources = CHANNEL_SOURCES) {
+  const raw = String(value || "").normalize("NFKC").trim();
+  if (!raw) return { raw: "", value: "其他", recognized: true, unrecognized: false };
+  const key = channelSourceKey(raw);
   const names = channelSourceNames(sources, { includeInactive: true });
-  if (names.includes(text)) return text;
-  const aliases = {
-    官方资源: "官网留言",
-    官网: "官网留言",
-    网站留言: "官网留言",
-    官网注册: "自主注册",
-    注册: "自主注册",
-    转介绍: "渠道介绍",
-    介绍: "渠道介绍",
-    企查: "企查查",
-    微信公众号: "公众号",
-    手动录入: "其他",
-    批量导入: "其他",
-    展会: "其他"
-  };
-  return aliases[text] || text || "其他";
+  const canonical = names.find((name) => channelSourceKey(name) === key);
+  if (canonical) return { raw, value: canonical, recognized: true, unrecognized: false };
+  const aliases = [
+    ["官方资源", "官网留言"],
+    ["官网", "官网留言"],
+    ["网站留言", "官网留言"],
+    ["官网注册", "自主注册"],
+    ["注册", "自主注册"],
+    ["转介绍", "渠道介绍"],
+    ["介绍", "渠道介绍"],
+    ["企查", "企查查"],
+    ["微信公众号", "公众号"],
+    ["手动录入", "其他"],
+    ["批量导入", "其他"],
+    ["展会", "其他"]
+  ];
+  const alias = aliases.find(([name]) => channelSourceKey(name) === key);
+  if (alias) return { raw, value: alias[1], recognized: true, unrecognized: false };
+  return { raw, value: "其他", recognized: false, unrecognized: true };
 }
 
 function isKnownChannelText(value, sources = CHANNEL_SOURCES) {
   const text = String(value || "").trim();
   if (!text) return false;
-  return channelSourceNames(sources, { includeInactive: true }).includes(text) || ["官方资源", "官网", "网站留言", "官网注册", "注册", "转介绍", "介绍", "企查", "微信公众号", "手动录入", "批量导入", "展会"].includes(text);
+  return resolveChannelSource(text, sources).recognized;
 }
 
 function normalizeDateText(value) {
@@ -5032,6 +5166,12 @@ function canEditCustomerIdentity(state, viewer) {
   return canUseAdmin(state, viewer) || ADMIN_ROLES.includes(findRole(state.roles, viewer.roleId, viewer.role).name);
 }
 
+function canBulkEditCustomerChannelSource(state, viewer) {
+  if (!viewer) return false;
+  const roleName = findRole(state.roles, viewer.roleId, viewer.role).name;
+  return ["总负责人", "管理员"].includes(roleName);
+}
+
 function canManageCustomer(state, viewer, customer) {
   if (!viewer || !canViewRecord(state, viewer, customer)) return false;
   return findRole(state.roles, viewer.roleId, viewer.role).customerScope !== "self" || canUseAdmin(state, viewer);
@@ -5160,6 +5300,7 @@ function buildMapPoints(state, viewer, filters = {}) {
     .filter((point) => !filters.equipment || point.equipment.includes(filters.equipment));
   const countBy = (field) => Object.entries(points.reduce((map, item) => {
     const key = item[field] || "未录入";
+    if (field === "competitor" && isUnknownSoftwareValue(key)) return map;
     map[key] = (map[key] || 0) + 1;
     return map;
   }, {})).map(([name, count]) => ({ name, count })).sort((left, right) => right.count - left.count);

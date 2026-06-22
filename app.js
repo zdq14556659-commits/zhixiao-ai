@@ -365,6 +365,10 @@ function canSelectCustomerForAssign(customer = {}) {
   return canAssignCustomers() && canSeePrivateRecord(customer) && isCustomerAssignable(customer);
 }
 
+function canSelectCustomer(customer = {}) {
+  return canSelectCustomerForAssign(customer) || canBulkEditChannelSource();
+}
+
 async function api(path, options = {}) {
   const active = session();
   const headers = { ...(options.headers || {}) };
@@ -426,9 +430,11 @@ function showImportFeedback(result, entityLabel = "客户") {
   const duplicates = normalized.duplicates;
   const failed = normalized.failed;
   const pendingLocation = normalized.pendingLocation;
+  const channelUnrecognized = normalized.channelUnrecognized;
   const details = [
     ...normalized.skipped,
-    ...normalized.failures
+    ...normalized.failures,
+    ...normalized.warnings
   ];
   $("#importResultTitle").textContent = failed && !imported && !duplicates
     ? `${entityLabel}导入失败`
@@ -440,6 +446,7 @@ function showImportFeedback(result, entityLabel = "客户") {
     ["成功", imported, "success"],
     ["重复", duplicates, "warning"],
     ["失败", failed, "danger"],
+    ...(channelUnrecognized ? [["渠道未识别", channelUnrecognized, "warning"]] : []),
     ...(pendingLocation ? [["待定位", pendingLocation, "warning"]] : [])
   ].map(([label, value, className]) => `<div class="${className}"><span>${label}</span><b>${value}</b></div>`).join("");
   $("#importResultDetails").innerHTML = details.length
@@ -464,15 +471,18 @@ function showImportFeedback(result, entityLabel = "客户") {
 function normalizeImportResult(result = {}) {
   const skipped = Array.isArray(result.skipped) ? result.skipped : [];
   const failures = Array.isArray(result.failures) ? result.failures : [];
+  const warnings = Array.isArray(result.warnings) ? result.warnings : [];
   return {
     total: Number(result.total || 0),
     imported: Number(result.imported || 0),
     duplicates: Number(result.duplicates ?? skipped.length ?? 0),
     failed: Number(result.failed ?? failures.length ?? 0),
+    channelUnrecognized: Number(result.channelUnrecognized ?? warnings.length ?? 0),
     pendingLocation: Number(result.pendingLocation || 0),
     pendingGeocode: Number(result.pendingGeocode || 0),
     reportUrl: result.reportUrl || "",
     skipped,
+    warnings,
     failures
   };
 }
@@ -489,9 +499,11 @@ function importErrorResult(error) {
     imported: Number(data.imported || 0),
     duplicates: Number(data.duplicates || skipped.length || 0),
     failed: Number(data.failed || failures.length || 1),
+    channelUnrecognized: Number(data.channelUnrecognized || 0),
     pendingLocation: Number(data.pendingLocation || 0),
     reportUrl: data.reportUrl || "",
     skipped,
+    warnings: Array.isArray(data.warnings) ? data.warnings : [],
     failures
   };
 }
@@ -724,6 +736,10 @@ function canHardDeleteCustomers() {
   return ["总负责人", "管理员"].includes(roleName);
 }
 
+function canBulkEditChannelSource() {
+  return canHardDeleteCustomers();
+}
+
 function clampPageSize(value) {
   const size = Number(value || 10);
   if (!Number.isFinite(size)) return 10;
@@ -837,10 +853,14 @@ function renderDashboardSummary(data) {
       <span class="hide-mobile">超期${item.overdue}家</span>
     </div>`).join("");
 
-  $("#dashboardActions").innerHTML = data.actions.map((item) => `
+  $("#dashboardActions").innerHTML = data.actions.map((item) => {
+    const ownerSummary = (item.ownerSummary || []).slice(0, 3).map((owner) => `${owner.name}${owner.count}`).join("、");
+    const hint = ownerSummary || (item.customers[0] ? `${item.customers[0].name}${item.count > 1 ? `等${item.count}家` : ""}` : "暂无待处理客户");
+    return `
     <button class="action-item ${["overdue", "paymentPending"].includes(item.key) && item.count ? "is-alert" : ""}" data-action-key="${item.key}" ${item.count ? "" : "disabled"}>
-      <span>${escapeHtml(item.label)}</span><strong>${item.count}</strong><small>${item.customers[0] ? escapeHtml(`${item.customers[0].name}${item.count > 1 ? `等${item.count}家` : ""}`) : "暂无待处理客户"}</small>
-    </button>`).join("");
+      <span>${escapeHtml(item.label)}</span><strong>${item.count}</strong><small>${escapeHtml(hint)}</small>
+    </button>`;
+  }).join("");
 
   const maxTrend = Math.max(...data.trend.flatMap((item) => [item.revenue, item.contract]), 1);
   $("#dashboardTrend").innerHTML = `<div class="trend-columns">${data.trend.map((item) => `
@@ -909,6 +929,8 @@ function renderCustomers() {
   $("#batchOwnerSelect").innerHTML = ownerOptions.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
   $("#batchOwnerField")?.classList.toggle("hidden", currentStage === "公海");
   $("#assignOwnerSelect").innerHTML = ownerOptions.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
+  const batchChannelSourceSelect = $("#batchChannelSourceSelect");
+  if (batchChannelSourceSelect) batchChannelSourceSelect.innerHTML = channelSources.map((source) => `<option>${escapeHtml(source)}</option>`).join("");
   $("#customerStageSelect").innerHTML = stages.map((stage) => `<option>${stage}</option>`).join("");
   $("#customerChannelSelect").innerHTML = channelSources.map((source) => `<option>${source}</option>`).join("");
   const productOptions = productOptionsHtml();
@@ -956,7 +978,7 @@ function renderCustomers() {
   const start = (customerPage - 1) * customerPageSize;
   const rows = filteredRows.slice(start, start + customerPageSize);
   currentCustomerRows = rows;
-  const selectableIds = new Set(filteredRows.filter(canSelectCustomerForAssign).map((item) => Number(item.id)));
+  const selectableIds = new Set(filteredRows.filter(canSelectCustomer).map((item) => Number(item.id)));
   selectedCustomerIds = new Set([...selectedCustomerIds].filter((id) => selectableIds.has(Number(id))));
   $("#customerRows").innerHTML = rows.length
     ? rows.map(customerRow).join("")
@@ -982,9 +1004,10 @@ function customerRow(item) {
     : "";
   const isPublicPool = item.ownershipStatus === "public_pool";
   const assignable = canSelectCustomerForAssign(item);
+  const selectable = canSelectCustomer(item);
   const checked = selectedCustomerIds.has(Number(item.id)) ? "checked" : "";
-  const disabled = assignable ? "" : "disabled";
-  const title = assignable ? "选择客户" : (isPublicPool ? "只能分配权限范围内的公海客户" : "当前客户暂不满足分配条件");
+  const disabled = selectable ? "" : "disabled";
+  const title = selectable ? "选择客户" : (isPublicPool ? "只能分配权限范围内的公海客户" : "当前客户暂不满足分配条件");
   const ownership = ownershipLabel(item);
   const primaryContact = (item.contacts || []).find((contact) => contact.isPrimary) || (item.contacts || [])[0] || { phone: item.phone };
   const contactCount = (item.contacts || []).length;
@@ -1022,9 +1045,10 @@ function customerRow(item) {
 }
 
 function updateCustomerSelectionUI() {
-  const selectableRows = currentCustomerRows.filter(canSelectCustomerForAssign);
+  const selectableRows = currentCustomerRows.filter(canSelectCustomer);
   const pageSelectedCount = selectableRows.filter((item) => selectedCustomerIds.has(Number(item.id))).length;
-  const selectedCount = currentFilteredCustomerRows.filter((item) => canSelectCustomerForAssign(item) && selectedCustomerIds.has(Number(item.id))).length;
+  const selectedCount = currentFilteredCustomerRows.filter((item) => canSelectCustomer(item) && selectedCustomerIds.has(Number(item.id))).length;
+  const assignSelectedCount = currentFilteredCustomerRows.filter((item) => canSelectCustomerForAssign(item) && selectedCustomerIds.has(Number(item.id))).length;
   const selectAll = $("#selectAllCustomers");
   if (selectAll) {
     selectAll.disabled = selectableRows.length === 0;
@@ -1033,8 +1057,14 @@ function updateCustomerSelectionUI() {
   }
   const batchButton = $("#batchAssignBtn");
   if (batchButton) {
-    batchButton.disabled = selectedCount === 0;
-    batchButton.textContent = selectedCount ? `批量分配(${selectedCount})` : "批量分配";
+    batchButton.disabled = assignSelectedCount === 0;
+    batchButton.textContent = assignSelectedCount ? `批量分配(${assignSelectedCount})` : "批量分配";
+  }
+  const channelButton = $("#batchChannelBtn");
+  if (channelButton) {
+    channelButton.classList.toggle("hidden", !canBulkEditChannelSource());
+    channelButton.disabled = selectedCount === 0;
+    channelButton.textContent = selectedCount ? `批量改渠道(${selectedCount})` : "批量改渠道";
   }
 }
 
@@ -1050,7 +1080,7 @@ function toggleCustomerSelection(event) {
 function toggleAllCustomers(event) {
   const checked = event.currentTarget.checked;
   currentCustomerRows.forEach((item) => {
-    if (!canSelectCustomerForAssign(item)) return;
+    if (!canSelectCustomer(item)) return;
     const id = Number(item.id);
     if (checked) selectedCustomerIds.add(id);
     else selectedCustomerIds.delete(id);
@@ -1068,6 +1098,50 @@ function openBatchAssignDialog() {
 function selectedCustomerIdsForAssign() {
   const selectableIds = new Set(currentFilteredCustomerRows.filter(canSelectCustomerForAssign).map((item) => Number(item.id)));
   return [...selectedCustomerIds].map(Number).filter((id) => selectableIds.has(id));
+}
+
+function selectedCustomerIdsForChannelEdit() {
+  const selectableRowsByOpportunityId = new Map(
+    currentFilteredCustomerRows
+      .filter(canSelectCustomer)
+      .map((item) => [Number(item.id), item])
+  );
+  return [...new Set(
+    [...selectedCustomerIds]
+      .map(Number)
+      .map((id) => selectableRowsByOpportunityId.get(id))
+      .filter(Boolean)
+      .map((item) => Number(item.customerId || item.id))
+      .filter(Boolean)
+  )];
+}
+
+function openBatchChannelDialog() {
+  if (!canBulkEditChannelSource()) return toast("仅管理员和总负责人可以批量修改渠道");
+  const ids = selectedCustomerIdsForChannelEdit();
+  if (!ids.length) return toast("请先勾选客户");
+  $("#channelSourceBatchSummary").textContent = `已选择 ${ids.length} 个客户`;
+  $("#batchChannelSourceSelect").innerHTML = channelSources.map((source) => `<option>${escapeHtml(source)}</option>`).join("");
+  const currentChannel = $("#channelFilter")?.value;
+  if (currentChannel && channelSources.includes(currentChannel)) $("#batchChannelSourceSelect").value = currentChannel;
+  $("#channelSourceDialog").showModal();
+}
+
+async function batchUpdateChannelSource(event) {
+  event.preventDefault();
+  if (event.submitter?.value === "cancel") return $("#channelSourceDialog").close();
+  const ids = selectedCustomerIdsForChannelEdit();
+  if (!ids.length) return toast("请先勾选客户");
+  const channelSource = String(new FormData(event.currentTarget).get("channelSource") || "").trim();
+  if (!channelSource) return toast("请选择渠道来源");
+  const result = await api("/customers/channel-source", {
+    method: "POST",
+    body: { customerIds: ids, channelSource }
+  });
+  selectedCustomerIds.clear();
+  $("#channelSourceDialog").close();
+  await loadState();
+  toast(`已修改${result.updated || ids.length}个客户的渠道来源`);
 }
 
 function renderContactsEditor(contacts = []) {
@@ -1094,8 +1168,15 @@ function readContactsEditor() {
   });
 }
 
+function defaultCompetitorDefinition() {
+  return (state.competitors || []).find((item) => item.active !== false && item.name === "未知")
+    || (state.competitors || []).find((item) => item.active !== false)
+    || {};
+}
+
 function renderCompetitorProfilesEditor(profiles = []) {
-  const list = profiles.length ? profiles : [{ competitorId: state.competitors?.[0]?.id || "", isPrimary: true }];
+  const defaultCompetitor = defaultCompetitorDefinition();
+  const list = profiles.length ? profiles : [{ competitorId: defaultCompetitor.id || "", brand: defaultCompetitor.name || "未知", isPrimary: true }];
   $("#customerCompetitorsEditor").innerHTML = list.map((profile, index) => `
     <article class="repeat-row competitor-row" data-index="${index}">
       <div class="repeat-row-head"><b>${index === 0 ? "当前使用软件" : `其他竞品${index}`}</b>${index === 0 ? '<span class="tag">主要</span>' : '<button type="button" data-remove-competitor>删除</button>'}</div>
@@ -2456,6 +2537,7 @@ function wireEvents() {
   $("#addCustomerBtn").addEventListener("click", () => openCustomerDialog());
   $("#batchImportBtn").addEventListener("click", () => $("#batchDialog").showModal());
   $("#batchAssignBtn").addEventListener("click", openBatchAssignDialog);
+  $("#batchChannelBtn")?.addEventListener("click", openBatchChannelDialog);
   $("#selectAllCustomers").addEventListener("change", toggleAllCustomers);
   $("#customerRows").addEventListener("change", toggleCustomerSelection);
   $("#customerRows").addEventListener("click", (event) => {
@@ -2496,7 +2578,10 @@ function wireEvents() {
       renderContactsEditor(contacts.filter((_, itemIndex) => itemIndex !== index));
     }
   });
-  $("#addCompetitorProfileBtn").addEventListener("click", () => renderCompetitorProfilesEditor([...readCompetitorProfilesEditor(), { competitorId: state.competitors?.[0]?.id || "", isPrimary: readCompetitorProfilesEditor().length === 0 }]));
+  $("#addCompetitorProfileBtn").addEventListener("click", () => {
+    const defaultCompetitor = defaultCompetitorDefinition();
+    renderCompetitorProfilesEditor([...readCompetitorProfilesEditor(), { competitorId: defaultCompetitor.id || "", brand: defaultCompetitor.name || "未知", isPrimary: readCompetitorProfilesEditor().length === 0 }]);
+  });
   $("#customerCompetitorsEditor").addEventListener("click", (event) => {
     const button = event.target.closest("[data-remove-competitor]");
     if (!button) return;
@@ -2513,6 +2598,7 @@ function wireEvents() {
   $("#batchForm").addEventListener("submit", batchImport);
   $("#claimForm").addEventListener("submit", submitClaim);
   $("#assignForm").addEventListener("submit", batchAssignCustomers);
+  $("#channelSourceBatchForm")?.addEventListener("submit", batchUpdateChannelSource);
   $("#targetForm").addEventListener("submit", saveTarget);
   $("#recommendBtn").addEventListener("click", recommend);
   $("#aiResult").addEventListener("click", (event) => {

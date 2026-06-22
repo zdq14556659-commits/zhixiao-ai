@@ -23,7 +23,7 @@ Page({
     nearbyPoints: [],
     radiusOptions: [5, 10, 20, 50],
     radiusIndex: 2,
-    softwareOptions: ["其他"],
+    softwareOptions: ["未知", "其他"],
     softwareIndex: 0,
     routeSelectedIds: [],
     todayRoute: null,
@@ -37,8 +37,9 @@ Page({
         .filter((item) => item.active !== false)
         .map((item) => item.name)
         .filter(Boolean);
+      if (!softwareOptions.includes("未知")) softwareOptions.unshift("未知");
       if (!softwareOptions.includes("其他")) softwareOptions.push("其他");
-      this.setData({ currentUser: app.getCurrentUser(), visits: app.scopeVisits(), softwareOptions: softwareOptions.length ? softwareOptions : ["其他"] });
+      this.setData({ currentUser: app.getCurrentUser(), visits: app.scopeVisits(), softwareOptions: softwareOptions.length ? softwareOptions : ["未知", "其他"] });
       this.refreshMapData();
     });
   },
@@ -128,9 +129,9 @@ Page({
   startVisitForPoint() {
     const point = this.data.selectedPoint;
     if (!point) return;
-    const software = point.competitor || point.software || "其他";
+    const software = point.competitor || point.software || "未知";
     const matchedIndex = this.data.softwareOptions.indexOf(software);
-    const softwareIndex = matchedIndex >= 0 ? matchedIndex : Math.max(0, this.data.softwareOptions.indexOf("其他"));
+    const softwareIndex = matchedIndex >= 0 ? matchedIndex : Math.max(0, this.data.softwareOptions.indexOf("未知"));
     this.setData({
       form: { factory: point.name, phone: point.phone, software: point.competitor || point.software || "" },
       softwareIndex,
@@ -259,9 +260,9 @@ Page({
   editVisit(event) {
     const visit = this.data.visits.find((item) => Number(item.id) === Number(event.currentTarget.dataset.id));
     if (!visit) return;
-    const software = visit.software || "其他";
+    const software = visit.software || "未知";
     const matchedIndex = this.data.softwareOptions.indexOf(software);
-    const softwareIndex = matchedIndex >= 0 ? matchedIndex : Math.max(0, this.data.softwareOptions.indexOf("其他"));
+    const softwareIndex = matchedIndex >= 0 ? matchedIndex : Math.max(0, this.data.softwareOptions.indexOf("未知"));
     this.setData({
       editingVisitId: Number(visit.id),
       statusIndex: Math.max(0, this.data.statuses.indexOf(visit.status || "线索")),
@@ -301,7 +302,7 @@ Page({
         phone: form.phone,
         cuttingDevice: form.cuttingDevice || "",
         drillingDevice: form.drillingDevice || "",
-        software: this.data.softwareOptions[this.data.softwareIndex] || "其他",
+        software: this.data.softwareOptions[this.data.softwareIndex] || "未知",
         softwarePrice: form.softwarePrice || "待补充",
         lossReason: form.lossReason || "",
         objections: form.objections || "",

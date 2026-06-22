@@ -109,7 +109,7 @@ Page({
     if (!action?.count) return;
     wx.setStorageSync("zhixiao_dashboard_drilldown", {
       stage: "全部",
-      customerIds: action.customerIds || []
+      customerIds: action.opportunityIds || action.customerIds || []
     });
     wx.switchTab({ url: "/pages/customers/index" });
   },

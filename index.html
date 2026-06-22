@@ -146,6 +146,7 @@
               <button id="addCustomerBtn" class="primary">单个添加</button>
               <button id="batchImportBtn">批量导入</button>
               <button id="batchAssignBtn" disabled>批量分配</button>
+              <button id="batchChannelBtn" disabled>批量改渠道</button>
             </div>
             <div class="table-wrap">
               <table>
@@ -449,6 +450,15 @@
         <p class="muted" id="assignSummary">已选择 0 个客户</p>
         <label>分配给员工<select name="ownerId" id="assignOwnerSelect"></select></label>
         <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">确认分配</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="channelSourceDialog">
+      <form method="dialog" class="dialog-form" id="channelSourceBatchForm">
+        <h2>批量修改渠道来源</h2>
+        <p class="muted" id="channelSourceBatchSummary">已选择 0 个客户</p>
+        <label>新的渠道来源<select name="channelSource" id="batchChannelSourceSelect" required></select></label>
+        <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">确认修改</button></div>
       </form>
     </dialog>
 

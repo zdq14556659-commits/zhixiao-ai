@@ -1,5 +1,11 @@
 const app = getApp();
 
+function defaultCompetitor(state = {}) {
+  return (state.competitors || []).find((item) => item.active !== false && item.name === "未知")
+    || (state.competitors || []).find((item) => item.active !== false)
+    || {};
+}
+
 Page({
   data: {
     stages: ["名单", "线索", "商机", "成交"],
@@ -56,9 +62,10 @@ Page({
     const contacts = customer?.contacts?.length
       ? customer.contacts.map((item) => ({ ...item }))
       : [{ name: "", phone: customer?.phone || "", position: "", wechat: "", decisionRole: "", note: "", isPrimary: true }];
+    const fallbackCompetitor = defaultCompetitor(state);
     const competitorProfiles = customer?.competitorProfiles?.length
       ? customer.competitorProfiles.map((item, index) => ({ ...item, isPrimary: index === 0, expanded: false }))
-      : [{ competitorId: state.competitors?.[0]?.id || "", brand: state.competitors?.[0]?.name || "其他", isPrimary: true, expanded: false }];
+      : [{ competitorId: fallbackCompetitor.id || "", brand: fallbackCompetitor.name || "未知", isPrimary: true, expanded: false }];
     const products = (state.products || [])
       .filter((item) => item.active !== false && !this.isPlaceholderProduct(item))
       .sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0) || String(left.name || "").localeCompare(String(right.name || ""), "zh-Hans-CN"))
@@ -205,8 +212,8 @@ Page({
   },
 
   addCompetitorProfile() {
-    const first = app.getState().competitors?.[0] || {};
-    this.setData({ competitorProfiles: [...this.data.competitorProfiles, { competitorId: first.id || "", brand: first.name || "其他", version: "", price: "", expiresAt: "", satisfaction: "", switchingBarrier: "", note: "", isPrimary: false, expanded: false }] });
+    const first = defaultCompetitor(app.getState());
+    this.setData({ competitorProfiles: [...this.data.competitorProfiles, { competitorId: first.id || "", brand: first.name || "未知", version: "", price: "", expiresAt: "", satisfaction: "", switchingBarrier: "", note: "", isPrimary: false, expanded: false }] });
   },
 
   removeCompetitorProfile(event) {
