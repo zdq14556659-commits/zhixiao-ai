@@ -221,7 +221,13 @@
 
         <section class="view" id="settingsView">
           <div class="settings-tabs" id="settingsTabs">
-            <button class="active" data-settings-tab="accounts">账号管理</button>
+            <button class="active" data-settings-tab="employees">员工账号</button>
+            <button data-settings-tab="org">组织架构</button>
+            <button data-settings-tab="roles">角色权限</button>
+            <button data-settings-tab="products">产品字典</button>
+            <button data-settings-tab="competitors">竞品字典</button>
+            <button data-settings-tab="channels">渠道来源</button>
+            <button data-settings-tab="lossReasons">未成交原因</button>
             <button data-settings-tab="knowledge">知识库</button>
           </div>
           <section class="settings-pane panel" id="settingsKnowledgePane">
@@ -243,7 +249,7 @@
             <div class="kb-list compact-list" id="knowledgeList"></div>
           </section>
           <div class="settings-pane admin-grid active" id="settingsAccountsPane">
-            <section class="panel">
+            <section class="panel" data-settings-section="employees">
               <div class="panel-title"><h2>新建员工账号</h2><span>员工可用账号密码登录小程序和 Web</span></div>
               <form class="form-stack" id="userForm">
                 <label>员工姓名<input name="name" required placeholder="李销售" /></label>
@@ -255,7 +261,7 @@
               </form>
               <button id="openUserImportBtn" type="button">Excel批量开通员工</button>
             </section>
-            <section class="panel">
+            <section class="panel" data-settings-section="competitors">
               <div class="panel-title"><h2>竞品字典</h2><span>用于客户档案、地图着色和行业分析</span></div>
               <form class="form-stack" id="competitorForm">
                 <label>竞品名称<input name="name" required placeholder="例如：新竞品" /></label>
@@ -264,7 +270,7 @@
               </form>
               <div class="user-list compact-list" id="competitorList"></div>
             </section>
-            <section class="panel">
+            <section class="panel" data-settings-section="products">
               <div class="panel-title"><h2>产品字典</h2><span>用于同一工厂的多产品销售机会轮转</span></div>
               <form class="form-stack" id="productForm">
                 <label>产品名称<input name="name" required placeholder="例如：续费服务" /></label>
@@ -274,7 +280,7 @@
               </form>
               <div class="user-list compact-list" id="productList"></div>
             </section>
-            <section class="panel">
+            <section class="panel" data-settings-section="channels">
               <div class="panel-title"><h2>渠道来源管理</h2><span>客户表单、筛选和导入模板统一使用这些来源</span></div>
               <form class="form-stack" id="channelSourceForm">
                 <label>渠道来源名称<input name="name" required placeholder="例如：抖音私信 / 展会扫码" /></label>
@@ -282,7 +288,7 @@
               </form>
               <div class="user-list compact-list" id="channelSourceList"></div>
             </section>
-            <section class="panel">
+            <section class="panel" data-settings-section="lossReasons">
               <div class="panel-title"><h2>目前未成交原因管理</h2><span>客户跟进表单统一使用这些原因选项</span></div>
               <form class="form-stack" id="lossReasonForm">
                 <label>目前未成交原因名称<input name="name" required placeholder="例如：客户原因 / 价格原因 / 功能原因" /></label>
@@ -290,7 +296,7 @@
               </form>
               <div class="user-list compact-list" id="lossReasonList"></div>
             </section>
-            <section class="panel">
+            <section class="panel" data-settings-section="roles">
               <div class="panel-title"><h2>角色权限</h2><span>设置角色能看到的客户范围和功能模块</span></div>
               <form class="form-stack" id="roleForm">
                 <label>角色名称<input name="name" required placeholder="例如：大区招商主管" /></label>
@@ -314,7 +320,7 @@
               </form>
               <div class="user-list compact-list" id="roleList"></div>
             </section>
-            <section class="panel">
+            <section class="panel" data-settings-section="org">
               <div class="panel-title"><h2>组织架构管理</h2><span>支持参谋部、战区部及多级单位树</span></div>
               <form class="form-stack" id="unitForm">
                 <input type="hidden" name="id" />
@@ -331,7 +337,7 @@
               </form>
               <div class="user-list compact-list org-tree-list" id="unitList"></div>
             </section>
-            <section class="panel">
+            <section class="panel" data-settings-section="employees">
               <div class="panel-title"><h2>员工列表</h2><span>密码不会返回到前端</span></div>
               <div class="user-list" id="userList"></div>
             </section>
@@ -373,6 +379,7 @@
         <label>跟进记录<textarea name="note" rows="4"></textarea></label>
         <label>下次跟进<input name="nextFollow" type="date" /></label>
         <button id="customerAiBtn" type="button">让小智分析该客户</button>
+        <button id="customerPurchasedBtn" class="danger-outline hidden" type="button">标记为已购</button>
         <button id="customerArchiveBtn" class="danger-outline hidden" type="button">标记为无效或倒闭</button>
         <button id="customerDeleteBtn" class="danger-outline hidden" type="button">删除客户</button>
         <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">保存</button></div>
@@ -427,7 +434,7 @@
         <h2>认领公海客户</h2>
         <input type="hidden" name="opportunityId" />
         <p class="muted" id="claimSummary">认领后获得3天临时保护，请及时提交有效跟进。</p>
-        <label>意向产品 <span class="required-mark">*</span><select name="productId" id="claimProductSelect"></select></label>
+        <label>意向产品（可选）<select name="productId" id="claimProductSelect"></select><small class="field-hint">认领后第一次有效跟进时再补充意向产品</small></label>
         <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">确认认领</button></div>
       </form>
     </dialog>
@@ -450,6 +457,31 @@
         <p class="muted" id="assignSummary">已选择 0 个客户</p>
         <label>分配给员工<select name="ownerId" id="assignOwnerSelect"></select></label>
         <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">确认分配</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="purchasedDialog">
+      <form class="dialog-form" id="purchasedForm">
+        <h2>标记为已购</h2>
+        <input type="hidden" name="opportunityId" />
+        <p class="muted" id="purchasedSummary"></p>
+        <label>本次跟进记录 <span class="required-mark">*</span><textarea name="note" rows="3" placeholder="说明客户已购买的情况，不计入我司成交业绩"></textarea></label>
+        <label>已购产品/软件<input name="product" placeholder="例如：拆单软件 / ERP / 渲染软件" /></label>
+        <label>已购品牌<input name="brand" placeholder="例如：三维家 / 云熙 / 海迅 / 其他" /></label>
+        <label>已购时间<input name="purchasedAt" type="date" /></label>
+        <label>后续再开发时间<input name="revisitAt" type="date" /></label>
+        <div class="button-row"><button type="button" data-close-dialog="purchasedDialog">取消</button><button class="primary" type="submit">确认标记</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="rollbackDialog">
+      <form class="dialog-form" id="rollbackForm">
+        <h2 id="rollbackDialogTitle">申请阶段回撤</h2>
+        <input type="hidden" name="opportunityId" />
+        <p class="muted" id="rollbackSummary"></p>
+        <label>申请原因 <span class="required-mark">*</span><select name="reason" required><option value="">请选择原因</option><option>误推进</option><option>客户暂不满足当前阶段</option><option>资料录入错误</option><option>其他</option></select></label>
+        <label>补充说明<textarea name="note" rows="3" placeholder="说明为什么需要回撤，便于主管审批"></textarea></label>
+        <div class="button-row"><button type="button" data-close-dialog="rollbackDialog">取消</button><button class="primary" type="submit">提交申请</button></div>
       </form>
     </dialog>
 

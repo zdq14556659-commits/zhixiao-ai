@@ -48,12 +48,13 @@ child.stdout.on("data", (chunk) => { output += chunk; });
 child.stderr.on("data", (chunk) => { output += chunk; });
 
 async function request(pathname, options = {}) {
-  const headers = { "Content-Type": "application/json" };
+  const isForm = typeof FormData !== "undefined" && options.body instanceof FormData;
+  const headers = isForm ? {} : { "Content-Type": "application/json" };
   if (options.token) headers.Authorization = `Bearer ${options.token}`;
   const response = await fetch(`${baseUrl}${pathname}`, {
     method: options.method || "GET",
     headers,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body)
+    body: options.body === undefined ? undefined : isForm ? options.body : JSON.stringify(options.body)
   });
   return { status: response.status, data: await response.json() };
 }
@@ -72,6 +73,94 @@ async function login(account, password) {
   const response = await request("/auth/login", { method: "POST", body: { account, password } });
   assert.equal(response.status, 200, JSON.stringify(response.data));
   return response.data.token;
+}
+
+function crc32(buffer) {
+  const table = crc32.table || (crc32.table = Array.from({ length: 256 }, (_, index) => {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    return value >>> 0;
+  }));
+  let crc = 0xffffffff;
+  for (const byte of buffer) crc = table[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function zipStored(entries) {
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  entries.forEach(([name, content]) => {
+    const nameBuffer = Buffer.from(name);
+    const data = Buffer.from(content);
+    const crc = crc32(data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0, 6);
+    local.writeUInt16LE(0, 8);
+    local.writeUInt32LE(0, 10);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBuffer.length, 26);
+    local.writeUInt16LE(0, 28);
+    localParts.push(local, nameBuffer, data);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0, 8);
+    central.writeUInt16LE(0, 10);
+    central.writeUInt32LE(0, 12);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(nameBuffer.length, 28);
+    central.writeUInt16LE(0, 30);
+    central.writeUInt16LE(0, 32);
+    central.writeUInt16LE(0, 34);
+    central.writeUInt16LE(0, 36);
+    central.writeUInt32LE(0, 38);
+    central.writeUInt32LE(offset, 42);
+    centralParts.push(central, nameBuffer);
+    offset += local.length + nameBuffer.length + data.length;
+  });
+  const centralDirectory = Buffer.concat(centralParts);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(0, 4);
+  eocd.writeUInt16LE(0, 6);
+  eocd.writeUInt16LE(entries.length, 8);
+  eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(centralDirectory.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  eocd.writeUInt16LE(0, 20);
+  return Buffer.concat([...localParts, centralDirectory, eocd]);
+}
+
+function sparseChannelWorkbook() {
+  const strings = ["客户", "客户电话", "状态", "城市", "客户地址", "渠道来源", "意向产品", "单位", "录入人", "跟进人", "跟进记录", "最新跟进时间", "下次跟进时间", "当前使用软件", "预计金额（元）", "设计师", "自主注册"];
+  const shared = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="${strings.length}" uniqueCount="${strings.length}">${strings.map((item) => `<si><t>${item}</t></si>`).join("")}</sst>`;
+  const header = strings.slice(0, 15).map((_, index) => `<c r="${String.fromCharCode(65 + index)}1" t="s"><v>${index}</v></c>`).join("");
+  const row = [
+    '<c r="A2" t="s"><v>15</v></c>',
+    '<c r="B2"><v>13900000003</v></c>',
+    '<c r="C2"/>',
+    '<c r="D2"/>',
+    '<c r="E2"/>',
+    '<c r="F2" t="s"><v>16</v></c>',
+    '<c r="G2"/>',
+    '<c r="H2"/>',
+    '<c r="I2"/>',
+    '<c r="J2"/>'
+  ].join("");
+  const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1">${header}</row><row r="2">${row}</row></sheetData></worksheet>`;
+  return zipStored([
+    ["xl/sharedStrings.xml", shared],
+    ["xl/worksheets/sheet1.xml", sheet]
+  ]);
 }
 
 async function run() {
@@ -119,6 +208,17 @@ async function run() {
 
   const publicPoolAfter = await request("/public-pool", { token: sales });
   assert.equal(publicPoolAfter.data.items.find((item) => item.name === "未知渠道客户").channelSource, "官网留言");
+
+  const form = new FormData();
+  form.append("file", new Blob([sparseChannelWorkbook()], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), "sparse-channel.xlsx");
+  form.append("target", "public_pool");
+  const xlsxImported = await request("/import/customers?target=public_pool", { method: "POST", token: ops, body: form });
+  assert.equal(xlsxImported.status, 201, JSON.stringify(xlsxImported.data));
+  assert.equal(xlsxImported.data.imported, 1);
+  assert.equal(xlsxImported.data.channelUnrecognized, 0);
+  const publicPoolAfterXlsx = await request("/public-pool", { token: sales });
+  const sparseCustomer = publicPoolAfterXlsx.data.items.find((item) => item.name === "设计师" && item.customerId !== official.customerId);
+  assert.equal(sparseCustomer.channelSource, "自主注册");
 }
 
 run()

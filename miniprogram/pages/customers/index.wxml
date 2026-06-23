@@ -109,8 +109,8 @@
   </view>
 
   <view class="list-head">
-    <text class="muted list-count">{{currentStage === '公海' ? '公海共 ' + publicPoolTotal : '共 ' + currentStageTotal}} 个客户</text>
-    <view wx:if="{{currentStage !== '公海' || canImportPublic}}" class="head-actions">
+    <text class="muted list-count">{{currentStage === '公海' ? '公海共 ' + publicPoolTotal : currentStage === '无效' ? '无效共 ' + currentStageTotal : '共 ' + currentStageTotal}} 个客户</text>
+    <view wx:if="{{currentStage !== '无效' && currentStage !== '已购' && (currentStage !== '公海' || canImportPublic)}}" class="head-actions">
       <button class="plain-btn mini-btn" bindtap="goBatchImport">{{currentStage === '公海' ? '导入公海' : '批量导入'}}</button>
       <button wx:if="{{currentStage !== '公海'}}" class="primary-btn mini-btn" bindtap="goAdd">单个添加</button>
     </view>
@@ -132,25 +132,33 @@
         </view>
       </view>
       <view class="strip-line ellipsis">{{item.productName || '待确认产品'}} · {{item.city || '待识别'}} · {{item.channelLabel}}</view>
-      <view wx:if="{{!item.isPublicPool}}" class="strip-line ellipsis">{{item.phone}} · {{item.followPerson || item.owner}}</view>
+      <view wx:if="{{!item.isPublicPool && !item.isInvalid}}" class="strip-line ellipsis">{{item.phone}} · {{item.followPerson || item.owner}}</view>
+      <view wx:elif="{{item.isInvalid}}" class="strip-line ellipsis">已归档 · {{item.archivedAt || '时间未记录'}}</view>
       <view wx:else class="strip-line ellipsis">手机号与联系人认领后可见</view>
       <view class="strip-line ellipsis">{{stageTimeLabel}}：{{item.stageDate || '未记录'}}</view>
-      <view wx:if="{{!item.isPublicPool}}" class="strip-line ellipsis">{{item.primarySoftware}} · 下次：{{item.nextFollow || '未设置'}}</view>
-      <view wx:if="{{!item.isPublicPool}}" class="strip-note ellipsis">{{item.lastNote || '暂无跟进记录'}}</view>
+      <view wx:if="{{!item.isPublicPool && !item.isInvalid}}" class="strip-line ellipsis">{{item.primarySoftware}} · 下次：{{item.nextFollow || '未设置'}}</view>
+      <view wx:if="{{!item.isPublicPool && !item.isInvalid}}" class="strip-note ellipsis">{{item.lastNote || '暂无跟进记录'}}</view>
+      <view wx:elif="{{item.isInvalid}}" class="strip-note ellipsis">{{item.ownershipLabel}}，保留历史记录</view>
       <view wx:else class="strip-note ellipsis">进入公海：{{item.publicPoolAt || '时间未记录'}}，认领后可查看历史跟进</view>
       <view wx:if="{{item.firstPhoto}}" class="photo-chip" data-id="{{item.id}}" data-src="{{item.firstPhoto}}" catchtap="previewCustomerPhoto">
         <image src="{{item.firstPhoto}}" mode="aspectFill"></image>
         <text>{{item.photoCount}}张现场图</text>
       </view>
     </view>
-    <view wx:if="{{!item.isPublicPool}}" class="strip-actions {{item.canAssign ? 'has-assign' : ''}}">
+    <view wx:if="{{!item.isPublicPool && !item.isInvalid && !item.isPurchased}}" class="strip-actions {{item.canAssign ? 'has-assign' : ''}}">
       <button class="plain-btn" data-phone="{{item.phone}}" catchtap="callCustomer">拨打</button>
       <button class="plain-btn" data-id="{{item.id}}" catchtap="goFollow">跟进</button>
       <button class="primary-btn" data-id="{{item.id}}" catchtap="advanceCustomer">{{item.stage === '成交' ? '新增机会' : '推进'}}</button>
+      <button wx:if="{{item.rollbackTarget}}" class="plain-btn" data-id="{{item.id}}" catchtap="openRollback">申请回撤</button>
       <button wx:if="{{item.canAssign}}" class="assign-btn" data-id="{{item.id}}" catchtap="assignCustomer">分配</button>
     </view>
+    <view wx:elif="{{item.isPurchased}}" class="strip-actions pool-actions">
+      <text class="pool-hint">已购客户不计入成交业绩</text>
+      <button class="primary-btn" data-id="{{item.id}}" catchtap="openNewOpportunity">新增机会</button>
+    </view>
     <view wx:else class="strip-actions pool-actions">
-      <button wx:if="{{item.canClaim}}" class="primary-btn" data-id="{{item.id}}" catchtap="claimCustomer">认领后跟进</button>
+      <text wx:if="{{item.isInvalid}}" class="pool-hint">已进入无效库</text>
+      <button wx:elif="{{item.canClaim}}" class="primary-btn" data-id="{{item.id}}" catchtap="claimCustomer">认领后跟进</button>
       <button wx:elif="{{item.canAssign}}" class="assign-btn" data-id="{{item.id}}" catchtap="assignCustomer">分配给销售</button>
       <text wx:else class="pool-hint">{{item.poolHint}}</text>
     </view>
@@ -166,6 +174,7 @@
     <text>公海共{{publicPoolTotal}}条，当前筛选后0条</text>
     <button class="plain-btn" bindtap="resetFilters">一键重置筛选</button>
   </view>
+  <view class="empty" wx:elif="{{currentStage === '无效' && currentStageTotal === 0}}">当前暂无无效客户</view>
   <view class="pool-state" wx:elif="{{currentStage !== '公海' && !customerBoardLoading && !customerBoardError && filteredOut}}">
     <text>当前阶段共{{currentStageTotal}}条，筛选后0条</text>
     <button class="plain-btn" bindtap="resetFilters">一键重置筛选</button>
@@ -215,9 +224,9 @@
       <view class="modal-title">认领公海客户</view>
       <view class="muted">{{claimItem.name || '公海客户'}} · 认领后获得3天临时保护</view>
       <view class="form-item">
-        <text class="label">意向产品 <text class="required-mark">*</text></text>
+        <text class="label">意向产品（可选）</text>
         <picker range="{{products}}" range-key="name" value="{{claimProductIndex}}" bindchange="onClaimProduct">
-          <view class="picker-box">{{claimProductName || '请选择意向产品'}}</view>
+          <view class="picker-box">{{claimProductName || '跟进时再补充意向产品'}}</view>
         </picker>
       </view>
       <view class="modal-actions"><button class="plain-btn" bindtap="closeClaim">取消</button><button class="primary-btn" bindtap="submitClaimCustomer">确认认领</button></view>
@@ -233,6 +242,24 @@
       <view class="form-item"><text class="label">首次跟进备注 <text class="required-mark">*</text></text><textarea value="{{newOpportunityNote}}" data-field="newOpportunityNote" bindinput="onNewOpportunityField"></textarea></view>
       <view class="form-item"><text class="label">下次跟进 <text class="required-mark">*</text></text><picker mode="date" value="{{newOpportunityNextFollow}}" bindchange="onNewOpportunityNextFollow"><view class="picker-box">{{newOpportunityNextFollow || '请选择'}}</view></picker></view>
       <view class="modal-actions"><button class="plain-btn" bindtap="closeNewOpportunity">取消</button><button class="primary-btn" bindtap="submitNewOpportunity">创建线索</button></view>
+    </view>
+  </view>
+
+  <view wx:if="{{rollbackOpen}}" class="modal-mask" catchtouchmove="true">
+    <view class="modal-card">
+      <view class="modal-title">申请回撤至{{rollbackItem.rollbackTarget}}</view>
+      <view class="muted">{{rollbackItem.name}} · 当前{{rollbackItem.stage}}，提交后需主管以上审批</view>
+      <view class="form-item">
+        <text class="label">申请原因 <text class="required-mark">*</text></text>
+        <picker range="{{rollbackReasons}}" value="{{rollbackReasonIndex}}" bindchange="onRollbackReason">
+          <view class="picker-box">{{rollbackReasons[rollbackReasonIndex]}}</view>
+        </picker>
+      </view>
+      <view class="form-item">
+        <text class="label">补充说明</text>
+        <textarea value="{{rollbackNote}}" bindinput="onRollbackNote" placeholder="说明为什么需要回撤"></textarea>
+      </view>
+      <view class="modal-actions"><button class="plain-btn" bindtap="closeRollback">取消</button><button class="primary-btn" bindtap="submitRollback">提交申请</button></view>
     </view>
   </view>
 </view>

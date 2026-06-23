@@ -187,7 +187,10 @@ async function run() {
   assert.ok(!afterClaimA.data.customers.some((item) => item.id === 2));
   const afterClaimB = await request("/state?client=mini", { token: tokenB });
   assert.ok(afterClaimB.data.visits.some((item) => item.id === 200 && item.ownerId === 2));
-  const follow = await request("/customers/2/follow", { method: "POST", token: tokenB, body: { note: "认领后的首次有效跟进", nextFollow: dateDaysAgo(-2) } });
+  const missingProductFollow = await request("/customers/2/follow", { method: "POST", token: tokenB, body: { note: "认领后的首次有效跟进", nextFollow: dateDaysAgo(-2) } });
+  assert.equal(missingProductFollow.status, 400);
+  assert.equal(missingProductFollow.data.field, "productId");
+  const follow = await request("/customers/2/follow", { method: "POST", token: tokenB, body: { note: "认领后的首次有效跟进", nextFollow: dateDaysAgo(-2), productId: "product-v1" } });
   assert.equal(follow.status, 200);
   assert.equal(follow.data.ownershipStatus, "locked");
 
@@ -216,6 +219,7 @@ async function run() {
   assert.equal(importResult.data.imported, 1);
   assert.equal(importResult.data.duplicates, 2);
   assert.equal(importResult.data.failed, 1);
+  assert.ok(importResult.data.customers[0].claimDaysRemaining >= 29);
   assert.ok(importResult.data.skipped.some((item) => item.reason.includes("系统已有该客户")));
   assert.ok(importResult.data.skipped.some((item) => item.reason.includes("文件内手机号")));
   assert.ok(importResult.data.failures.some((item) => item.reason === "手机号无效"));

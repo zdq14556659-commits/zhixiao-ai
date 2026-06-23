@@ -114,11 +114,13 @@ async function run() {
   assert.equal(salesBoard.status, 200);
   assert.deepEqual(salesBoard.data.items.map((item) => item.customerId), [101]);
   assert.equal(salesBoard.data.publicPool.count, 1);
+  assert.equal(salesBoard.data.invalid.count, 1);
+  assert.ok(salesBoard.data.invalid.items.some((item) => item.customerId === 104 && item.lifecycleStatus === "archived"));
   const adminMiniState = await request("/state?client=mini", { token: admin });
   assert.ok(adminMiniState.data.opportunities.some((item) => item.customerId === 101));
   assert.ok(adminMiniState.data.opportunities.some((item) => item.customerId === 102));
   const salesMiniState = await request("/state?client=mini", { token: salesA });
-  assert.deepEqual(salesMiniState.data.opportunities.map((item) => item.customerId), [101]);
+  assert.deepEqual(salesMiniState.data.opportunities.map((item) => item.customerId), [101, 104]);
   assert.deepEqual(salesMiniState.data.customers.map((item) => item.id), [101]);
 
   const forbiddenMetadataEdit = await request("/customers/101", { method: "PUT", token: salesA, body: { channelSource: "地推", createdBy: "销售甲", moneyUnit: "yuan" } });

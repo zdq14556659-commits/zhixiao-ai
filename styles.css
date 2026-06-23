@@ -328,6 +328,7 @@ h1, h2 { margin: 0; }
 
 .settings-tabs {
   display: inline-flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 18px;
   padding: 6px;
@@ -352,6 +353,10 @@ h1, h2 { margin: 0; }
 
 .settings-pane.active {
   display: grid;
+}
+
+.settings-pane.single-settings-pane {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .panel { padding: 22px; margin-bottom: 20px; }
@@ -398,6 +403,8 @@ h1, h2 { margin: 0; }
 .stage-tabs span { margin-left: 8px; opacity: 0.8; }
 .stage-tabs button[data-stage="公海"] { border-color: #f0b45c; color: #9a5b00; }
 .stage-tabs button[data-stage="公海"].active { color: #fff; background: #d99024; }
+.stage-tabs button[data-stage="无效"] { border-color: #94a3b8; color: #475569; }
+.stage-tabs button[data-stage="无效"].active { color: #fff; background: #475569; border-color: #475569; }
 .toolbar { margin-bottom: 16px; flex-wrap: wrap; }
 .toolbar input { max-width: 230px; }
 .toolbar select { max-width: 170px; }
@@ -567,6 +574,11 @@ button:disabled {
 .ownership-state.public_pool {
   color: #9a5b00;
   background: #fff3d6;
+}
+
+.ownership-state.archived {
+  color: #475569;
+  background: #e2e8f0;
 }
 
 .pool-action-hint { color: var(--muted); font-size: 12px; white-space: nowrap; }

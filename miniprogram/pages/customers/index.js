@@ -66,7 +66,12 @@ Page({
     claimProductIndex: -1,
     claimProductName: "",
     products: [],
-    productIndex: 0
+    productIndex: 0,
+    rollbackOpen: false,
+    rollbackItem: null,
+    rollbackReasons: ["误推进", "客户未达到阶段标准", "资料录入错误", "其他"],
+    rollbackReasonIndex: 0,
+    rollbackNote: ""
   },
 
   onLoad(options) {
@@ -79,7 +84,9 @@ Page({
     this.preserveFiltersOnNextShow = false;
     this.privateOpportunityItems = [];
     this.publicPoolItems = [];
+    this.invalidItems = [];
     this.publicPoolCount = 0;
+    this.invalidCount = 0;
     const drilldown = this.consumeDashboardDrilldown();
     const next = {};
     if (drilldown.stage) Object.assign(next, { currentStage: drilldown.stage, page: 1 });
@@ -106,10 +113,13 @@ Page({
     const privateCustomers = Array.isArray(this.privateOpportunityItems)
       ? this.privateOpportunityItems
       : app.scopeOpportunityRows();
-    const customers = this.data.currentStage === "公海" ? (this.publicPoolItems || []) : privateCustomers;
+    const customers = this.data.currentStage === "无效"
+      ? (this.invalidItems || [])
+      : this.data.currentStage === "公海" ? (this.publicPoolItems || [])
+      : this.data.currentStage === "已购" ? (this.purchasedItems || []) : privateCustomers;
     this.customerItems = customers;
     const channelSources = ["全部", ...app.globalData.channelSources];
-    const canFilterOwner = role.customerScope !== "self" && this.data.currentStage !== "公海";
+    const canFilterOwner = role.customerScope !== "self" && !["公海", "已购", "无效"].includes(this.data.currentStage);
     const owners = canFilterOwner ? ["全部", ...app.visibleFollowUsers().map((user) => user.name)] : ["全部"];
     const assignOwners = app.visibleFollowUsers();
     const regions = ["全部", ...Array.from(new Set(customers.map((item) => item.region).filter(Boolean)))];
@@ -118,11 +128,15 @@ Page({
     const ownerIndex = Math.min(this.data.ownerIndex, owners.length - 1);
     const regionIndex = Math.min(this.data.regionIndex, regions.length - 1);
     const cityIndex = Math.min(this.data.cityIndex, cities.length - 1);
-    const stageTabs = [...state.stages, "公海"].map((stage) => ({
+    const stageTabs = [...state.stages, "公海", "已购", "无效"].map((stage) => ({
       name: stage,
-      count: stage === "公海"
-        ? this.publicPoolCount || 0
-        : privateCustomers.filter((customer) => customer.stage === stage).length
+      count: stage === "无效"
+        ? this.invalidCount || 0
+        : stage === "公海"
+          ? this.publicPoolCount || 0
+          : stage === "已购"
+            ? (this.purchasedItems || []).length
+            : privateCustomers.filter((customer) => customer.stage === stage && customer.outcomeStatus !== "purchased_existing").length
     }));
     const currentStageTotal = stageTabs.find((item) => item.name === this.data.currentStage)?.count || 0;
     this.setData({
@@ -157,6 +171,8 @@ Page({
       .then(([result, publicPoolResult]) => {
         if (result.backendVersion !== "backend-v9") throw new Error("后端版本尚未更新，请等待部署完成后重试");
         const publicPoolFromBoard = result.publicPool || {};
+        const invalidFromBoard = result.invalid || {};
+        const purchasedFromBoard = result.purchased || {};
         const publicPoolLoadFailed = Boolean(publicPoolResult?.error);
         const publicPoolItems = publicPoolLoadFailed
           ? (Array.isArray(publicPoolFromBoard.items) ? publicPoolFromBoard.items : [])
@@ -165,8 +181,11 @@ Page({
           ? Number(publicPoolFromBoard.count ?? publicPoolItems.length)
           : Number(publicPoolResult.count ?? publicPoolItems.length);
         this.privateOpportunityItems = Array.isArray(result.items) ? result.items : [];
+        this.purchasedItems = Array.isArray(purchasedFromBoard.items) ? purchasedFromBoard.items : [];
         this.publicPoolItems = publicPoolItems;
         this.publicPoolCount = publicPoolCount;
+        this.invalidItems = Array.isArray(invalidFromBoard.items) ? invalidFromBoard.items : [];
+        this.invalidCount = Number(invalidFromBoard.count ?? this.invalidItems.length);
         this.setData({
           customerBoardLoading: false,
           customerBoardError: "",
@@ -180,8 +199,11 @@ Page({
       })
       .catch((error) => {
         this.privateOpportunityItems = [];
+        this.purchasedItems = [];
         this.publicPoolItems = [];
+        this.invalidItems = [];
         this.publicPoolCount = 0;
+        this.invalidCount = 0;
         this.setData({
           customerBoardLoading: false,
           customerBoardError: error.message || "客户数据加载失败，请重新加载",
@@ -293,12 +315,17 @@ Page({
   stageTimeConfig(stage) {
     if (stage === "全部") return { label: "阶段时间", field: "createdAt" };
     if (stage === "公海") return { label: "进入公海", field: "publicPoolAt" };
+    if (stage === "已购") return { label: "标记已购", field: "purchasedAt" };
+    if (stage === "无效") return { label: "归档时间", field: "archivedAt" };
     if (stage === "名单") return { label: "录入时间", field: "createdAt" };
     if (stage === "成交") return { label: "成交时间", field: "dealAt" };
     return { label: "转化时间", field: stage === "商机" ? "opportunityAt" : "leadAt" };
   },
 
   customerStageTime(customer, stage = this.data.currentStage) {
+    if ((stage === "已购" || customer.outcomeStatus === "purchased_existing") && customer.purchasedInfo) {
+      return String(customer.purchasedInfo.purchasedAt || customer.purchasedInfo.revisitAt || customer.effectiveFollowUpAt || customer.lastFollow || "").slice(0, 10);
+    }
     const config = this.stageTimeConfig(stage === "全部" ? customer.stage : stage);
     return String(customer[config.field] || "").slice(0, 10);
   },
@@ -316,6 +343,8 @@ Page({
       ownershipStatus: item.ownershipStatus || "",
       ownershipLabel: item.ownershipLabel || "",
       isPublicPool: Boolean(item.isPublicPool),
+      isInvalid: Boolean(item.isInvalid),
+      isPurchased: Boolean(item.isPurchased),
       canClaim: Boolean(item.canClaim),
       canAssign: Boolean(item.canAssign),
       channelLabel: item.channelLabel || "其他",
@@ -329,6 +358,7 @@ Page({
       lastNote: note.length > 80 ? `${note.slice(0, 80)}...` : note,
       poolHint: item.poolHint || "",
       publicPoolAt: item.publicPoolAt || "",
+      archivedAt: item.archivedAt || "",
       photoCount: item.photoCount || 0,
       firstPhoto: safePhoto
     };
@@ -354,8 +384,17 @@ Page({
       const itemChannel = app.normalizeChannelSource(item.channelSource);
       const primarySoftware = item.competitorProfiles?.find((profile) => profile.isPrimary)?.brand || item.software || "";
       const source = `${item.name} ${item.phone} ${primarySoftware} ${item.productName || ""} ${item.lastNote || ""}`.toLowerCase();
-      const isPublicPool = item.ownershipStatus === "public_pool";
-      if (this.data.currentStage === "公海" ? !isPublicPool : (isPublicPool || item.stage !== this.data.currentStage)) return false;
+      const isInvalid = item.lifecycleStatus === "archived";
+      const isPublicPool = !isInvalid && item.ownershipStatus === "public_pool";
+      if (this.data.currentStage === "无效") {
+        if (!isInvalid) return false;
+      } else if (this.data.currentStage === "公海") {
+        if (isInvalid || !isPublicPool) return false;
+      } else if (this.data.currentStage === "已购") {
+        if (item.outcomeStatus !== "purchased_existing") return false;
+      } else if (isInvalid || isPublicPool || item.outcomeStatus === "purchased_existing" || item.stage !== this.data.currentStage) {
+        return false;
+      }
       if (this.dashboardCustomerIds?.length && !this.dashboardCustomerIds.includes(Number(item.id)) && !this.dashboardCustomerIds.includes(Number(item.customerId))) return false;
       if (keyword && !source.includes(keyword)) return false;
       if (channel !== "全部" && itemChannel !== channel) return false;
@@ -373,14 +412,21 @@ Page({
       const primarySoftware = item.competitorProfiles?.find((profile) => profile.isPrimary)?.brand || item.software || "";
       return {
         ...item,
-        isPublicPool: item.ownershipStatus === "public_pool",
+        isPublicPool: item.ownershipStatus === "public_pool" && item.lifecycleStatus !== "archived",
+        isInvalid: item.lifecycleStatus === "archived",
+        isPurchased: item.outcomeStatus === "purchased_existing",
         canClaim: item.ownershipStatus === "public_pool" && app.canOwnCustomer(currentUser),
         channelLabel: app.normalizeChannelSource(item.channelSource),
         stageDate: this.customerStageTime(item),
-        ownershipLabel: item.ownershipStatus === "public_pool" || item.ownershipStatus === "claimable"
+        rollbackTarget: this.rollbackTargetForStage(item.stage),
+        ownershipLabel: item.lifecycleStatus === "archived"
+          ? (item.archiveReason === "closed" ? "倒闭客户" : "无效客户")
+          : item.outcomeStatus === "purchased_existing"
+          ? "已购客户"
+          : item.ownershipStatus === "public_pool" || item.ownershipStatus === "claimable"
           ? "公海客户"
           : item.ownershipStatus === "pending_followup" ? `待有效跟进·${item.claimDaysRemaining || 0}天` : "",
-        canAssign: this.data.canAssign && app.canSeePrivateRecord(item) && this.isCustomerAssignable(item),
+        canAssign: item.outcomeStatus !== "purchased_existing" && this.data.canAssign && app.canSeePrivateRecord(item) && this.isCustomerAssignable(item),
         poolHint: app.canOwnCustomer(currentUser) ? "公海客户需先认领" : "不在您的分配范围",
         photoCount: Array.isArray(item.photos) ? item.photos.length : 0,
         firstPhoto: Array.isArray(item.photos) && item.photos.length ? item.photos[0] : "",
@@ -494,6 +540,10 @@ Page({
   editCustomer(event) {
     const id = Number(event.currentTarget.dataset.id);
     const customer = this.findVisibleItem(id);
+    if (customer?.isInvalid || customer?.lifecycleStatus === "archived") {
+      wx.showToast({ title: "无效客户仅可查看归档状态", icon: "none" });
+      return;
+    }
     if (customer?.isPublicPool) {
       wx.showToast({ title: "请先认领公海客户", icon: "none" });
       return;
@@ -624,6 +674,7 @@ Page({
   },
 
   isCustomerAssignable(customer) {
+    if (customer.lifecycleStatus === "archived") return false;
     if (customer.ownershipStatus === "public_pool") return customer.stage !== "成交";
     if (customer.stage === "名单") return true;
     if (!["线索", "商机"].includes(customer.stage)) return false;
@@ -633,6 +684,55 @@ Page({
     const todayTime = Date.parse(app.globalData.today);
     if (!Number.isFinite(latestTime) || !Number.isFinite(todayTime)) return true;
     return Math.floor((todayTime - latestTime) / (24 * 60 * 60 * 1000)) >= 30;
+  },
+
+  rollbackTargetForStage(stage = "") {
+    if (stage === "线索") return "名单";
+    if (stage === "商机") return "线索";
+    return "";
+  },
+
+  openRollback(event) {
+    const item = this.findVisibleItem(event.currentTarget.dataset.id);
+    if (!item) return;
+    const target = this.rollbackTargetForStage(item.stage);
+    if (!target) return wx.showToast({ title: "当前阶段不支持回撤", icon: "none" });
+    this.setData({ rollbackOpen: true, rollbackItem: { ...item, rollbackTarget: target }, rollbackReasonIndex: 0, rollbackNote: "" });
+  },
+
+  closeRollback() {
+    this.setData({ rollbackOpen: false, rollbackItem: null, rollbackNote: "" });
+  },
+
+  onRollbackReason(event) {
+    this.setData({ rollbackReasonIndex: Number(event.detail.value) });
+  },
+
+  onRollbackNote(event) {
+    this.setData({ rollbackNote: event.detail.value });
+  },
+
+  submitRollback() {
+    const item = this.data.rollbackItem;
+    if (!item?.id) return wx.showToast({ title: "客户机会不存在", icon: "none" });
+    const reason = this.data.rollbackReasons[this.data.rollbackReasonIndex] || "";
+    if (!reason) return wx.showToast({ title: "请选择申请原因", icon: "none" });
+    wx.showLoading({ title: "提交中" });
+    app.requestApi(`/opportunities/${item.id}/rollback-request`, {
+      method: "POST",
+      data: { reason, note: this.data.rollbackNote }
+    })
+      .then(() => app.loadRemoteState(() => {
+        this.setData({ rollbackOpen: false, rollbackItem: null, rollbackNote: "" });
+        this.loadCustomerBoard().then(() => {
+          wx.hideLoading();
+          wx.showToast({ title: "回撤申请已提交", icon: "success" });
+        });
+      }))
+      .catch((error) => {
+        wx.hideLoading();
+        wx.showToast({ title: error.message || "提交失败", icon: "none" });
+      });
   },
 
   claimCustomer(event) {
@@ -664,9 +764,8 @@ Page({
     const item = this.data.claimItem;
     const product = this.data.products[this.data.claimProductIndex];
     if (!item?.id) return wx.showToast({ title: "公海机会不存在", icon: "none" });
-    if (!product?.id) return wx.showToast({ title: "请选择意向产品", icon: "none" });
     wx.showLoading({ title: "认领中" });
-    app.requestApi(`/opportunities/${item.id}/claim`, { method: "POST", data: { productId: product.id } })
+    app.requestApi(`/opportunities/${item.id}/claim`, { method: "POST", data: product?.id ? { productId: product.id } : {} })
       .then((customer) => {
         app.loadRemoteState(() => {
           this.setData({ currentStage: customer.stage || "名单", page: 1, claimOpen: false, claimItem: null, claimProductIndex: -1, claimProductName: "" });

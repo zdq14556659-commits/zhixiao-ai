@@ -11,6 +11,9 @@ const API_BASE = getWebApiBase();
 const AUTH_KEY = "zhixiao-web-auth";
 const today = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 const stages = ["名单", "线索", "商机", "成交"];
+const PUBLIC_POOL_STAGE = "公海";
+const PURCHASED_STAGE = "已购";
+const INVALID_STAGE = "无效";
 const defaultChannelSources = ["自媒体", "官网留言", "自主注册", "渠道介绍", "企查查", "客源汇", "公众号", "地推", "其他"];
 let channelSources = [...defaultChannelSources];
 const zones = ["东部战区", "南部战区", "西部战区", "北部战区", "中部战区"];
@@ -36,7 +39,7 @@ const orgTypeOptions = [
 let state = { users: [], customers: [], opportunities: [], products: [], visits: [], knowledge: [], stages, roles: defaultRoles, units: [], competitors: [], routes: [], channelSources: [], lossReasons: [] };
 let currentStage = "名单";
 let currentView = "dashboard";
-let currentSettingsTab = "accounts";
+let currentSettingsTab = "employees";
 let fieldMap = null;
 let fieldLayer = null;
 let fieldInfoWindow = null;
@@ -287,20 +290,43 @@ function latestFollow(customer = {}) {
 }
 
 function ownershipLabel(customer = {}) {
+  if (isInvalidCustomer(customer)) return customer.archiveReason === "closed" ? "倒闭客户" : "无效客户";
+  if (isPurchasedCustomer(customer)) return "已购客户";
   if (customer.ownershipStatus === "public_pool" || customer.ownershipStatus === "claimable") return "公海客户";
   if (customer.ownershipStatus === "pending_followup") return `待有效跟进 · ${customer.claimDaysRemaining || 0}天`;
   return "";
 }
 
+function isInvalidCustomer(customer = {}) {
+  return customer.lifecycleStatus === "archived";
+}
+
+function isPublicPoolCustomer(customer = {}) {
+  return !isInvalidCustomer(customer) && customer.ownershipStatus === "public_pool";
+}
+
+function isPurchasedCustomer(customer = {}) {
+  return !isInvalidCustomer(customer) && !isPublicPoolCustomer(customer) && customer.outcomeStatus === "purchased_existing";
+}
+
+function isReadonlyStage(stage = currentStage) {
+  return stage === PUBLIC_POOL_STAGE || stage === PURCHASED_STAGE || stage === INVALID_STAGE;
+}
+
 function stageTimeConfig(stage = currentStage) {
   if (stage === "全部") return { label: "阶段时间", field: "createdAt" };
-  if (stage === "公海") return { label: "进入公海", field: "publicPoolAt" };
+  if (stage === PUBLIC_POOL_STAGE) return { label: "进入公海", field: "publicPoolAt" };
+  if (stage === PURCHASED_STAGE) return { label: "标记已购", field: "purchasedAt" };
+  if (stage === INVALID_STAGE) return { label: "归档时间", field: "archivedAt" };
   if (stage === "名单") return { label: "录入时间", field: "createdAt" };
   if (stage === "成交") return { label: "成交时间", field: "dealAt" };
   return { label: "转化时间", field: stage === "商机" ? "opportunityAt" : "leadAt" };
 }
 
 function customerStageTime(customer = {}, stage = currentStage) {
+  if ((stage === PURCHASED_STAGE || isPurchasedCustomer(customer)) && customer.purchasedInfo) {
+    return String(customer.purchasedInfo.purchasedAt || customer.purchasedInfo.revisitAt || customer.effectiveFollowUpAt || customer.lastFollow || "").slice(0, 10);
+  }
   const config = stageTimeConfig(stage === "全部" ? customer.stage : stage);
   return String(customer[config.field] || "").slice(0, 10);
 }
@@ -354,6 +380,7 @@ function daysSince(value) {
 }
 
 function isCustomerAssignable(customer = {}) {
+  if (isPurchasedCustomer(customer)) return false;
   if (customer.ownershipStatus === "public_pool") return customer.stage !== "成交";
   if (customer.stage === "名单") return true;
   if (!["线索", "商机"].includes(customer.stage)) return false;
@@ -362,11 +389,26 @@ function isCustomerAssignable(customer = {}) {
 }
 
 function canSelectCustomerForAssign(customer = {}) {
+  if (isInvalidCustomer(customer)) return false;
   return canAssignCustomers() && canSeePrivateRecord(customer) && isCustomerAssignable(customer);
 }
 
 function canSelectCustomer(customer = {}) {
   return canSelectCustomerForAssign(customer) || canBulkEditChannelSource();
+}
+
+function rollbackTargetForStage(stage = "") {
+  if (stage === "线索") return "名单";
+  if (stage === "商机") return "线索";
+  return "";
+}
+
+function latestPendingRollback(customer = {}) {
+  return (customer.rollbackHistory || []).slice().reverse().find((item) => item.status === "pending") || null;
+}
+
+function canReviewRollback() {
+  return canAssignCustomers();
 }
 
 async function api(path, options = {}) {
@@ -715,7 +757,10 @@ function scopeOpportunityRows() {
   const opportunities = Array.isArray(state.opportunities) && state.opportunities.length
     ? state.opportunities
     : (state.customers || []).map((customer) => ({ ...customer, id: customer.id, customerId: customer.id, productName: "待确认产品" }));
-  return opportunities.map(opportunityRow).filter((item) => item.lifecycleStatus !== "archived" && (item.ownershipStatus === "public_pool" || canSeeRecord(item)));
+  return opportunities.map(opportunityRow).filter((item) => {
+    if (isInvalidCustomer(item)) return true;
+    return item.ownershipStatus === "public_pool" || canSeeRecord(item);
+  });
 }
 
 function scopeVisits() {
@@ -895,7 +940,7 @@ function renderDashboardSummary(data) {
 function renderCustomers() {
   const customers = scopeOpportunityRows();
   const stageTime = stageTimeConfig();
-  const customerTabs = [...stages, "公海"];
+  const customerTabs = [...stages, PUBLIC_POOL_STAGE, PURCHASED_STAGE, INVALID_STAGE];
   const currentFilters = {
     channel: $("#channelFilter")?.value || "",
     createdBy: $("#createdByFilter")?.value || "",
@@ -905,9 +950,13 @@ function renderCustomers() {
   };
   $("#stageTabs").innerHTML = customerTabs
     .map((stage) => {
-      const count = stage === "公海"
-        ? customers.filter((item) => item.ownershipStatus === "public_pool").length
-        : customers.filter((item) => item.stage === stage && item.ownershipStatus !== "public_pool").length;
+      const count = stage === INVALID_STAGE
+        ? customers.filter(isInvalidCustomer).length
+        : stage === PUBLIC_POOL_STAGE
+          ? customers.filter(isPublicPoolCustomer).length
+          : stage === PURCHASED_STAGE
+            ? customers.filter(isPurchasedCustomer).length
+            : customers.filter((item) => item.stage === stage && !isPublicPoolCustomer(item) && !isInvalidCustomer(item) && !isPurchasedCustomer(item)).length;
       return `<button class="${currentStage === stage ? "active" : ""}" data-stage="${stage}">${stage}<span>${count}</span></button>`;
     })
     .join("");
@@ -927,7 +976,7 @@ function renderCustomers() {
   const paymentOwners = roleForUser(currentUser()).customerScope === "self" ? [currentUser()] : visibleUsers();
   $("#paymentOwnerSelect").innerHTML = paymentOwners.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
   $("#batchOwnerSelect").innerHTML = ownerOptions.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
-  $("#batchOwnerField")?.classList.toggle("hidden", currentStage === "公海");
+  $("#batchOwnerField")?.classList.toggle("hidden", isReadonlyStage());
   $("#assignOwnerSelect").innerHTML = ownerOptions.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
   const batchChannelSourceSelect = $("#batchChannelSourceSelect");
   if (batchChannelSourceSelect) batchChannelSourceSelect.innerHTML = channelSources.map((source) => `<option>${escapeHtml(source)}</option>`).join("");
@@ -936,10 +985,10 @@ function renderCustomers() {
   const productOptions = productOptionsHtml();
   $("#customerProductSelect").innerHTML = productOptions;
   $("#newOpportunityProductSelect").innerHTML = productOptions;
-  $("#batchAssignBtn").classList.toggle("hidden", !canAssignCustomers());
-  $("#addCustomerBtn").classList.toggle("hidden", currentStage === "公海");
-  $("#batchImportBtn").classList.toggle("hidden", currentStage === "公海" && !canImportPublicPool());
-  $("#batchImportBtn").textContent = currentStage === "公海" ? "导入公海" : "批量导入";
+  $("#batchAssignBtn").classList.toggle("hidden", currentStage === INVALID_STAGE || currentStage === PURCHASED_STAGE || !canAssignCustomers());
+  $("#addCustomerBtn").classList.toggle("hidden", isReadonlyStage());
+  $("#batchImportBtn").classList.toggle("hidden", currentStage === INVALID_STAGE || currentStage === PURCHASED_STAGE || (currentStage === PUBLIC_POOL_STAGE && !canImportPublicPool()));
+  $("#batchImportBtn").textContent = currentStage === PUBLIC_POOL_STAGE ? "导入公海" : "批量导入";
   $("#stageTimeHeader").textContent = stageTime.label;
   $("#stageTimeFilterLabel").textContent = stageTime.label;
 
@@ -958,12 +1007,24 @@ function renderCustomers() {
   const filteredRows = customers.filter((item) => {
     const source = `${item.name} ${item.phone}`.toLowerCase();
     if (dashboardDrilldownIds && !dashboardDrilldownIds.has(Number(item.id)) && !dashboardDrilldownIds.has(Number(item.customerId))) return false;
-    const isPublicPool = item.ownershipStatus === "public_pool";
-    if (!dashboardDrilldownIds && (currentStage === "公海" ? !isPublicPool : (isPublicPool || item.stage !== currentStage))) return false;
+    const isPublicPool = isPublicPoolCustomer(item);
+    const isInvalid = isInvalidCustomer(item);
+    const isPurchased = isPurchasedCustomer(item);
+    if (!dashboardDrilldownIds) {
+      if (currentStage === INVALID_STAGE) {
+        if (!isInvalid) return false;
+      } else if (currentStage === PUBLIC_POOL_STAGE) {
+        if (isInvalid || !isPublicPool) return false;
+      } else if (currentStage === PURCHASED_STAGE) {
+        if (!isPurchased) return false;
+      } else if (isInvalid || isPublicPool || isPurchased || item.stage !== currentStage) {
+        return false;
+      }
+    }
     if (keyword && !source.includes(keyword)) return false;
     if (channel && normalizeChannelSource(item.channelSource) !== channel) return false;
     if (createdBy && item.createdBy !== createdBy) return false;
-    if (currentStage !== "公海" && followPerson && (item.followPerson || item.owner) !== followPerson) return false;
+    if (!isReadonlyStage() && followPerson && (item.followPerson || item.owner) !== followPerson) return false;
     if (unit && item.unit !== unit) return false;
     if (city && item.city !== city) return false;
     if (!inDateRange(customerStageTime(item), stageStart, stageEnd)) return false;
@@ -1002,32 +1063,48 @@ function customerRow(item) {
   const photoHtml = photos.length
     ? `<div class="customer-photos">${photos.slice(0, 4).map((url) => `<img src="${escapeHtml(url)}" data-photo="${escapeHtml(url)}" alt="${escapeHtml(item.name || "客户图片")}" />`).join("")}${photos.length > 4 ? `<span>+${photos.length - 4}</span>` : ""}</div>`
     : "";
-  const isPublicPool = item.ownershipStatus === "public_pool";
+  const isInvalid = isInvalidCustomer(item);
+  const isPublicPool = isPublicPoolCustomer(item);
+  const isPurchased = isPurchasedCustomer(item);
   const assignable = canSelectCustomerForAssign(item);
   const selectable = canSelectCustomer(item);
   const checked = selectedCustomerIds.has(Number(item.id)) ? "checked" : "";
   const disabled = selectable ? "" : "disabled";
-  const title = selectable ? "选择客户" : (isPublicPool ? "只能分配权限范围内的公海客户" : "当前客户暂不满足分配条件");
+  const title = selectable ? "选择客户" : (isInvalid ? "无效客户不可分配" : (isPublicPool ? "只能分配权限范围内的公海客户" : "当前客户暂不满足分配条件"));
   const ownership = ownershipLabel(item);
   const primaryContact = (item.contacts || []).find((contact) => contact.isPrimary) || (item.contacts || [])[0] || { phone: item.phone };
   const contactCount = (item.contacts || []).length;
   const phoneHtml = isPublicPool
     ? `<span class="pool-private-value">认领后可见</span>`
+    : isInvalid
+      ? `<span class="pool-private-value">已归档</span>`
     : `<a href="tel:${escapeHtml(primaryContact.phone || item.phone)}">${escapeHtml(primaryContact.phone || item.phone)}</a>${contactCount > 1 ? `<small>另有${contactCount - 1}位联系人</small>` : ""}`;
   const followCount = (item.followUps || []).length;
   const lastNote = String(item.lastNote || "").trim();
   const followHtml = isPublicPool
     ? `<small class="pool-private-value">认领后可查看跟进历史</small>`
+    : isInvalid
+      ? `<small class="pool-private-value">${escapeHtml(item.archiveReason === "closed" ? "已标记倒闭" : "已标记无效")}${item.archivedAt ? ` · ${escapeHtml(String(item.archivedAt).slice(0, 10))}` : ""}</small>${followCount ? `<button class="history-link" data-action="history" data-id="${item.id}">查看历史(${followCount})</button>` : ""}`
     : `${lastNote ? `<small>${escapeHtml(lastNote)}</small>` : ""}<button class="history-link" data-action="history" data-id="${item.id}">查看历史(${followCount})</button>${photoHtml}`;
+  const pendingRollback = latestPendingRollback(item);
+  const rollbackActions = pendingRollback
+    ? (canReviewRollback()
+      ? `<button data-action="rollback-approve" data-id="${item.id}">同意回撤</button><button data-action="rollback-reject" data-id="${item.id}">拒绝回撤</button>`
+      : `<span class="pool-action-hint">回撤待审批</span>`)
+    : (rollbackTargetForStage(item.stage) ? `<button data-action="rollback-request" data-id="${item.id}">申请回撤</button>` : "");
   const actions = isPublicPool
     ? (canOwnCustomer(currentUser())
         ? `<button class="primary" data-action="claim" data-id="${item.id}">认领</button>`
         : `<span class="pool-action-hint">${assignable ? "请勾选后分配" : "不在您的分配范围"}</span>`)
-    : `<button data-action="follow" data-id="${item.id}">跟进</button><button data-action="ai" data-id="${item.id}">小智</button>${item.stage === "成交" ? `<button class="primary" data-action="new-opportunity" data-id="${item.id}">新增机会</button>` : `<button data-action="advance" data-id="${item.id}">推进</button>`}`;
+    : isInvalid
+      ? `<span class="pool-action-hint">已进入无效库</span>`
+      : isPurchased
+        ? `<button data-action="history" data-id="${item.id}">查看历史</button><button class="primary" data-action="new-opportunity" data-id="${item.id}">新增机会</button>`
+        : `<button data-action="follow" data-id="${item.id}">跟进</button><button data-action="ai" data-id="${item.id}">小智</button>${item.stage === "成交" ? `<button class="primary" data-action="new-opportunity" data-id="${item.id}">新增机会</button>` : `<button data-action="advance" data-id="${item.id}">推进</button>${rollbackActions}`}`;
   return `
     <tr>
       <td class="select-cell"><input type="checkbox" class="customer-select" data-id="${item.id}" ${checked} ${disabled} title="${title}" /></td>
-      <td><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.stage || "")}${ownership ? ` · <span class="ownership-state ${item.ownershipStatus}">${escapeHtml(ownership)}</span>` : ""}</small></td>
+      <td><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.stage || "")}${ownership ? ` · <span class="ownership-state ${isInvalid ? "archived" : item.ownershipStatus}">${escapeHtml(ownership)}</span>` : ""}</small></td>
       <td><span class="tag">${escapeHtml(item.productName || "待确认产品")}</span></td>
       <td>${phoneHtml}</td>
       <td>${escapeHtml(item.city || "待识别")}</td>
@@ -1315,6 +1392,7 @@ function openCustomerDialog(customer = null) {
   renderContactsEditor(customer?.contacts || []);
   renderCompetitorProfilesEditor(customer?.competitorProfiles || []);
   $("#customerAiBtn").classList.toggle("hidden", !customer);
+  $("#customerPurchasedBtn").classList.toggle("hidden", !customer || isPurchasedCustomer(customer) || isPublicPoolCustomer(customer) || customer.stage === "成交" || customer.lifecycleStatus === "archived");
   $("#customerArchiveBtn").classList.toggle("hidden", !customer || customer.lifecycleStatus === "archived");
   $("#customerDeleteBtn").classList.toggle("hidden", !customer || !canHardDeleteCustomers());
   $("#customerDialogTitle").textContent = customer ? "客户跟进" : "新增客户";
@@ -1335,6 +1413,89 @@ function openFollowHistory(customer) {
         </article>`).join("")
     : '<div class="empty">暂无跟进历史</div>';
   $("#followHistoryDialog").showModal();
+}
+
+function openPurchasedDialog(customer) {
+  if (!customer) return;
+  const form = $("#purchasedForm");
+  form.reset();
+  form.opportunityId.value = customer.id;
+  $("#purchasedSummary").textContent = `${customer.name} · ${customer.productName || "待确认产品"}，标记后不计入我司成交业绩。`;
+  $("#purchasedDialog").showModal();
+}
+
+async function submitPurchased(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const id = Number(form.get("opportunityId"));
+  const note = String(form.get("note") || "").trim();
+  if (!note) return toast("请填写：本次跟进记录");
+  try {
+    await api(`/opportunities/${id}/mark-purchased`, {
+      method: "POST",
+      body: {
+        note,
+        product: String(form.get("product") || "").trim(),
+        brand: String(form.get("brand") || "").trim(),
+        purchasedAt: String(form.get("purchasedAt") || ""),
+        revisitAt: String(form.get("revisitAt") || "")
+      }
+    });
+    $("#purchasedDialog").close();
+    $("#customerDialog").close();
+    currentStage = PURCHASED_STAGE;
+    customerPage = 1;
+    await loadState();
+    toast("已标记为已购，不计入成交业绩");
+  } catch (error) {
+    toast(error.message || "标记已购失败");
+  }
+}
+
+function openRollbackDialog(customer) {
+  if (!customer) return;
+  const targetStage = rollbackTargetForStage(customer.stage);
+  if (!targetStage) return toast("当前阶段不支持回撤");
+  const form = $("#rollbackForm");
+  form.reset();
+  form.opportunityId.value = customer.id;
+  $("#rollbackDialogTitle").textContent = `申请回撤至${targetStage}`;
+  $("#rollbackSummary").textContent = `${customer.name} · 当前${customer.stage}，提交后需主管以上审批。`;
+  $("#rollbackDialog").showModal();
+}
+
+async function submitRollbackRequest(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const id = Number(form.get("opportunityId"));
+  const reason = String(form.get("reason") || "").trim();
+  if (!reason) return toast("请选择：申请原因");
+  try {
+    await api(`/opportunities/${id}/rollback-request`, {
+      method: "POST",
+      body: { reason, note: String(form.get("note") || "").trim() }
+    });
+    $("#rollbackDialog").close();
+    await loadState();
+    toast("回撤申请已提交，等待审批");
+  } catch (error) {
+    toast(error.message || "提交回撤申请失败");
+  }
+}
+
+async function reviewRollback(id, approved) {
+  try {
+    const result = await api(`/opportunities/${id}/rollback-review`, {
+      method: "POST",
+      body: { action: approved ? "approve" : "reject" }
+    });
+    currentStage = approved ? (result.stage || currentStage) : currentStage;
+    customerPage = 1;
+    await loadState();
+    toast(approved ? "已同意回撤" : "已拒绝回撤");
+  } catch (error) {
+    toast(error.message || "审批失败");
+  }
 }
 
 async function saveCustomer(event) {
@@ -1449,9 +1610,8 @@ async function submitClaim(event) {
   const form = new FormData(event.currentTarget);
   const id = Number(form.get("opportunityId"));
   const productId = String(form.get("productId") || "");
-  if (!productId) return toast("请选择：意向产品");
   try {
-    const claimed = await api(`/opportunities/${id}/claim`, { method: "POST", body: { productId } });
+    const claimed = await api(`/opportunities/${id}/claim`, { method: "POST", body: productId ? { productId } : {} });
     $("#claimDialog").close();
     currentStage = claimed.stage || "名单";
     customerPage = 1;
@@ -2007,8 +2167,15 @@ async function addKnowledge(event) {
 }
 
 function renderAdmin() {
-  $("#settingsAccountsPane").classList.toggle("active", currentSettingsTab === "accounts");
-  $("#settingsKnowledgePane").classList.toggle("active", currentSettingsTab === "knowledge");
+  const settingsTabs = ["employees", "org", "roles", "products", "competitors", "channels", "lossReasons", "knowledge"];
+  if (!settingsTabs.includes(currentSettingsTab)) currentSettingsTab = "employees";
+  const showKnowledge = currentSettingsTab === "knowledge";
+  $("#settingsAccountsPane").classList.toggle("active", !showKnowledge);
+  $("#settingsAccountsPane").classList.toggle("single-settings-pane", !showKnowledge && currentSettingsTab !== "employees");
+  $("#settingsKnowledgePane").classList.toggle("active", showKnowledge);
+  $$("#settingsAccountsPane [data-settings-section]").forEach((section) => {
+    section.classList.toggle("hidden", section.dataset.settingsSection !== currentSettingsTab);
+  });
   $$("#settingsTabs button").forEach((button) => button.classList.toggle("active", button.dataset.settingsTab === currentSettingsTab));
   $("#knowledgeList").innerHTML = (state.knowledge || [])
     .map((item) => {
@@ -2558,12 +2725,17 @@ function wireEvents() {
     if (button.dataset.action === "advance") advanceCustomer(id);
     if (button.dataset.action === "claim") claimCustomer(id);
     if (button.dataset.action === "new-opportunity") openNewOpportunityDialog(id);
+    if (button.dataset.action === "rollback-request") openRollbackDialog(scopeOpportunityRows().find((item) => Number(item.id) === id));
+    if (button.dataset.action === "rollback-approve") reviewRollback(id, true);
+    if (button.dataset.action === "rollback-reject") reviewRollback(id, false);
     if (button.dataset.action === "assign") {
       const select = button.parentElement.querySelector(`select[data-role="assign-owner"][data-id="${id}"]`);
       assignCustomer(id, select?.value);
     }
   });
   $("#customerForm").addEventListener("submit", saveCustomer);
+  $("#purchasedForm").addEventListener("submit", submitPurchased);
+  $("#rollbackForm").addEventListener("submit", submitRollbackRequest);
   $("#advanceForm").addEventListener("submit", submitAdvance);
   $("#newOpportunityForm").addEventListener("submit", submitNewOpportunity);
   $("#addContactBtn").addEventListener("click", () => renderContactsEditor([...readContactsEditor(), { name: "", phone: "", isPrimary: false }]));
@@ -2589,6 +2761,7 @@ function wireEvents() {
     renderCompetitorProfilesEditor(readCompetitorProfilesEditor().filter((_, itemIndex) => itemIndex !== index));
   });
   $("#customerAiBtn").addEventListener("click", () => analyzeCustomer(Number($("#customerForm [name=opportunityId]").value)));
+  $("#customerPurchasedBtn").addEventListener("click", () => openPurchasedDialog(scopeOpportunityRows().find((item) => Number(item.id) === Number($("#customerForm [name=opportunityId]").value))));
   $("#customerArchiveBtn").addEventListener("click", () => archiveCustomerFromDialog().catch((error) => toast(error.message)));
   $("#customerDeleteBtn").addEventListener("click", () => deleteCustomerFromDialog().catch((error) => toast(error.message)));
   $("#followHistoryList").addEventListener("click", (event) => {

@@ -9,7 +9,13 @@
     <view class="card">
       <view class="form-item">
         <text class="label">本次跟进记录</text>
-        <textarea name="note" placeholder="记录客户问题、意向、下一步动作"></textarea>
+        <textarea name="note" value="{{followNote}}" bindinput="onFollowNote" placeholder="记录客户问题、意向、下一步动作"></textarea>
+      </view>
+      <view wx:if="{{needsProduct}}" class="form-item">
+        <text class="label">意向产品 <text class="required-mark">*</text></text>
+        <picker range="{{products}}" range-key="name" value="{{productIndex}}" bindchange="onProduct">
+          <view class="picker-box">{{productName || '请选择意向产品'}}</view>
+        </picker>
       </view>
       <view class="form-item">
         <text class="label">下次跟进日期</text>
@@ -18,6 +24,30 @@
         </picker>
       </view>
       <button class="primary-btn" form-type="submit">保存跟进</button>
+      <button wx:if="{{customer.stage !== '成交'}}" class="plain-btn" type="button" bindtap="togglePurchased">客户已购其他软件</button>
+      <view wx:if="{{purchasedOpen}}" class="purchased-box">
+        <view class="form-item">
+          <text class="label">已购产品/软件</text>
+          <input value="{{purchasedProduct}}" data-field="purchasedProduct" bindinput="onPurchasedField" placeholder="例如：拆单软件 / ERP / 渲染软件" />
+        </view>
+        <view class="form-item">
+          <text class="label">已购品牌</text>
+          <input value="{{purchasedBrand}}" data-field="purchasedBrand" bindinput="onPurchasedField" placeholder="例如：三维家 / 云熙 / 海迅" />
+        </view>
+        <view class="form-item">
+          <text class="label">已购时间</text>
+          <picker mode="date" value="{{purchasedAt}}" bindchange="onPurchasedAt">
+            <view class="picker-box">{{purchasedAt || '未记录'}}</view>
+          </picker>
+        </view>
+        <view class="form-item">
+          <text class="label">后续再开发时间</text>
+          <picker mode="date" value="{{purchasedRevisitAt}}" bindchange="onPurchasedRevisitAt">
+            <view class="picker-box">{{purchasedRevisitAt || '暂不设置'}}</view>
+          </picker>
+        </view>
+        <button class="danger-btn" type="button" bindtap="submitPurchased">确认标记已购</button>
+      </view>
     </view>
   </form>
 

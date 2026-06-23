@@ -86,6 +86,18 @@ async function run() {
   assert.equal(customerOpportunities.length, 3);
   assert.ok(customerOpportunities.some((item) => item.stage === "成交" && item.productName === "V1"));
   assert.ok(customerOpportunities.some((item) => item.stage === "商机" && item.productName === "V3升级"));
+  const rollbackRequest = await request(`/opportunities/${advanceV3.data.id}/rollback-request`, { method: "POST", token: sales, body: { reason: "误推进", note: "演示标准未达成" } });
+  assert.equal(rollbackRequest.status, 200);
+  assert.equal(rollbackRequest.data.rollbackHistory.at(-1).status, "pending");
+  const salesReview = await request(`/opportunities/${advanceV3.data.id}/rollback-review`, { method: "POST", token: sales, body: { action: "approve" } });
+  assert.equal(salesReview.status, 403);
+  const adminReview = await request(`/opportunities/${advanceV3.data.id}/rollback-review`, { method: "POST", token: admin, body: { action: "approve" } });
+  assert.equal(adminReview.status, 200);
+  assert.equal(adminReview.data.stage, "线索");
+  assert.equal(adminReview.data.rollbackHistory.at(-1).status, "approved");
+  const purchased = await request(`/opportunities/${productEdit.data.id}/mark-purchased`, { method: "POST", token: sales, body: { note: "客户已经购买渲染软件", product: "渲染软件", brand: "其他", purchasedAt: "2026-06-15" } });
+  assert.equal(purchased.status, 200);
+  assert.equal(purchased.data.outcomeStatus, "purchased_existing");
 
   const publicImport = await request("/import/customers?target=public_pool", { method: "POST", token: admin, body: {
     rows: "客户名称,客户电话,客户地址,城市\n宁波公海测试工厂,13812345679,浙江省宁波市鄞州区测试路2号,宁波市"
@@ -108,13 +120,20 @@ async function run() {
   assert.ok(!stateWithPool.data.customers.some((item) => Number(item.id) === Number(pool.data.items[0].customerId)));
   const adminClaim = await request(`/opportunities/${pool.data.items[0].id}/claim`, { method: "POST", token: admin });
   assert.equal(adminClaim.status, 403);
-  const missingProductClaim = await request(`/opportunities/${pool.data.items[0].id}/claim`, { method: "POST", token: sales });
-  assert.equal(missingProductClaim.status, 400);
-  assert.equal(missingProductClaim.data.field, "productId");
-  const claimed = await request(`/opportunities/${pool.data.items[0].id}/claim`, { method: "POST", token: sales, body: { productId: "product-erp" } });
+  const claimed = await request(`/opportunities/${pool.data.items[0].id}/claim`, { method: "POST", token: sales });
   assert.equal(claimed.status, 200);
   assert.equal(claimed.data.phone, "13812345679");
-  assert.equal(claimed.data.productName, "ERP");
+  assert.equal(claimed.data.productName, "待确认产品");
+  const missingProductFollow = await request(`/opportunities/${claimed.data.id}/follow`, { method: "POST", token: sales, body: { note: "认领后首次有效跟进", nextFollow: "2026-06-18" } });
+  assert.equal(missingProductFollow.status, 400);
+  assert.equal(missingProductFollow.data.field, "productId");
+  const productFollow = await request(`/opportunities/${claimed.data.id}/follow`, { method: "POST", token: sales, body: { note: "认领后补充ERP需求", nextFollow: "2026-06-18", productId: "product-erp" } });
+  assert.equal(productFollow.status, 200);
+  assert.equal(productFollow.data.ownershipStatus, "locked");
+  assert.equal(productFollow.data.productName, "ERP");
+  const claimedState = await request("/state", { token: sales });
+  const claimedOpportunity = claimedState.data.opportunities.find((item) => Number(item.id) === Number(claimed.data.id));
+  assert.equal(claimedOpportunity.productName, "ERP");
 
   const visit = await request("/visits", { method: "POST", token: sales, body: {
     customerId: wonV1.data.customerId, opportunityId: wonV1.data.id, factory: wonV1.data.name, phone: wonV1.data.phone,
