@@ -118,7 +118,9 @@ function migrateLocalState(state = seedState) {
     channelSources,
     products: state.products?.length ? state.products : DEFAULT_PRODUCTS,
     units: (state.units || []).filter((unit) => unit && !LEGACY_DEMO_UNIT_IDS.includes(unit.id)),
-    users: (state.users || []).map((user) => LEGACY_DEMO_UNIT_IDS.includes(user.unitId)
+    users: (state.users || [])
+      .filter((user) => !(["linchen", "zhouyang"].includes(String(user.account || "").toLowerCase()) && ["林晨", "周扬"].includes(user.name)))
+      .map((user) => LEGACY_DEMO_UNIT_IDS.includes(user.unitId)
       ? { ...user, unitId: "", unit: "待分配" }
       : user)
   };
@@ -134,8 +136,6 @@ const seedState = {
   roles: DEFAULT_ROLES,
   units: DEFAULT_UNITS,
   users: [
-    { id: 1, name: "林晨", account: "linchen", role: "销售", roleId: "role-sales", unitId: "unit-east-custom", unit: "华东定制产业带", zone: "东部战区", region: "东部战区" },
-    { id: 2, name: "周扬", account: "zhouyang", role: "销售", roleId: "role-sales", unitId: "unit-south-custom", unit: "华南定制产业带", zone: "南部战区", region: "南部战区" },
     { id: 3, name: "陈主管", account: "chen", role: "主管", roleId: "role-supervisor", unitId: "unit-east-custom", unit: "华东定制产业带", zone: "东部战区", region: "东部战区" },
     { id: 4, name: "王区域", account: "wang", role: "区域经理", roleId: "role-region", unitId: "unit-central-channel", unit: "中部渠道一部", zone: "中部战区", region: "中部战区" },
     { id: 5, name: "管理员", account: "admin", role: "管理员", roleId: "role-admin", unitId: "org-staff", unit: "参谋部", zone: "", region: "参谋部", orgPath: "智销AI / 参谋部" }

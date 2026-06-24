@@ -21,7 +21,9 @@ const seed = {
     { id: 2, name: "杭州销售", account: "sales-east", password: "123456", role: "销售", roleId: "role-sales", unitId: "unit-east-child", unit: "杭州一部", zone: "东部战区" },
     { id: 3, name: "杭州主管", account: "supervisor", password: "123456", role: "主管", roleId: "role-supervisor", unitId: "unit-east-parent", unit: "杭州运营中心", zone: "东部战区" },
     { id: 4, name: "东区经理", account: "region", password: "123456", role: "区域经理", roleId: "role-region", unitId: "unit-east-parent", unit: "杭州运营中心", zone: "东部战区" },
-    { id: 5, name: "西区销售", account: "sales-west", password: "123456", role: "销售", roleId: "role-sales", unitId: "unit-west", unit: "成都一部", zone: "西部战区" }
+    { id: 5, name: "西区销售", account: "sales-west", password: "123456", role: "销售", roleId: "role-sales", unitId: "unit-west", unit: "成都一部", zone: "西部战区" },
+    { id: 6, name: "林晨", account: "linchen", password: "123456", role: "销售", roleId: "role-sales", unitId: "unit-east-child", unit: "杭州一部", zone: "东部战区" },
+    { id: 7, name: "周扬", account: "zhouyang", password: "123456", role: "销售", roleId: "role-sales", unitId: "unit-east-child", unit: "杭州一部", zone: "东部战区" }
   ],
   customers: [
     { id: 101, name: "杭州工厂", phone: "13800001001", ownerId: 2, owner: "杭州销售", unitId: "unit-east-child", unit: "杭州一部", zone: "东部战区", lifecycleStatus: "active", createdAt: "2026-06-01" },
@@ -93,6 +95,8 @@ async function run() {
   assert.equal(migrated.units.find((unit) => unit.id === "unit-east-parent").parentId, "org-zone-east");
   assert.equal(migrated.units.find((unit) => unit.id === "unit-east-child").path, "智销AI / 战区部 / 东部战区 / 杭州运营中心 / 杭州一部");
   assert.equal(migrated.users.find((user) => user.account === "sales-east").orgPath, "智销AI / 战区部 / 东部战区 / 杭州运营中心 / 杭州一部");
+  assert.equal(migrated.users.find((user) => user.account === "linchen").status, "停用");
+  assert.equal(migrated.users.find((user) => user.account === "zhouyang").status, "停用");
 
   const admin = await login("admin");
   const sales = await login("sales-east");
@@ -108,6 +112,20 @@ async function run() {
   assert.equal(regionBoard.status, 200);
   assert.ok(regionBoard.data.items.some((item) => item.customerId === 101));
   assert.ok(!regionBoard.data.items.some((item) => item.customerId === 102));
+
+  const multiAssign = await request("/opportunities/assign", { method: "POST", token: admin, body: {
+    ids: [201, 202],
+    assignments: [{ ownerId: 2, count: 1 }, { ownerId: 3, count: 1 }]
+  } });
+  assert.equal(multiAssign.status, 200, JSON.stringify(multiAssign.data));
+  assert.equal(multiAssign.data.assigned, 2);
+  assert.deepEqual(multiAssign.data.summary.map((item) => `${item.owner}:${item.assigned}`), ["杭州销售:1", "杭州主管:1"]);
+
+  const invalidMultiAssign = await request("/opportunities/assign", { method: "POST", token: admin, body: {
+    ids: [201, 202],
+    assignments: [{ ownerId: 2, count: 1 }]
+  } });
+  assert.equal(invalidMultiAssign.status, 400);
 
   const createStaffUnit = await request("/units", { method: "POST", token: admin, body: { name: "数据组", parentId: "org-staff", type: "team", sort: 10 } });
   assert.equal(createStaffUnit.status, 201, JSON.stringify(createStaffUnit.data));

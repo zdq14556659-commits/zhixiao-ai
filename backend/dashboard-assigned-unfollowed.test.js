@@ -91,7 +91,8 @@ const seed = {
     customer(2, { competitorProfiles: [{ id: "cp-2", competitorId: "competitor-3vjia", brand: TEXT.sanweijia, isPrimary: true }] }),
     customer(3),
     customer(4),
-    customer(5)
+    customer(5),
+    customer(6, { createdBy: "Sales A" })
   ],
   opportunities: [
     opportunity(101, 1),
@@ -111,6 +112,10 @@ const seed = {
       followPerson: "Supervisor",
       ownershipStatus: "pending_followup",
       ownershipHistory: [{ type: "claimed_public_pool", operator: "Supervisor", createdAt: at(today, "10:00:00") }]
+    }),
+    opportunity(106, 6, {
+      createdBy: "Sales A",
+      ownershipHistory: [{ type: "created", toOwnerId: 2, toOwner: "Sales A", operator: "Sales A", createdAt: at(today, "11:00:00") }]
     })
   ],
   visits: [],
@@ -177,10 +182,12 @@ async function run() {
   const action = adminDashboard.data.actions.find((item) => item.key === "assignedTodayUnfollowed");
   assert.ok(action, "dashboard should include assignedTodayUnfollowed action");
   assert.equal(action.label, "\u4eca\u65e5\u5206\u914d\u672a\u8ddf\u8fdb");
-  assert.equal(action.count, 2, JSON.stringify(action));
-  assert.deepEqual(action.opportunityIds.sort((a, b) => a - b), [101, 105]);
+  assert.equal(action.count, 1, JSON.stringify(action));
+  assert.deepEqual(action.opportunityIds.sort((a, b) => a - b), [101]);
   assert.ok(action.customers.every((item) => item.assignedAt && item.followPerson));
-  assert.deepEqual(action.ownerSummary.map((item) => `${item.name}:${item.count}`).sort(), ["Sales A:1", "Supervisor:1"]);
+  assert.deepEqual(action.ownerSummary.map((item) => `${item.name}:${item.count}`).sort(), ["Sales A:1"]);
+  assert.deepEqual(adminDashboard.data.followLeaderboard.red.map((item) => `${item.name}:${item.count}`), ["Sales A:1"]);
+  assert.ok(adminDashboard.data.followLeaderboard.black.some((item) => item.name === "Supervisor" && item.count === 0));
 
   const salesDashboard = await request("/dashboard", { token: salesToken });
   assert.equal(salesDashboard.status, 200, JSON.stringify(salesDashboard.data));

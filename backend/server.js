@@ -117,12 +117,11 @@ const LEGACY_DEMO_UNIT_IDS = new Set([
   "unit-hq-growth"
 ]);
 const DEMO_ACCOUNTS = {
-  林晨: "linchen",
-  周扬: "zhouyang",
   陈主管: "chen",
   王区域: "wang",
   运营小组: "admin"
 };
+const HIDDEN_DEMO_USERS = new Set(["linchen", "zhouyang"]);
 
 ensureDataFile();
 try {
@@ -135,6 +134,12 @@ try {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    if (url.pathname === "/crm") url.pathname = "/crm/";
+    if (url.pathname.startsWith("/crm/api/")) {
+      url.pathname = url.pathname.slice(4);
+    } else if (url.pathname.startsWith("/crm/")) {
+      url.pathname = url.pathname.slice(4) || "/";
+    }
     if (url.pathname.startsWith("/api/")) {
       await routeApi(req, res, url);
       return;
@@ -753,22 +758,48 @@ async function routeApi(req, res, url) {
     const viewer = getAuthUser(req, state);
     if (!canAssignCustomers(state, viewer)) return sendJson(res, 403, { error: "无销售机会分配权限" });
     const ids = [...new Set((body.ids || body.opportunityIds || []).map(Number).filter(Boolean))];
-    const target = findAssignableSalesUser(state, viewer, body.ownerId, body.owner || body.followPerson);
-    if (!target) return sendJson(res, 400, { error: "请选择当前权限内的跟进人" });
+    if (!ids.length) return sendJson(res, 400, { error: "请选择要分配的客户" });
+    const requestedAssignments = Array.isArray(body.assignments) ? body.assignments : [];
+    const assignmentPlan = [];
+    if (requestedAssignments.length) {
+      let totalCount = 0;
+      requestedAssignments.forEach((item) => {
+        const count = Math.max(0, Math.floor(Number(item.count || 0)));
+        if (!count) return;
+        const target = findAssignableSalesUser(state, viewer, item.ownerId, item.owner || item.followPerson);
+        if (!target) assignmentPlan.push({ error: "请选择当前权限内的跟进人" });
+        totalCount += count;
+        assignmentPlan.push({ target, count });
+      });
+      if (assignmentPlan.some((item) => item.error || !item.target)) return sendJson(res, 400, { error: "分配名单中包含无效跟进人" });
+      if (totalCount !== ids.length) return sendJson(res, 400, { error: `分配数量合计需等于已选客户数，当前相差${ids.length - totalCount}` });
+    } else {
+      const target = findAssignableSalesUser(state, viewer, body.ownerId, body.owner || body.followPerson);
+      if (!target) return sendJson(res, 400, { error: "请选择当前权限内的跟进人" });
+      assignmentPlan.push({ target, count: ids.length });
+    }
     const assigned = [];
     const failed = [];
-    ids.forEach((id) => {
-      const index = state.opportunities.findIndex((item) => Number(item.id) === id);
-      if (index < 0) return failed.push({ id, reason: "销售机会不存在" });
-      const previous = state.opportunities[index];
-      if (!canManageOpportunityAssignment(state, viewer, previous)) return failed.push({ id, reason: "超出管理范围" });
-      const next = assignOpportunity(state, previous, target, viewer);
-      state.opportunities[index] = next;
-      syncCustomerCompatibility(state, next.customerId);
-      assigned.push(opportunityView(state, next));
+    const summary = [];
+    let cursor = 0;
+    assignmentPlan.forEach(({ target, count }) => {
+      let success = 0;
+      ids.slice(cursor, cursor + count).forEach((id) => {
+        const index = state.opportunities.findIndex((item) => Number(item.id) === id);
+        if (index < 0) return failed.push({ id, reason: "销售机会不存在" });
+        const previous = state.opportunities[index];
+        if (!canManageOpportunityAssignment(state, viewer, previous)) return failed.push({ id, reason: "超出管理范围" });
+        const next = assignOpportunity(state, previous, target, viewer);
+        state.opportunities[index] = next;
+        syncCustomerCompatibility(state, next.customerId);
+        assigned.push(opportunityView(state, next));
+        success += 1;
+      });
+      cursor += count;
+      summary.push({ ownerId: target.id, owner: target.name, requested: count, assigned: success });
     });
     if (assigned.length) writeState(state);
-    return sendJson(res, 200, { assigned: assigned.length, failed, opportunities: assigned });
+    return sendJson(res, 200, { assigned: assigned.length, failed, summary, opportunities: assigned });
   }
 
   if (req.method === "GET" && url.pathname === "/api/map/points") {
@@ -2223,6 +2254,7 @@ function normalizeUser(user = {}, index = 0, context = {}) {
   const unit = findUnit(units, rawUnitId, rawUnitName);
   const fallbackAccount = DEMO_ACCOUNTS[name] || (ADMIN_ROLES.includes(roleDef.name) ? "admin" : `user${id}`);
   const account = cleanAccount(user.account || user.username || user.login || user.phone || fallbackAccount);
+  const isHiddenDemo = HIDDEN_DEMO_USERS.has(account) && ["林晨", "周扬"].includes(name);
   const defaultPassword = account === "admin" || ADMIN_ROLES.includes(roleDef.name) ? DEFAULT_ADMIN_PASSWORD : "123456";
   const storedPassword = String(user.password || user.initialPassword || defaultPassword);
   const migrationPassword = account === "admin" && context.resetAdminPassword ? DEFAULT_ADMIN_PASSWORD : storedPassword;
@@ -2246,7 +2278,7 @@ function normalizeUser(user = {}, index = 0, context = {}) {
     zone: unit.id ? (unit.zone || "") : normalizeZone(user.zone || user.region || user.unit),
     region: unit.id ? (unit.zone || unit.name || "待分区") : (user.region || "待分区"),
     orgPath: unit.path || user.orgPath || unit.name || "",
-    status: user.status || "启用",
+    status: isHiddenDemo ? "停用" : (user.status || "启用"),
     createdAt: user.createdAt || today()
   };
 }
@@ -2602,7 +2634,7 @@ function normalizeOpportunity(opportunity = {}, context = {}) {
     name: opportunity.productName || "待确认产品"
   };
   const createdAt = opportunity.createdAt || customer.createdAt || today();
-  const followUps = Array.isArray(opportunity.followUps) && opportunity.followUps.length
+  const followUps = Array.isArray(opportunity.followUps)
     ? opportunity.followUps.map((item) => normalizeFollowUp(item, opportunity))
     : [normalizeFollowUp({ date: createdAt, author: opportunity.createdBy || ownerUser.name || "历史数据", note: "新增销售机会。", isSystem: true }, opportunity)];
   const latest = followUps[followUps.length - 1] || {};
@@ -3455,12 +3487,17 @@ function customerPublicPoolInfo(customer = {}, at = Date.now()) {
 
 function latestEffectiveManualFollowAt(customer = {}) {
   const followUps = Array.isArray(customer.followUps) ? customer.followUps : [];
-  const syntheticNotes = new Set(["新增客户。", "名单文件导入。", "更新了客户信息。"]);
   return followUps
-    .filter((item) => !item.isSystem && String(item.note || "").trim() && !syntheticNotes.has(String(item.note || "").trim()))
+    .filter(isManualEffectiveFollow)
     .map((item) => item.createdAt || item.date || "")
     .filter((value) => Number.isFinite(Date.parse(value)))
     .sort((left, right) => Date.parse(right) - Date.parse(left))[0] || "";
+}
+
+function isManualEffectiveFollow(item = {}) {
+  const note = String(item.note || "").trim();
+  const syntheticNotes = new Set(["新增客户。", "名单文件导入。", "更新了客户信息。"]);
+  return !item.isSystem && Boolean(note) && !syntheticNotes.has(note);
 }
 
 function claimDaysRemaining(claimUntil) {
@@ -3696,9 +3733,10 @@ function scopeStateForUser(state, viewer = null) {
 
 function visibleUsers(state, viewer) {
   const role = findRole(state.roles, viewer.roleId, viewer.role);
-  if (role.customerScope === "all") return state.users || [];
+  const users = (state.users || []).filter((user) => user.status !== "停用");
+  if (role.customerScope === "all") return users;
   const managedUnits = managedOrgUnitIds(state, viewer);
-  return (state.users || []).filter((user) => {
+  return users.filter((user) => {
     if (Number(user.id) === Number(viewer.id)) return true;
     if (Array.isArray(viewer.managedUnitIds) && viewer.managedUnitIds.includes(user.unitId)) return true;
     if (managedUnits.has(String(user.unitId))) return true;
@@ -3709,6 +3747,7 @@ function visibleUsers(state, viewer) {
 }
 
 function canOwnCustomerUser(state, user = {}) {
+  if (user.status === "停用") return false;
   const roleName = findRole(state.roles, user.roleId, user.role).name || user.role || "";
   return ["销售", "主管", "区域经理"].includes(roleName);
 }
@@ -4167,8 +4206,8 @@ function buildUnitRanking(state, viewer, selectedScope, range, scopedCustomers) 
   }).sort((a, b) => b.revenue - a.revenue || b.deals - a.deals || b.conversionRate - a.conversionRate);
 }
 
-function actionCustomer(item) {
-  const assignment = latestAssignmentActionToday(item) || {};
+function actionCustomer(state, item) {
+  const assignment = latestAssignmentActionToday(state, item) || {};
   return {
     id: item.id,
     opportunityId: item.opportunityId || item.id,
@@ -4187,16 +4226,30 @@ function actionCustomer(item) {
 
 const ASSIGNMENT_ACTION_TYPES = new Set(["created", "assigned", "claimed_public_pool", "offboard_transfer"]);
 
-function latestAssignmentActionToday(item = {}, date = today()) {
+function canCreateAssignmentReminder(state, user = {}) {
+  if (!user?.id || user.status === "停用") return false;
+  const role = findRole(state.roles, user.roleId, user.role);
+  return role.customerScope !== "self" || (role.permissions || []).includes("publicPoolImport") || (role.permissions || []).includes("admin");
+}
+
+function assignmentActionCounts(state, item = {}, event = {}) {
+  const targetId = Number(event.toOwnerId || item.ownerId || 0);
+  if (!targetId) return false;
+  const operator = findUser(state.users || [], event.operatorId, event.operator || item.createdBy);
+  if (!operator || Number(operator.id) === targetId) return false;
+  if (!canCreateAssignmentReminder(state, operator)) return false;
+  if (event.type === "claimed_public_pool") return false;
+  return true;
+}
+
+function latestAssignmentActionToday(state, item = {}, date = today()) {
   const events = Array.isArray(item.ownershipHistory) ? item.ownershipHistory : [];
   const candidates = events
     .filter((event) => ASSIGNMENT_ACTION_TYPES.has(event.type))
     .filter((event) => String(event.createdAt || "").slice(0, 10) === date)
+    .filter((event) => assignmentActionCounts(state, item, event))
     .sort((left, right) => Date.parse(right.createdAt || 0) - Date.parse(left.createdAt || 0));
   if (candidates[0]) return candidates[0];
-  if (String(item.createdAt || "").slice(0, 10) === date && (item.ownerId || item.owner)) {
-    return { type: "created", createdAt: item.createdAt, operator: item.createdBy || "" };
-  }
   return null;
 }
 
@@ -4204,7 +4257,7 @@ function hasManualFollowOnOrAfter(item = {}, actionAt = "") {
   const actionTime = Date.parse(actionAt);
   const actionDate = String(actionAt || "").slice(0, 10);
   return (item.followUps || []).some((follow) => {
-    if (follow.isSystem || !String(follow.note || "").trim()) return false;
+    if (!isManualEffectiveFollow(follow)) return false;
     const followTime = Date.parse(follow.createdAt || "");
     if (Number.isFinite(actionTime) && Number.isFinite(followTime)) return followTime >= actionTime;
     const followDate = String(follow.date || follow.createdAt || "").slice(0, 10);
@@ -4212,9 +4265,9 @@ function hasManualFollowOnOrAfter(item = {}, actionAt = "") {
   });
 }
 
-function isAssignedTodayUnfollowed(item = {}) {
+function isAssignedTodayUnfollowed(state, item = {}) {
   if (item.stage === "成交" || isOpportunityPublicPool(item) || isPurchasedOpportunity(item)) return false;
-  const assignment = latestAssignmentActionToday(item);
+  const assignment = latestAssignmentActionToday(state, item);
   if (!assignment?.createdAt) return false;
   return !hasManualFollowOnOrAfter(item, assignment.createdAt);
 }
@@ -4230,10 +4283,10 @@ function actionOwnerSummary(items = []) {
     .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name, "zh-Hans-CN"));
 }
 
-function buildActions(customers, range) {
+function buildActions(state, customers, range) {
   const groups = [
     { key: "today", label: "今日待跟进", test: (item) => item.nextFollow === today() },
-    { key: "assignedTodayUnfollowed", label: "今日分配未跟进", test: isAssignedTodayUnfollowed },
+    { key: "assignedTodayUnfollowed", label: "今日分配未跟进", test: (item) => isAssignedTodayUnfollowed(state, item) },
     { key: "overdue", label: "逾期跟进", test: (item) => item.nextFollow && item.nextFollow < today() },
     { key: "highIntent", label: "高意向商机", test: (item) => item.stage === "商机" && Boolean(item.demoAt) },
     { key: "contractPending", label: "待合同金额", test: (item) => item.stage === "成交" && Number(item.contractAmount || 0) <= 0 },
@@ -4249,9 +4302,38 @@ function buildActions(customers, range) {
       customerIds: matches.map((item) => item.id),
       opportunityIds: matches.map((item) => item.opportunityId || item.id),
       ownerSummary: actionOwnerSummary(matches),
-      customers: matches.slice(0, 8).map(actionCustomer)
+      customers: matches.slice(0, 8).map((item) => actionCustomer(state, item))
     };
   });
+}
+
+function buildFollowLeaderboard(state, viewer, scope, customers = []) {
+  const date = today();
+  const scopedUsers = visibleUsers(state, viewer)
+    .filter((user) => canOwnCustomerUser(state, user))
+    .filter((user) => recordMatchesScope(state, user, scope));
+  const counts = new Map(scopedUsers.map((user) => [Number(user.id), 0]));
+  const nameToUser = new Map(scopedUsers.map((user) => [cleanText(user.name), user]));
+  customers.forEach((item) => {
+    (item.followUps || []).forEach((follow) => {
+      if (!isManualEffectiveFollow(follow)) return;
+      if (String(follow.createdAt || follow.date || "").slice(0, 10) !== date) return;
+      const user = nameToUser.get(cleanText(follow.author));
+      if (!user) return;
+      counts.set(Number(user.id), (counts.get(Number(user.id)) || 0) + 1);
+    });
+  });
+  const rows = scopedUsers.map((user) => ({
+    userId: user.id,
+    name: user.name,
+    unit: user.unit || "",
+    zone: user.zone || "",
+    count: counts.get(Number(user.id)) || 0
+  }));
+  return {
+    red: rows.filter((item) => item.count > 0).sort((left, right) => right.count - left.count || left.name.localeCompare(right.name, "zh-Hans-CN")).slice(0, 10),
+    black: rows.sort((left, right) => left.count - right.count || left.name.localeCompare(right.name, "zh-Hans-CN")).slice(0, 10)
+  };
 }
 
 function buildInsights(summary, funnel, actions, industry, target) {
@@ -4331,14 +4413,14 @@ function buildDashboard(state, viewer, query = {}) {
     cities: distribution(visits.map((item) => item.city || item.address)),
     profileCompleteness: percentage(customerMasters.filter((item) => item.phone && item.address && !isUnknownSoftwareValue(primaryCompetitorName(item) || item.software) && (item.contacts || []).length).length, customerMasters.length)
   };
-  const actions = buildActions(customers, range);
+  const actions = buildActions(state, customers, range);
   const drilldowns = {
-    revenue: revenueCustomers.filter((item) => inRange(item.paymentDate, range.start, range.end)).map(actionCustomer),
-    contract: deals.map(actionCustomer),
-    deals: deals.map(actionCustomer),
-    lists: lists.map(actionCustomer),
-    opportunities: opportunities.map(actionCustomer),
-    overdueOpportunities: overdueOpportunities.map(actionCustomer)
+    revenue: revenueCustomers.filter((item) => inRange(item.paymentDate, range.start, range.end)).map((item) => actionCustomer(state, item)),
+    contract: deals.map((item) => actionCustomer(state, item)),
+    deals: deals.map((item) => actionCustomer(state, item)),
+    lists: lists.map((item) => actionCustomer(state, item)),
+    opportunities: opportunities.map((item) => actionCustomer(state, item)),
+    overdueOpportunities: overdueOpportunities.map((item) => actionCustomer(state, item))
   };
   return {
     range,
@@ -4351,6 +4433,7 @@ function buildDashboard(state, viewer, query = {}) {
     trend: buildTrend(customers, range, revenueCustomers),
     ranking: buildRanking(dashboardState, viewer, scope, range),
     unitRanking: buildUnitRanking(dashboardState, viewer, scope, range, customers),
+    followLeaderboard: buildFollowLeaderboard(state, viewer, scope, customers),
     industry,
     actions,
     drilldowns,
@@ -4935,7 +5018,7 @@ async function importCustomers(req, viewer, target = "") {
       publicPoolAt: rowImportToPublicPool ? now : "",
       publicPoolReason: rowImportToPublicPool ? "operations_import" : "",
       ownershipHistory: [ownershipEvent("created", null, rowImportToPublicPool ? { id: "", name: "公海" } : ownerUser, viewer, rowImportToPublicPool ? "运营导入公海机会" : "批量导入机会")],
-      followUps: [{ date: row.lastFollow || today(), createdAt: now, author: viewer.name, note: row.lastNote || `导入${product.name}销售机会。`, nextFollow: row.nextFollow || "", isSystem: true }]
+      followUps: []
     }, state);
     state.opportunities.unshift(opportunity);
     state.activities.push({ date: today(), owner: opportunity.owner, type: opportunity.stage, customerId: customer.id, opportunityId: opportunity.id });

@@ -84,6 +84,13 @@
               <div class="panel-title"><h2>今日行动中心</h2><span>点击查看对应客户</span></div>
               <div class="action-center" id="dashboardActions"></div>
             </section>
+            <section class="panel">
+              <div class="panel-title"><h2>今日跟进红黑榜</h2><span>人工有效跟进次数</span></div>
+              <div class="leaderboard-grid">
+                <div><h3>红榜</h3><div class="leaderboard-list" id="dashboardRedList"></div></div>
+                <div><h3>黑榜</h3><div class="leaderboard-list" id="dashboardBlackList"></div></div>
+              </div>
+            </section>
             <section class="panel dashboard-wide">
               <div class="panel-title"><h2>业绩趋势</h2><span>签单金额与实际进款</span></div>
               <div class="trend-chart" id="dashboardTrend"></div>
@@ -133,6 +140,7 @@
                   <select id="followPersonFilter"></select>
                   <select id="unitFilter"></select>
                   <select id="cityFilter"></select>
+                  <select id="followStatusFilter"><option value="">全部跟进状态</option><option value="unfollowed">未跟进</option><option value="followed">已跟进</option></select>
                 </div>
                 <div class="customer-filter-row customer-time-row">
                   <div class="date-range-filter"><span id="stageTimeFilterLabel">录入时间</span><input id="stageTimeStart" type="date" aria-label="阶段开始时间" /><em>至</em><input id="stageTimeEnd" type="date" aria-label="阶段结束时间" /></div>
@@ -455,7 +463,12 @@
       <form method="dialog" class="dialog-form" id="assignForm">
         <h2>批量分配客户</h2>
         <p class="muted" id="assignSummary">已选择 0 个客户</p>
-        <label>分配给员工<select name="ownerId" id="assignOwnerSelect"></select></label>
+        <div class="segmented-control">
+          <label><input type="radio" name="assignMode" value="average" checked /> 平均分配</label>
+          <label><input type="radio" name="assignMode" value="manual" /> 手动数量</label>
+        </div>
+        <div class="assign-candidate-list" id="assignCandidateList"></div>
+        <p class="muted" id="assignPlanHint">请选择至少一名跟进人。</p>
         <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">确认分配</button></div>
       </form>
     </dialog>
