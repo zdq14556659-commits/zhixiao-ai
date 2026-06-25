@@ -4533,7 +4533,7 @@ function toMiniCustomer(customer) {
 
 function readState() {
   ensureDataFile();
-  const raw = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+  const raw = readJsonFileWithBackup(DATA_FILE, BACKUP_FILE);
   const migrated = migrateState(raw);
   if (JSON.stringify(raw) !== JSON.stringify(migrated)) {
     writeState(migrated);
@@ -4543,8 +4543,14 @@ function readState() {
 
 function writeState(state) {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (fs.existsSync(DATA_FILE)) fs.copyFileSync(DATA_FILE, BACKUP_FILE);
-  fs.writeFileSync(DATA_FILE, JSON.stringify(migrateState(state), null, 2), "utf8");
+  if (isReadableJsonFile(DATA_FILE)) fs.copyFileSync(DATA_FILE, BACKUP_FILE);
+  const tempFile = `${DATA_FILE}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tempFile, JSON.stringify(migrateState(state), null, 2), "utf8");
+    fs.renameSync(tempFile, DATA_FILE);
+  } finally {
+    if (fs.existsSync(tempFile)) fs.rmSync(tempFile, { force: true });
+  }
 }
 
 function ensureDataFile() {
@@ -4552,6 +4558,41 @@ function ensureDataFile() {
   if (!fs.existsSync(SEED_FILE)) fs.copyFileSync(FALLBACK_SEED_FILE, SEED_FILE);
   if (!fs.existsSync(DATA_FILE) && fs.existsSync(BACKUP_FILE)) fs.copyFileSync(BACKUP_FILE, DATA_FILE);
   if (!fs.existsSync(DATA_FILE)) fs.copyFileSync(SEED_FILE, DATA_FILE);
+}
+
+function readJsonFileWithBackup(file, backupFile) {
+  try {
+    return readJsonFile(file);
+  } catch (error) {
+    const corruptFile = `${file}.corrupt-${Date.now()}`;
+    try {
+      if (fs.existsSync(file)) fs.copyFileSync(file, corruptFile);
+    } catch {}
+    try {
+      const backup = readJsonFile(backupFile);
+      fs.copyFileSync(backupFile, file);
+      console.warn(`Recovered state from backup after JSON parse failure. Corrupt copy: ${corruptFile}`);
+      return backup;
+    } catch (backupError) {
+      error.message = `${error.message}; backup recovery failed: ${backupError.message}`;
+      throw error;
+    }
+  }
+}
+
+function readJsonFile(file) {
+  const text = fs.readFileSync(file, "utf8");
+  if (!text.trim()) throw new SyntaxError(`${file} is empty`);
+  return JSON.parse(text);
+}
+
+function isReadableJsonFile(file) {
+  try {
+    readJsonFile(file);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function readBody(req) {
