@@ -1,4 +1,4 @@
-const CACHE_NAME = "zhixiao-ai-v38";
+const CACHE_NAME = "zhixiao-ai-v41";
 const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest", "./icon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -16,14 +16,28 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
-  if (event.request.url.includes("/api/")) return;
+  const request = event.request;
+  if (request.method !== "GET") return;
+
+  let url;
+  try {
+    url = new URL(request.url);
+  } catch {
+    return;
+  }
+
+  if (!["http:", "https:"].includes(url.protocol)) return;
+  if (url.origin !== self.location.origin) return;
+  if (url.pathname.includes("/api/")) return;
+
   event.respondWith(
-    fetch(event.request)
+    fetch(request)
       .then((response) => {
+        if (!response || !response.ok || response.type === "opaque") return response;
         const copy = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)).catch(() => {});
         return response;
       })
-      .catch(() => caches.match(event.request))
+      .catch(() => caches.match(request).then((cached) => cached || Response.error()))
   );
 });

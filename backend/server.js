@@ -133,6 +133,7 @@ try {
 
 const server = http.createServer(async (req, res) => {
   try {
+    res.shouldGzipJson = /\bgzip\b/i.test(String(req.headers["accept-encoding"] || ""));
     const url = new URL(req.url, `http://${req.headers.host}`);
     if (url.pathname === "/crm") url.pathname = "/crm/";
     if (url.pathname.startsWith("/crm/api/")) {
@@ -4615,13 +4616,33 @@ function readBody(req) {
 }
 
 function sendJson(res, status, payload) {
-  res.writeHead(status, {
+  const body = Buffer.from(JSON.stringify(payload));
+  const headers = {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization"
+  };
+  if (res.shouldGzipJson && body.length > 1024) {
+    try {
+      const compressed = zlib.gzipSync(body);
+      res.writeHead(status, {
+        ...headers,
+        "Content-Encoding": "gzip",
+        "Vary": "Accept-Encoding",
+        "Content-Length": compressed.length
+      });
+      res.end(compressed);
+      return;
+    } catch (error) {
+      console.error("gzip json failed", error);
+    }
+  }
+  headers["Content-Length"] = body.length;
+  res.writeHead(status, {
+    ...headers
   });
-  res.end(JSON.stringify(payload));
+  res.end(body);
 }
 
 function sendNoContent(res) {
