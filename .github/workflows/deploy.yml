@@ -42,6 +42,24 @@ jobs:
           scp /tmp/zhixiao-ai.tar.gz \
             ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/tmp/zhixiao-ai.tar.gz
 
+      - name: Backup server database
+        run: |
+          ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "DEPLOY_RUN_ID=${{ github.run_id }} bash -s" <<'EOF'
+          set -euo pipefail
+          DATA_DIR="${ZHIXIAO_DATA_DIR:-/opt/zhixiao-ai/shared/data}"
+          DATA_FILE="$DATA_DIR/db.json"
+          BACKUP_DIR="$DATA_DIR/manual-backups"
+          STAMP="$(date +%Y%m%d-%H%M%S)"
+          mkdir -p "$BACKUP_DIR"
+          if [ ! -f "$DATA_FILE" ]; then
+            echo "DB file not found: $DATA_FILE" >&2
+            exit 1
+          fi
+          BACKUP_FILE="$BACKUP_DIR/db-before-deploy-$STAMP-${DEPLOY_RUN_ID}.json"
+          cp "$DATA_FILE" "$BACKUP_FILE"
+          echo "DB backup saved: $BACKUP_FILE"
+          EOF
+
       - name: Release on server
         run: |
           ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \

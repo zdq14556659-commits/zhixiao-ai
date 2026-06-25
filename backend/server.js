@@ -38,6 +38,10 @@ const AUTH_TOKEN_SECRET = process.env.AUTH_TOKEN_SECRET || "zhixiao-ai-developme
 const loginFailuresByAccount = new Map();
 const loginFailuresByIp = new Map();
 let geocodeQueueRunning = false;
+let stateCache = null;
+let stateIndexes = emptyStateIndexes();
+let stateWriteTimer = null;
+let stateDirty = false;
 const ADMIN_ROLES = ["总负责人", "运营", "管理员"];
 const DEFAULT_PERMISSIONS = ["dashboard", "customers", "field", "assistant"];
 const PUBLIC_POOL_IMPORT_PERMISSION = "publicPoolImport";
@@ -61,6 +65,10 @@ const BACKEND_VERSION = "backend-v9";
 const MONEY_UNIT = "yuan";
 const LEGACY_MONEY_MULTIPLIER = 10000;
 const DEFAULT_EXPECTED_AMOUNT = 150000;
+const STATE_WRITE_DELAY_MS = Math.max(
+  0,
+  Number(process.env.STATE_WRITE_DELAY_MS ?? (String(process.env.AUTH_TOKEN_SECRET || "").includes("test") ? 0 : 500))
+);
 const TARGET_FIELDS = ["revenueTarget", "contractTarget", "listTarget", "leadTarget", "opportunityTarget", "dealTarget"];
 const MONEY_FIELDS = ["amount", "quoteAmount", "contractAmount", "paymentAmount", "revenueTarget", "contractTarget"];
 const DEFAULT_ROLES = [
@@ -161,6 +169,20 @@ server.listen(PORT, "0.0.0.0", () => {
 });
 
 module.exports = server;
+
+process.once("SIGINT", () => {
+  flushStateBeforeExit();
+  process.exit(0);
+});
+
+process.once("SIGTERM", () => {
+  flushStateBeforeExit();
+  process.exit(0);
+});
+
+process.once("beforeExit", () => {
+  flushStateBeforeExit();
+});
 
 async function routeApi(req, res, url) {
   if (req.method === "OPTIONS") return sendNoContent(res);
@@ -2409,6 +2431,10 @@ function zoneUnitId(zone) {
 }
 
 function unitById(units = [], unitId) {
+  if ((units || []) === stateCache?.units && stateIndexes.unitsById.size === (units || []).length) {
+    const index = stateIndexes.unitsById.get(String(unitId));
+    return index === undefined ? null : (units || [])[index] || null;
+  }
   return (units || []).find((unit) => String(unit.id) === String(unitId)) || null;
 }
 
@@ -2487,10 +2513,20 @@ function syncUnitReferences(state, unitId) {
 }
 
 function findUser(users = [], userId, userName) {
+  if ((users || []) === stateCache?.users && stateIndexes.usersById.size === (users || []).length) {
+    const byId = stateIndexes.usersById.get(Number(userId));
+    if (byId !== undefined && users[byId]) return users[byId];
+    const byAccount = stateIndexes.usersByAccount.get(cleanAccount(userName));
+    if (byAccount !== undefined && users[byAccount]) return users[byAccount];
+  }
   return users.find((user) => Number(user.id) === Number(userId)) || users.find((user) => cleanText(user.name) === cleanText(userName)) || {};
 }
 
 function findCustomer(customers = [], customerId) {
+  if ((customers || []) === stateCache?.customers && stateIndexes.customersById.size === (customers || []).length) {
+    const index = stateIndexes.customersById.get(Number(customerId));
+    return index === undefined ? null : customers[index] || null;
+  }
   return (customers || []).find((item) => Number(item.id) === Number(customerId)) || null;
 }
 
@@ -3386,7 +3422,16 @@ function normalizePhone(value) {
 function findCustomerByPhone(state, phone, excludeId = null) {
   const normalized = normalizePhone(phone);
   if (!normalized) return null;
-  return (state.customers || []).find((customer) => {
+  const customers = state.customers || [];
+  if (customers === stateCache?.customers && stateIndexes.customersByPhone.size <= customers.length) {
+    const indexed = customers[stateIndexes.customersByPhone.get(normalized)];
+    if (
+      indexed &&
+      normalizePhone(indexed.phoneNormalized || indexed.phone) === normalized &&
+      (excludeId === null || Number(indexed.id) !== Number(excludeId))
+    ) return indexed;
+  }
+  return customers.find((customer) => {
     if (excludeId !== null && Number(customer.id) === Number(excludeId)) return false;
     return normalizePhone(customer.phoneNormalized || customer.phone) === normalized;
   }) || null;
@@ -4533,25 +4578,94 @@ function toMiniCustomer(customer) {
 }
 
 function readState() {
+  if (stateCache) return stateCache;
   ensureDataFile();
   const raw = readJsonFileWithBackup(DATA_FILE, BACKUP_FILE);
   const migrated = migrateState(raw);
+  stateCache = migrated;
+  rebuildStateIndexes(stateCache);
   if (JSON.stringify(raw) !== JSON.stringify(migrated)) {
-    writeState(migrated);
+    persistStateNow("migration", { backupBeforeWrite: false, refreshBackupAfterWrite: true });
   }
-  return migrated;
+  return stateCache;
 }
 
-function writeState(state) {
+function writeState(state, options = {}) {
+  stateCache = state || stateCache;
+  rebuildStateIndexes(stateCache);
+  stateDirty = true;
+  if (options.immediate || STATE_WRITE_DELAY_MS <= 0) {
+    persistStateNow(options.reason || "write-through");
+    return;
+  }
+  scheduleStateWrite(options.reason || "queued-write");
+}
+
+function scheduleStateWrite(reason = "queued-write") {
+  if (stateWriteTimer) clearTimeout(stateWriteTimer);
+  stateWriteTimer = setTimeout(() => {
+    stateWriteTimer = null;
+    persistStateNow(reason);
+  }, STATE_WRITE_DELAY_MS);
+  if (typeof stateWriteTimer.unref === "function") stateWriteTimer.unref();
+}
+
+function persistStateNow(reason = "manual-flush", options = {}) {
+  if (!stateCache) return "";
+  if (stateWriteTimer) {
+    clearTimeout(stateWriteTimer);
+    stateWriteTimer = null;
+  }
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (isReadableJsonFile(DATA_FILE)) fs.copyFileSync(DATA_FILE, BACKUP_FILE);
+  if (options.backupBeforeWrite !== false && isReadableJsonFile(DATA_FILE)) fs.copyFileSync(DATA_FILE, BACKUP_FILE);
   const tempFile = `${DATA_FILE}.${process.pid}.${Date.now()}.tmp`;
   try {
-    fs.writeFileSync(tempFile, JSON.stringify(migrateState(state), null, 2), "utf8");
+    fs.writeFileSync(tempFile, JSON.stringify(stateCache, null, 2), "utf8");
     fs.renameSync(tempFile, DATA_FILE);
+    if (options.refreshBackupAfterWrite) fs.copyFileSync(DATA_FILE, BACKUP_FILE);
+    stateDirty = false;
+    return DATA_FILE;
   } finally {
     if (fs.existsSync(tempFile)) fs.rmSync(tempFile, { force: true });
   }
+}
+
+function flushStateBeforeExit() {
+  if (stateDirty || stateWriteTimer) persistStateNow("shutdown");
+}
+
+function emptyStateIndexes() {
+  return {
+    usersById: new Map(),
+    usersByAccount: new Map(),
+    customersById: new Map(),
+    customersByPhone: new Map(),
+    opportunitiesById: new Map(),
+    opportunitiesByCustomerId: new Map(),
+    unitsById: new Map()
+  };
+}
+
+function rebuildStateIndexes(state = {}) {
+  const indexes = emptyStateIndexes();
+  (state.users || []).forEach((user, index) => {
+    indexes.usersById.set(Number(user.id), index);
+    [user.account, user.username, user.phone].map(cleanAccount).filter(Boolean).forEach((key) => indexes.usersByAccount.set(key, index));
+  });
+  (state.customers || []).forEach((customer, index) => {
+    indexes.customersById.set(Number(customer.id), index);
+    const phone = normalizePhone(customer.phoneNormalized || customer.phone);
+    if (phone) indexes.customersByPhone.set(phone, index);
+  });
+  (state.opportunities || []).forEach((opportunity) => {
+    indexes.opportunitiesById.set(Number(opportunity.id), opportunity);
+    const customerId = Number(opportunity.customerId);
+    if (!indexes.opportunitiesByCustomerId.has(customerId)) indexes.opportunitiesByCustomerId.set(customerId, []);
+    indexes.opportunitiesByCustomerId.get(customerId).push(opportunity);
+  });
+  (state.units || []).forEach((unit, index) => indexes.unitsById.set(String(unit.id), index));
+  stateIndexes = indexes;
+  return indexes;
 }
 
 function ensureDataFile() {
