@@ -1,6 +1,7 @@
 function getWebApiBase() {
   if (window.ZHIXIAO_API_BASE) return window.ZHIXIAO_API_BASE;
   if (window.location.protocol === "file:") return "http://127.0.0.1:8787/api";
+  if (window.location.hostname === "isales.santi.ren") return "https://isales.santi.ren/crm/api";
   const path = window.location.pathname || "/";
   const crmMatch = path.match(/^(\/crm)\/?/i);
   const prefix = crmMatch ? crmMatch[1] : "";
@@ -443,13 +444,20 @@ async function api(path, options = {}) {
     : options.body
       ? { ...options.body, moneyUnit: "yuan" }
       : undefined;
-  const response = await fetch(`${API_BASE}${path}`, {
+  const endpoint = `${API_BASE}${path}`;
+  const response = await fetch(endpoint, {
     method: options.method || "GET",
     headers,
     body: requestBody instanceof FormData ? requestBody : requestBody ? JSON.stringify(requestBody) : undefined
   });
   const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (error) {
+    const snippet = text.replace(/\s+/g, " ").slice(0, 120);
+    throw new Error(`接口返回了网页而不是JSON，请确认使用 https://isales.santi.ren/crm/ 登录。请求地址：${endpoint}；返回：${snippet}`);
+  }
   if (response.status === 401) {
     sessionStorage.removeItem(AUTH_KEY);
     localStorage.removeItem(AUTH_KEY);
@@ -615,9 +623,14 @@ async function login(event) {
       body: { account: form.get("account"), password: form.get("password") }
     });
     setSession({ token: data.token, user: data.user });
-    state = data.state || state;
     requireLogin();
-    await loadState();
+    if (data.state) {
+      state = data.state;
+      updateChannelSourcesFromState();
+      render();
+    } else {
+      await loadState();
+    }
     toast("登录成功");
     if (data.user?.passwordChangeRecommended) {
       $("#passwordReminderDialog").showModal();
@@ -840,11 +853,11 @@ function render() {
   $("#currentUserText").textContent = `${user.name || "用户"} · ${user.role || ""}`;
   $$(".admin-only").forEach((node) => node.classList.toggle("hidden", !canAdmin()));
   if (currentView === "settings" && !canAdmin()) switchView("dashboard");
-  renderDashboard();
-  renderCustomers();
-  renderField();
-  renderAssistant();
-  renderAdmin();
+  if (currentView === "dashboard") renderDashboard();
+  if (currentView === "customers") renderCustomers();
+  if (currentView === "field") renderField();
+  if (currentView === "assistant") renderAssistant();
+  if (currentView === "settings") renderAdmin();
 }
 
 function formatMoney(value) {
@@ -1703,9 +1716,11 @@ function claimCustomer(id) {
 async function submitClaim(event) {
   event.preventDefault();
   if (event.submitter?.value === "cancel") return $("#claimDialog").close();
-  const form = new FormData(event.currentTarget);
+  const formNode = event.currentTarget;
+  const form = new FormData(formNode);
   const id = Number(form.get("opportunityId"));
   const productId = String(form.get("productId") || "");
+  setFormSubmitting(formNode, true, "认领中...");
   try {
     const claimed = await api(`/opportunities/${id}/claim`, { method: "POST", body: productId ? { productId } : {} });
     $("#claimDialog").close();
@@ -1717,6 +1732,7 @@ async function submitClaim(event) {
     toast("认领成功，请填写首次有效跟进");
   } catch (error) {
     await loadState();
+    setFormSubmitting(formNode, false, "认领中...");
     toast(error.message || "认领失败，客户可能已被他人认领");
   }
 }
