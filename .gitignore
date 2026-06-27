@@ -5,6 +5,7 @@ local-backend*.log
 # Runtime data and uploaded visit photos
 backend/data/db.json
 backend/data/db.backup.json
+backend/data/manual-backups/
 backend/uploads/
 .tmp-render-data/
 .tmp-ui-v6/

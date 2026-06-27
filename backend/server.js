@@ -904,8 +904,12 @@ async function routeApi(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/state") {
     const client = url.searchParams.get("client") || "web";
+    const lite = url.searchParams.get("lite") === "1";
+    const includePublicPool = lite
+      ? url.searchParams.get("includePublicPool") === "1"
+      : url.searchParams.get("includePublicPool") !== "0";
     const state = authState;
-    return sendJson(res, 200, client === "mini" ? toMiniState(state, authUser) : publicState(state, authUser));
+    return sendJson(res, 200, client === "mini" ? toMiniState(state, authUser) : publicState(state, authUser, { includePublicPool }));
   }
 
   if (req.method === "PUT" && url.pathname === "/api/state") {
@@ -3690,13 +3694,15 @@ function stableId(prefix, value) {
   return `${prefix}-${hash}`;
 }
 
-function publicState(state, viewer = null) {
+function publicState(state, viewer = null, options = {}) {
+  const includePublicPool = options.includePublicPool !== false;
   const scoped = scopeStateForUser(state, viewer);
   const { securityLogs, geocodeJobs, ...safeState } = scoped;
   const privateOpportunities = (scoped.opportunities || []).filter((item) => !isOpportunityPublicPool(item) && !isArchivedOpportunity(state, item));
   const privateCustomerIds = new Set(privateOpportunities.map((item) => Number(item.customerId)));
-  const sanitizedPublicOpportunities = viewer
-    ? visiblePublicPoolOpportunities(state, viewer).map((item) => sanitizePublicPoolOpportunity(findCustomer(state.customers, item.customerId), item))
+  const publicOpportunities = viewer ? visiblePublicPoolOpportunities(state, viewer) : [];
+  const sanitizedPublicOpportunities = includePublicPool
+    ? publicOpportunities.map((item) => sanitizePublicPoolOpportunity(findCustomer(state.customers, item.customerId), item))
     : [];
   const sanitizedArchivedOpportunities = viewer
     ? visibleArchivedOpportunities(state, viewer).map((item) => sanitizeArchivedOpportunity(findCustomer(state.customers, item.customerId), item))
@@ -3705,6 +3711,7 @@ function publicState(state, viewer = null) {
     ...safeState,
     users: (scoped.users || []).map(publicUser),
     customers: (scoped.customers || []).filter((item) => privateCustomerIds.has(Number(item.id))),
+    publicPool: { count: publicOpportunities.length, loaded: includePublicPool },
     opportunities: [...privateOpportunities, ...sanitizedPublicOpportunities, ...sanitizedArchivedOpportunities]
   };
 }
@@ -3742,7 +3749,7 @@ function publicUser(user = {}) {
 }
 
 function toMiniState(state, viewer = null) {
-  const next = publicState(state, viewer);
+  const next = publicState(state, viewer, { includePublicPool: false });
   const privateOpportunities = (state.opportunities || [])
     .filter((item) => !isOpportunityPublicPool(item) && canViewOpportunity(state, viewer, item))
     .filter((item) => findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED);

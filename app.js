@@ -449,13 +449,27 @@ async function api(path, options = {}) {
     body: requestBody instanceof FormData ? requestBody : requestBody ? JSON.stringify(requestBody) : undefined
   });
   const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
+  let data = {};
+  let parseError = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (error) {
+      parseError = error;
+      data = {
+        error: response.ok
+          ? "服务器返回异常内容，请刷新后重试"
+          : `服务器接口异常（${response.status}），请稍后重试`,
+        detail: /^\s*</.test(text) ? "网关或服务器返回了HTML错误页" : text.slice(0, 120)
+      };
+    }
+  }
   if (response.status === 401) {
     sessionStorage.removeItem(AUTH_KEY);
     localStorage.removeItem(AUTH_KEY);
     requireLogin();
   }
-  if (!response.ok) {
+  if (parseError || !response.ok) {
     const error = new Error(data.error || `请求失败 ${response.status}`);
     error.code = data.code || "";
     error.status = response.status;
@@ -589,10 +603,16 @@ async function trackGeocodeProgress() {
   } catch {}
 }
 
-async function loadState() {
-  state = await api("/state");
+async function loadState(options = {}) {
+  const includePublicPool = options.includePublicPool ?? (currentView === "customers" && currentStage === PUBLIC_POOL_STAGE);
+  state = await api(`/state?lite=1${includePublicPool ? "&includePublicPool=1" : ""}`);
   updateChannelSourcesFromState();
   render();
+}
+
+function isPublicPoolLoaded() {
+  return Boolean(state.publicPool?.loaded)
+    || (state.opportunities || []).some((item) => item.ownershipStatus === "public_pool");
 }
 
 async function saveState() {
@@ -832,6 +852,9 @@ function switchView(view) {
   $("#viewTitle").textContent = titles[view];
   $("#viewCrumb").textContent = titles[view];
   render();
+  if (view === "customers" && currentStage === PUBLIC_POOL_STAGE && !isPublicPoolLoaded()) {
+    loadState({ includePublicPool: true }).catch((error) => toast(error.message));
+  }
 }
 
 function render() {
@@ -982,6 +1005,7 @@ function renderCustomers() {
   const customers = scopeOpportunityRows();
   const stageTime = stageTimeConfig();
   const customerTabs = [...stages, PUBLIC_POOL_STAGE, PURCHASED_STAGE, INVALID_STAGE];
+  const publicPoolLoaded = isPublicPoolLoaded();
   const currentFilters = {
     channel: $("#channelFilter")?.value || "",
     createdBy: $("#createdByFilter")?.value || "",
@@ -995,7 +1019,7 @@ function renderCustomers() {
       const count = stage === INVALID_STAGE
         ? customers.filter(isInvalidCustomer).length
         : stage === PUBLIC_POOL_STAGE
-          ? customers.filter(isPublicPoolCustomer).length
+          ? (publicPoolLoaded ? customers.filter(isPublicPoolCustomer).length : Number(state.publicPool?.count || 0))
           : stage === PURCHASED_STAGE
             ? customers.filter(isPurchasedCustomer).length
             : customers.filter((item) => item.stage === stage && !isPublicPoolCustomer(item) && !isInvalidCustomer(item) && !isPurchasedCustomer(item)).length;
@@ -1049,6 +1073,16 @@ function renderCustomers() {
   const lastEnd = $("#lastFollowEnd").value;
   const nextStart = $("#nextFollowStart").value;
   const nextEnd = $("#nextFollowEnd").value;
+  if (currentStage === PUBLIC_POOL_STAGE && !publicPoolLoaded) {
+    const total = Number(state.publicPool?.count || 0);
+    currentFilteredCustomerRows = [];
+    currentCustomerRows = [];
+    selectedCustomerIds.clear();
+    $("#customerResultCount").textContent = `当前公海：${total}条，正在加载明细...`;
+    $("#customerRows").innerHTML = `<tr><td colspan="15" class="empty">公海明细正在加载，请稍候...</td></tr>`;
+    updateCustomerSelectionUI();
+    return;
+  }
   const filteredRows = customers.filter((item) => {
     const source = `${item.name} ${item.phone}`.toLowerCase();
     if (dashboardDrilldownIds && !dashboardDrilldownIds.has(Number(item.id)) && !dashboardDrilldownIds.has(Number(item.customerId))) return false;
@@ -2735,6 +2769,12 @@ function wireEvents() {
   });
   $("#skipPasswordChangeBtn").addEventListener("click", () => $("#passwordReminderDialog").close());
   $$("[data-close-dialog]").forEach((button) => button.addEventListener("click", () => $(`#${button.dataset.closeDialog}`).close()));
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("dialog button[value='cancel']");
+    if (!button) return;
+    event.preventDefault();
+    button.closest("dialog")?.close();
+  });
   $$(".nav-item").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
   $("#settingsTabs").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-settings-tab]");
@@ -2749,6 +2789,9 @@ function wireEvents() {
     currentStage = button.dataset.stage;
     customerPage = 1;
     renderCustomers();
+    if (currentStage === PUBLIC_POOL_STAGE && !isPublicPoolLoaded()) {
+      loadState({ includePublicPool: true }).catch((error) => toast(error.message));
+    }
   });
   ["customerKeyword", "channelFilter", "createdByFilter", "followPersonFilter", "unitFilter", "cityFilter", "followStatusFilter", "stageTimeStart", "stageTimeEnd", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
     const resetAndRender = () => {
