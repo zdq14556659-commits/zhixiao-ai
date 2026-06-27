@@ -361,7 +361,7 @@ App({
   login(account, password) {
     return this.requestApi("/auth/login", {
       method: "POST",
-      data: { account, password }
+      data: { account, password, client: "mini" }
     }).then((data) => {
       wx.setStorageSync(AUTH_KEY, { token: data.token, user: data.user, loginAt: Date.now() });
       const remoteState = data.state || this.getState();

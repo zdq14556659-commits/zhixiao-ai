@@ -37,8 +37,9 @@ const orgTypeOptions = [
 ];
 
 let state = { users: [], customers: [], opportunities: [], products: [], visits: [], knowledge: [], stages, roles: defaultRoles, units: [], competitors: [], routes: [], channelSources: [], lossReasons: [] };
-let currentStage = "名单";
-let currentView = "dashboard";
+const CUSTOMER_STAGE_KEY = "zhixiao-current-customer-stage";
+let currentStage = localStorage.getItem(CUSTOMER_STAGE_KEY) || stages[0];
+let currentView = "customers";
 let currentSettingsTab = "employees";
 let fieldMap = null;
 let fieldLayer = null;
@@ -55,9 +56,15 @@ let currentCustomerRows = [];
 let currentFilteredCustomerRows = [];
 let selectedCustomerIds = new Set();
 let customerPage = 1;
-let customerPageSize = 10;
+let customerPageSize = 20;
+let customerBoardData = null;
+let customerBoardLoading = false;
+let customerBoardRequestId = 0;
 let dashboardData = null;
 let dashboardRequestId = 0;
+let dashboardLoadTimer = null;
+let dashboardReady = false;
+let dashboardLoading = false;
 let targetManagement = { options: [], targets: [] };
 let dashboardDrilldownIds = null;
 let collapsedUserUnitIds = new Set();
@@ -610,7 +617,7 @@ async function trackGeocodeProgress() {
     if (progress.configured && progress.remaining > 0) geocodeProgressTimer = setTimeout(trackGeocodeProgress, 1800);
     if (progress.configured && progress.remaining === 0) {
       if (title) title.textContent = `公海导入完成：已定位${counts.resolved || 0}条，失败${counts.failed || 0}条`;
-      await loadState();
+      await refreshCustomersAfterMutation();
     }
   } catch {}
 }
@@ -622,9 +629,89 @@ async function loadState(options = {}) {
   render();
 }
 
+async function loadAppState(options = {}) {
+  const next = await api("/state?lite=1&metadata=1");
+  state = {
+    ...next,
+    customers: state.customers || [],
+    opportunities: state.opportunities || [],
+    visits: state.visits || [],
+    activities: state.activities || []
+  };
+  updateChannelSourcesFromState();
+  if (options.render !== false) render();
+}
+
 function isPublicPoolLoaded() {
   return Boolean(state.publicPool?.loaded)
     || (state.opportunities || []).some((item) => item.ownershipStatus === "public_pool");
+}
+
+function customerBoardQuery() {
+  const params = new URLSearchParams({
+    paginated: "1",
+    stage: currentStage,
+    page: String(customerPage),
+    pageSize: String(customerPageSize)
+  });
+  const values = {
+    keyword: $("#customerKeyword")?.value?.trim() || "",
+    channelSource: $("#channelFilter")?.value || "",
+    createdBy: $("#createdByFilter")?.value?.trim() || "",
+    followPerson: $("#followPersonFilter")?.value?.trim() || "",
+    unit: $("#unitFilter")?.value || "",
+    city: $("#cityFilter")?.value || "",
+    followStatus: $("#followStatusFilter")?.value || "",
+    stageStart: $("#stageTimeStart")?.value || "",
+    stageEnd: $("#stageTimeEnd")?.value || "",
+    lastStart: $("#lastFollowStart")?.value || "",
+    lastEnd: $("#lastFollowEnd")?.value || "",
+    nextStart: $("#nextFollowStart")?.value || "",
+    nextEnd: $("#nextFollowEnd")?.value || ""
+  };
+  Object.entries(values).forEach(([key, value]) => {
+    if (value) params.set(key, value);
+  });
+  if (dashboardDrilldownIds?.size) params.set("ids", [...dashboardDrilldownIds].join(","));
+  return params;
+}
+
+async function loadCustomerBoardPage(options = {}) {
+  if (!session()) return;
+  const requestId = ++customerBoardRequestId;
+  customerBoardLoading = true;
+  if (options.keepData !== true) customerBoardData = null;
+  if (options.renderLoading !== false) renderCustomers();
+  try {
+    const data = await api(`/customer-board?${customerBoardQuery().toString()}`);
+    if (requestId !== customerBoardRequestId) return;
+    customerBoardData = data;
+    state = {
+      ...state,
+      stages: data.stages || state.stages || stages,
+      opportunities: data.items || [],
+      customers: data.items || [],
+      publicPool: { ...(state.publicPool || {}), ...(data.publicPool || {}), loaded: currentStage === PUBLIC_POOL_STAGE },
+      purchased: data.purchased || state.purchased,
+      invalid: data.invalid || state.invalid
+    };
+    customerPage = Number(data.page || customerPage);
+    customerPageSize = Number(data.pageSize || customerPageSize);
+    customerBoardLoading = false;
+    renderCustomers();
+  } catch (error) {
+    if (requestId !== customerBoardRequestId) return;
+    customerBoardLoading = false;
+    customerBoardData = { items: [], total: 0, page: customerPage, pageSize: customerPageSize, stageCounts: customerBoardData?.stageCounts || {} };
+    renderCustomers();
+    toast(error.message || "客户列表加载失败");
+  }
+}
+
+async function refreshCustomersAfterMutation(options = {}) {
+  customerBoardData = null;
+  await loadAppState({ render: false }).catch(() => {});
+  await loadCustomerBoardPage({ renderLoading: options.renderLoading !== false });
 }
 
 async function saveState() {
@@ -640,22 +727,34 @@ function requireLogin() {
 
 async function login(event) {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
+  const formNode = event.currentTarget;
+  const form = new FormData(formNode);
+  setFormSubmitting(formNode, true, "登录中...");
   try {
     const data = await api("/auth/login", {
       method: "POST",
       body: { account: form.get("account"), password: form.get("password") }
     });
     setSession({ token: data.token, user: data.user });
-    state = data.state || state;
+    state = { ...state, users: data.user ? [data.user] : state.users };
+    currentView = "customers";
+    currentStage = localStorage.getItem(CUSTOMER_STAGE_KEY) || stages[0];
+    customerPage = 1;
+    customerBoardData = null;
+    dashboardData = null;
+    dashboardReady = false;
     requireLogin();
-    await loadState();
+    switchView("customers", { skipLoad: true });
+    await loadAppState({ render: false });
+    await loadCustomerBoardPage({ renderLoading: true });
     toast("登录成功");
     if (data.user?.passwordChangeRecommended) {
       $("#passwordReminderDialog").showModal();
     }
   } catch (error) {
     toast(error.message || "登录失败");
+  } finally {
+    setFormSubmitting(formNode, false, "登录中...");
   }
 }
 
@@ -842,7 +941,7 @@ function canBulkEditChannelSource() {
 function clampPageSize(value) {
   const size = Number(value || 10);
   if (!Number.isFinite(size)) return 10;
-  return Math.min(Math.max(Math.round(size), 10), 500);
+  return Math.min(Math.max(Math.round(size), 10), 200);
 }
 
 function formatFollowTime(item = {}) {
@@ -855,7 +954,8 @@ function formatFollowTime(item = {}) {
   return item.date || "时间未记录";
 }
 
-function switchView(view) {
+function switchView(view, options = {}) {
+  if (currentView === "dashboard" && view !== "dashboard") cancelDashboardLoad();
   currentView = view;
   $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
   $$(".view").forEach((item) => item.classList.remove("active"));
@@ -864,8 +964,14 @@ function switchView(view) {
   $("#viewTitle").textContent = titles[view];
   $("#viewCrumb").textContent = titles[view];
   render();
-  if (view === "customers" && currentStage === PUBLIC_POOL_STAGE && !isPublicPoolLoaded()) {
-    loadState({ includePublicPool: true }).catch((error) => toast(error.message));
+  if (!options.skipLoad && view === "customers" && !customerBoardLoading) {
+    loadCustomerBoardPage().catch((error) => toast(error.message));
+  }
+  if (!options.skipLoad && view === "dashboard") {
+    scheduleDashboardLoad();
+  }
+  if (!options.skipLoad && ["field", "assistant", "settings"].includes(view)) {
+    loadState({ includePublicPool: false }).catch((error) => toast(error.message));
   }
 }
 
@@ -874,12 +980,12 @@ function render() {
   const user = currentUser();
   $("#currentUserText").textContent = `${user.name || "用户"} · ${user.role || ""}`;
   $$(".admin-only").forEach((node) => node.classList.toggle("hidden", !canAdmin()));
-  if (currentView === "settings" && !canAdmin()) switchView("dashboard");
-  renderDashboard();
-  renderCustomers();
-  renderField();
-  renderAssistant();
-  renderAdmin();
+  if (currentView === "settings" && !canAdmin()) return switchView("customers");
+  if (currentView === "dashboard") renderDashboardShell();
+  if (currentView === "customers") renderCustomers();
+  if (currentView === "field") renderField();
+  if (currentView === "assistant") renderAssistant();
+  if (currentView === "settings") renderAdmin();
 }
 
 function formatMoney(value) {
@@ -912,12 +1018,51 @@ function dashboardQuery() {
   return params;
 }
 
+function cancelDashboardLoad() {
+  if (dashboardLoadTimer) clearTimeout(dashboardLoadTimer);
+  dashboardLoadTimer = null;
+  dashboardLoading = false;
+}
+
+function renderDashboardShell(message = "看板数据准备中，停留 3 秒后自动计算。") {
+  if (dashboardData && dashboardReady) {
+    renderDashboardSummary(dashboardData);
+    return;
+  }
+  $("#dashboardInsights").innerHTML = `
+    <div class="dashboard-loading">
+      <p>${escapeHtml(message)}</p>
+      <button id="dashboardComputeNowBtn" type="button" class="primary">立即计算</button>
+    </div>`;
+}
+
+function scheduleDashboardLoad(options = {}) {
+  if (currentView !== "dashboard") return;
+  cancelDashboardLoad();
+  dashboardReady = false;
+  renderDashboardShell();
+  if (options.immediate) {
+    renderDashboard();
+    return;
+  }
+  dashboardLoadTimer = setTimeout(() => {
+    dashboardLoadTimer = null;
+    if (currentView === "dashboard") renderDashboard();
+  }, 3000);
+}
+
 async function renderDashboard() {
+  if (currentView !== "dashboard") return;
+  cancelDashboardLoad();
+  dashboardLoading = true;
+  renderDashboardShell("看板计算中，请稍候...");
   const requestId = ++dashboardRequestId;
   try {
     const data = await api(`/dashboard?${dashboardQuery().toString()}`);
     if (requestId !== dashboardRequestId) return;
     dashboardData = data;
+    dashboardReady = true;
+    dashboardLoading = false;
     const scopeSelect = $("#dashboardScope");
     const selected = `${data.scope.type}:${data.scope.id}`;
     scopeSelect.innerHTML = data.scopeOptions.map((item) => `<option value="${escapeHtml(`${item.type}:${item.id}`)}">${escapeHtml(item.name)}</option>`).join("");
@@ -926,6 +1071,7 @@ async function renderDashboard() {
     renderDashboardSummary(data);
   } catch (error) {
     if (requestId !== dashboardRequestId) return;
+    dashboardLoading = false;
     $("#dashboardInsights").innerHTML = `<div class="dashboard-loading">${escapeHtml(error.message || "看板加载失败")}</div>`;
   }
 }
@@ -1018,6 +1164,7 @@ function renderCustomers() {
   const stageTime = stageTimeConfig();
   const customerTabs = [...stages, PUBLIC_POOL_STAGE, PURCHASED_STAGE, INVALID_STAGE];
   const publicPoolLoaded = isPublicPoolLoaded();
+  const serverBoard = customerBoardData;
   const currentFilters = {
     channel: $("#channelFilter")?.value || "",
     createdBy: $("#createdByFilter")?.value || "",
@@ -1028,7 +1175,9 @@ function renderCustomers() {
   };
   $("#stageTabs").innerHTML = customerTabs
     .map((stage) => {
-      const count = stage === INVALID_STAGE
+      const count = serverBoard?.stageCounts
+        ? Number(serverBoard.stageCounts[stage] || (stage === INVALID_STAGE ? serverBoard.stageCounts.invalid : 0) || 0)
+        : stage === INVALID_STAGE
         ? customers.filter(isInvalidCustomer).length
         : stage === PUBLIC_POOL_STAGE
           ? (publicPoolLoaded ? customers.filter(isPublicPoolCustomer).length : Number(state.publicPool?.count || 0))
@@ -1074,6 +1223,15 @@ function renderCustomers() {
   $("#stageTimeHeader").textContent = stageTime.label;
   $("#stageTimeFilterLabel").textContent = stageTime.label;
 
+  if (customerBoardLoading && !serverBoard) {
+    currentFilteredCustomerRows = [];
+    currentCustomerRows = [];
+    $("#customerResultCount").textContent = `当前${currentStage}：加载中...`;
+    $("#customerRows").innerHTML = `<tr><td colspan="15" class="empty">客户列表加载中，请稍候...</td></tr>`;
+    updateCustomerSelectionUI();
+    return;
+  }
+
   const keyword = $("#customerKeyword").value.trim().toLowerCase();
   const channel = $("#channelFilter").value;
   const createdBy = $("#createdByFilter").value;
@@ -1097,7 +1255,7 @@ function renderCustomers() {
     updateCustomerSelectionUI();
     return;
   }
-  const filteredRows = customers.filter((item) => {
+  const filteredRows = serverBoard ? customers : customers.filter((item) => {
     const source = `${item.name} ${item.phone}`.toLowerCase();
     if (dashboardDrilldownIds && !dashboardDrilldownIds.has(Number(item.id)) && !dashboardDrilldownIds.has(Number(item.customerId))) return false;
     const isPublicPool = isPublicPoolCustomer(item);
@@ -1128,11 +1286,12 @@ function renderCustomers() {
     return true;
   });
   currentFilteredCustomerRows = filteredRows;
-  $("#customerResultCount").textContent = dashboardDrilldownIds ? `看板下钻：${filteredRows.length}条` : `当前${currentStage}：${filteredRows.length}条`;
-  const totalPages = Math.max(Math.ceil(filteredRows.length / customerPageSize), 1);
+  const totalRows = serverBoard ? Number(serverBoard.total || 0) : filteredRows.length;
+  $("#customerResultCount").textContent = dashboardDrilldownIds ? `看板下钻：${totalRows}条` : `当前${currentStage}：${totalRows}条`;
+  const totalPages = serverBoard ? Number(serverBoard.totalPages || Math.max(Math.ceil(totalRows / customerPageSize), 1)) : Math.max(Math.ceil(filteredRows.length / customerPageSize), 1);
   customerPage = Math.min(Math.max(customerPage, 1), totalPages);
   const start = (customerPage - 1) * customerPageSize;
-  const rows = filteredRows.slice(start, start + customerPageSize);
+  const rows = serverBoard ? filteredRows : filteredRows.slice(start, start + customerPageSize);
   currentCustomerRows = rows;
   const selectableIds = new Set(filteredRows.filter(canSelectCustomer).map((item) => Number(item.id)));
   selectedCustomerIds = new Set([...selectedCustomerIds].filter((id) => selectableIds.has(Number(id))));
@@ -1147,7 +1306,7 @@ function renderCustomers() {
     jumpInput.max = String(totalPages);
     jumpInput.value = String(customerPage);
   }
-  $("#customerPageSummary").textContent = `共 ${filteredRows.length} 条 · 第 ${customerPage} / ${totalPages} 页`;
+  $("#customerPageSummary").textContent = `共 ${totalRows} 条 · 第 ${customerPage} / ${totalPages} 页`;
   $("#customerPrevPage").disabled = customerPage <= 1;
   $("#customerNextPage").disabled = customerPage >= totalPages;
 }
@@ -1370,7 +1529,7 @@ async function batchUpdateChannelSource(event) {
   });
   selectedCustomerIds.clear();
   $("#channelSourceDialog").close();
-  await loadState();
+  await refreshCustomersAfterMutation();
   toast(`已修改${result.updated || ids.length}个客户的渠道来源`);
 }
 
@@ -1598,7 +1757,7 @@ async function submitPurchased(event) {
     $("#customerDialog").close();
     currentStage = PURCHASED_STAGE;
     customerPage = 1;
-    await loadState();
+    await refreshCustomersAfterMutation();
     toast("已标记为已购，不计入成交业绩");
   } catch (error) {
     toast(error.message || "标记已购失败");
@@ -1629,7 +1788,7 @@ async function submitRollbackRequest(event) {
       body: { reason, note: String(form.get("note") || "").trim() }
     });
     $("#rollbackDialog").close();
-    await loadState();
+    await refreshCustomersAfterMutation();
     toast("回撤申请已提交，等待审批");
   } catch (error) {
     toast(error.message || "提交回撤申请失败");
@@ -1644,7 +1803,7 @@ async function reviewRollback(id, approved) {
     });
     currentStage = approved ? (result.stage || currentStage) : currentStage;
     customerPage = 1;
-    await loadState();
+    await refreshCustomersAfterMutation();
     toast(approved ? "已同意回撤" : "已拒绝回撤");
   } catch (error) {
     toast(error.message || "审批失败");
@@ -1727,7 +1886,7 @@ async function saveCustomer(event) {
       $("#customerDialog").close();
       currentStage = claimed.stage || "名单";
       customerPage = 1;
-      await loadState();
+      await refreshCustomersAfterMutation();
       const fresh = state.customers.find((item) => Number(item.id) === Number(claimed.id));
       if (fresh) openCustomerDialog(fresh);
       return toast("认领成功，请填写首次有效跟进");
@@ -1737,7 +1896,7 @@ async function saveCustomer(event) {
   }
   $("#customerDialog").close();
   customerPage = 1;
-  await loadState();
+  await refreshCustomersAfterMutation();
   toast("已保存");
 }
 
@@ -1760,13 +1919,13 @@ async function claimCustomer(id, trigger = null) {
     const claimed = await api(`/opportunities/${id}/claim`, { method: "POST", body: productPayload });
     currentStage = claimed.stage || "名单";
     customerPage = 1;
-    await loadState();
+    await refreshCustomersAfterMutation();
     const fresh = scopeOpportunityRows().find((item) => Number(item.id) === Number(claimed.id));
     if (fresh) openCustomerDialog(fresh);
     toast("认领成功，请填写首次有效跟进");
   } catch (error) {
     toast(error.message || "认领失败，客户可能已被他人认领");
-    loadState({ includePublicPool: currentStage === PUBLIC_POOL_STAGE }).catch((refreshError) => toast(refreshError.message));
+    refreshCustomersAfterMutation().catch((refreshError) => toast(refreshError.message));
   } finally {
     claimingOpportunityIds.delete(Number(id));
     if (trigger?.isConnected) {
@@ -1787,12 +1946,12 @@ async function submitClaim(event) {
     $("#claimDialog").close();
     currentStage = claimed.stage || "名单";
     customerPage = 1;
-    await loadState();
+    await refreshCustomersAfterMutation();
     const fresh = scopeOpportunityRows().find((item) => Number(item.id) === Number(claimed.id));
     if (fresh) openCustomerDialog(fresh);
     toast("认领成功，请填写首次有效跟进");
   } catch (error) {
-    await loadState();
+    await refreshCustomersAfterMutation();
     toast(error.message || "认领失败，客户可能已被他人认领");
   }
 }
@@ -1854,7 +2013,7 @@ async function submitAdvance(event) {
   $("#advanceDialog").close();
   currentStage = nextStage;
   customerPage = 1;
-  await loadState();
+  await refreshCustomersAfterMutation();
   toast(`已推进至${nextStage}`);
 }
 
@@ -1891,7 +2050,7 @@ async function submitNewOpportunity(event) {
   $("#newOpportunityDialog").close();
   currentStage = "线索";
   customerPage = 1;
-  await loadState();
+  await refreshCustomersAfterMutation();
   toast("新销售机会已创建");
 }
 
@@ -1902,7 +2061,7 @@ async function assignCustomer(id, ownerId) {
     method: "POST",
     body: { ownerId: target.id, owner: target.name }
   });
-  await loadState();
+  await refreshCustomersAfterMutation();
   toast("已分配");
 }
 
@@ -1926,7 +2085,7 @@ async function batchAssignCustomers(event) {
   });
   selectedCustomerIds.clear();
   $("#assignDialog").close();
-  await loadState();
+  await refreshCustomersAfterMutation();
   const failedCount = Array.isArray(result.failed) ? result.failed.length : 0;
   toast(failedCount ? `已分配${result.assigned || 0}个，${failedCount}个未满足条件` : `已分配${result.assigned || ids.length}个客户`);
 }
@@ -1969,7 +2128,7 @@ async function batchImport(event) {
     customerPage = 1;
     showImportFeedback(result);
     try {
-      await loadState();
+      await refreshCustomersAfterMutation();
     } catch (refreshError) {
       toast(refreshError.message || "导入成功，但列表刷新失败，请稍后手动刷新");
     }
@@ -2250,7 +2409,7 @@ async function archiveCustomerFromDialog() {
   const reason = window.confirm("该工厂是否已经倒闭？\n确定：标记为倒闭；取消：标记为无效客户。") ? "closed" : "invalid";
   await api(`/customers/${id}/archive`, { method: "POST", body: { reason } });
   $("#customerDialog").close();
-  await loadState();
+  await refreshCustomersAfterMutation();
   toast("客户已归档，并从漏斗和业绩统计中移出");
 }
 
@@ -2263,14 +2422,14 @@ async function deleteCustomerFromDialog() {
   await api(`/customers/${id}`, { method: "DELETE" });
   $("#customerDialog").close();
   customerPage = 1;
-  await loadState();
+  await refreshCustomersAfterMutation();
   toast("客户已删除");
 }
 
 async function restoreCustomer(id) {
   await api(`/customers/${id}/restore`, { method: "POST", body: {} });
   $("#followHistoryDialog").close();
-  await loadState();
+  await refreshCustomersAfterMutation();
   toast("客户已恢复");
 }
 
@@ -2718,6 +2877,10 @@ function openDashboardCustomers(customers = [], fallbackStage = "全部") {
 }
 
 function handleDashboardClick(event) {
+  if (event.target.closest("#dashboardComputeNowBtn")) {
+    scheduleDashboardLoad({ immediate: true });
+    return;
+  }
   if (!dashboardData) return;
   const metric = event.target.closest("[data-metric], [data-stage]");
   if (metric) {
@@ -2728,6 +2891,9 @@ function handleDashboardClick(event) {
   if (!actionButton) return;
   const action = dashboardData.actions.find((item) => item.key === actionButton.dataset.actionKey);
   if (!action?.count) return;
+  if (Array.isArray(action.customers) && action.customers.length) {
+    return openDashboardCustomers(action.customers);
+  }
   const rows = scopeOpportunityRows();
   const rowsByOpportunityId = new Map(rows.map((item) => [Number(item.id), item]));
   const rowsByCustomerId = new Map(rows.map((item) => [Number(item.customerId), item]));
@@ -2829,17 +2995,15 @@ function wireEvents() {
     if (!button) return;
     dashboardDrilldownIds = null;
     currentStage = button.dataset.stage;
+    localStorage.setItem(CUSTOMER_STAGE_KEY, currentStage);
     customerPage = 1;
-    renderCustomers();
-    if (currentStage === PUBLIC_POOL_STAGE && !isPublicPoolLoaded()) {
-      loadState({ includePublicPool: true }).catch((error) => toast(error.message));
-    }
+    loadCustomerBoardPage().catch((error) => toast(error.message));
   });
   ["customerKeyword", "channelFilter", "createdByFilter", "followPersonFilter", "unitFilter", "cityFilter", "followStatusFilter", "stageTimeStart", "stageTimeEnd", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
     const resetAndRender = () => {
       dashboardDrilldownIds = null;
       customerPage = 1;
-      renderCustomers();
+      loadCustomerBoardPage().catch((error) => toast(error.message));
     };
     const node = $(`#${id}`);
     if (!node) return;
@@ -2855,21 +3019,21 @@ function wireEvents() {
     customerPageSize = clampPageSize(event.currentTarget.value);
     event.currentTarget.value = String(customerPageSize);
     customerPage = 1;
-    renderCustomers();
+    loadCustomerBoardPage().catch((error) => toast(error.message));
   });
   $("#customerPageSize").addEventListener("blur", (event) => {
     customerPageSize = clampPageSize(event.currentTarget.value);
     event.currentTarget.value = String(customerPageSize);
-    customerPage = Math.max(1, Math.min(customerPage, Math.max(Math.ceil(currentFilteredCustomerRows.length / customerPageSize), 1)));
-    renderCustomers();
+    customerPage = Math.max(1, Math.min(customerPage, Math.max(Math.ceil(Number(customerBoardData?.total || currentFilteredCustomerRows.length) / customerPageSize), 1)));
+    loadCustomerBoardPage().catch((error) => toast(error.message));
   });
   $("#dashboardMonth").addEventListener("change", (event) => {
     const range = monthDates(event.currentTarget.value);
     $("#dashboardStart").value = range.start;
     $("#dashboardEnd").value = range.end;
-    renderDashboard();
+    scheduleDashboardLoad();
   });
-  ["dashboardStart", "dashboardEnd", "dashboardScope"].forEach((id) => $(`#${id}`).addEventListener("change", renderDashboard));
+  ["dashboardStart", "dashboardEnd", "dashboardScope"].forEach((id) => $(`#${id}`).addEventListener("change", () => scheduleDashboardLoad()));
   $("#dashboardView").addEventListener("click", handleDashboardClick);
   $("#targetSettingsBtn").addEventListener("click", () => openTargetDialog().catch((error) => toast(error.message)));
   $("#targetScopeSelect").addEventListener("change", fillTargetForm);
@@ -2881,19 +3045,19 @@ function wireEvents() {
   $("#customerPrevPage").addEventListener("click", () => {
     if (customerPage <= 1) return;
     customerPage -= 1;
-    renderCustomers();
+    loadCustomerBoardPage().catch((error) => toast(error.message));
   });
   $("#customerNextPage").addEventListener("click", () => {
-    const totalPages = Math.max(Math.ceil(currentFilteredCustomerRows.length / customerPageSize), 1);
+    const totalPages = Math.max(Math.ceil(Number(customerBoardData?.total || currentFilteredCustomerRows.length) / customerPageSize), 1);
     if (customerPage >= totalPages) return;
     customerPage += 1;
-    renderCustomers();
+    loadCustomerBoardPage().catch((error) => toast(error.message));
   });
   $("#customerJumpPage").addEventListener("click", () => {
-    const totalPages = Math.max(Math.ceil(currentFilteredCustomerRows.length / customerPageSize), 1);
+    const totalPages = Math.max(Math.ceil(Number(customerBoardData?.total || currentFilteredCustomerRows.length) / customerPageSize), 1);
     const targetPage = Math.min(Math.max(Number($("#customerPageJump").value || 1), 1), totalPages);
     customerPage = targetPage;
-    renderCustomers();
+    loadCustomerBoardPage().catch((error) => toast(error.message));
   });
   $("#addCustomerBtn").addEventListener("click", () => openCustomerDialog());
   $("#batchImportBtn").addEventListener("click", () => $("#batchDialog").showModal());
@@ -3051,8 +3215,15 @@ function wireEvents() {
 }
 
 wireEvents();
-if (requireLogin()) loadState().catch((error) => toast(error.message));
+if (requireLogin()) {
+  loadAppState({ render: false })
+    .then(() => {
+      switchView(currentView, { skipLoad: true });
+      return loadCustomerBoardPage({ renderLoading: true });
+    })
+    .catch((error) => toast(error.message));
+}
 window.addEventListener("focus", () => {
-  if (session() && currentView === "customers") loadState().catch(() => {});
+  if (session() && currentView === "customers") loadCustomerBoardPage({ renderLoading: false }).catch(() => {});
 });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("./service-worker.js").catch(() => {});

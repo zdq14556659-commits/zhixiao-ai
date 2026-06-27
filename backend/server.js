@@ -1,6 +1,7 @@
 const http = require("http");
 const https = require("https");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const zlib = require("zlib");
@@ -36,7 +37,7 @@ const LOGIN_LOCK_MS = 10 * 60 * 1000;
 const LOGIN_FAILURE_LIMIT = 5;
 const AUTH_TOKEN_SECRET = process.env.AUTH_TOKEN_SECRET || "zhixiao-ai-development-token-secret-change-in-production";
 const loginFailuresByAccount = new Map();
-const loginFailuresByIp = new Map();
+const loginFailuresByAccountIp = new Map();
 let geocodeQueueRunning = false;
 let stateCache = null;
 let stateIndexes = emptyStateIndexes();
@@ -66,10 +67,16 @@ const BACKEND_VERSION = "backend-v9";
 const MONEY_UNIT = "yuan";
 const LEGACY_MONEY_MULTIPLIER = 10000;
 const DEFAULT_EXPECTED_AMOUNT = 150000;
+const DEFAULT_STATE_WRITE_DELAY_MS = DATA_DIR.toLowerCase().startsWith(os.tmpdir().toLowerCase()) ? 0 : 1500;
 const STATE_WRITE_DELAY_MS = Math.max(
   0,
-  Number(process.env.STATE_WRITE_DELAY_MS ?? 0)
+  Number(process.env.STATE_WRITE_DELAY_MS ?? DEFAULT_STATE_WRITE_DELAY_MS)
 );
+const DASHBOARD_CACHE_TTL_MS = Math.max(
+  0,
+  Number(process.env.DASHBOARD_CACHE_TTL_MS ?? 60000)
+);
+const dashboardCache = new Map();
 const TARGET_FIELDS = ["revenueTarget", "contractTarget", "listTarget", "leadTarget", "opportunityTarget", "dealTarget"];
 const MONEY_FIELDS = ["amount", "quoteAmount", "contractAmount", "paymentAmount", "revenueTarget", "contractTarget"];
 const DEFAULT_ROLES = [
@@ -198,7 +205,11 @@ async function routeApi(req, res, url) {
     const account = cleanAccount(body.account || body.username || body.phone || "");
     const password = String(body.password || "");
     const sourceIp = getRequestIp(req);
-    const lockedUntil = Math.max(getLoginLockedUntil(loginFailuresByAccount, account), getLoginLockedUntil(loginFailuresByIp, sourceIp));
+    const accountIpKey = `${account || "unknown"}@${sourceIp}`;
+    const lockedUntil = Math.max(
+      getLoginLockedUntil(loginFailuresByAccount, account),
+      getLoginLockedUntil(loginFailuresByAccountIp, accountIpKey)
+    );
     if (lockedUntil > Date.now()) {
       return sendJson(res, 429, { error: "登录尝试过多，请10分钟后再试" });
     }
@@ -209,20 +220,19 @@ async function routeApi(req, res, url) {
     const passwordValid = verifyPassword(user || dummyPasswordUser(), password);
     if (!user || !passwordValid) {
       const accountLocked = recordLoginFailure(loginFailuresByAccount, account);
-      const ipLocked = recordLoginFailure(loginFailuresByIp, sourceIp);
-      return sendJson(res, accountLocked || ipLocked ? 429 : 401, {
-        error: accountLocked || ipLocked ? "登录尝试过多，请10分钟后再试" : "账号或密码错误"
+      const accountIpLocked = recordLoginFailure(loginFailuresByAccountIp, accountIpKey);
+      return sendJson(res, accountLocked || accountIpLocked ? 429 : 401, {
+        error: accountLocked || accountIpLocked ? "登录尝试过多，请10分钟后再试" : "账号或密码错误"
       });
     }
     if (user.status === "停用") return sendJson(res, 401, { error: "账号或密码错误" });
     clearLoginFailures(loginFailuresByAccount, account);
-    clearLoginFailures(loginFailuresByIp, sourceIp);
-    state.currentUserId = user.id;
-    writeState(state);
+    clearLoginFailures(loginFailuresByAccountIp, accountIpKey);
+    const wantsMiniState = body.client === "mini";
     return sendJson(res, 200, {
       token: makeToken(user),
       user: publicUser(user),
-      state: toMiniState(state, user)
+      state: wantsMiniState ? toMiniState(state, user) : { backendVersion: BACKEND_VERSION, moneyUnit: MONEY_UNIT }
     });
   }
 
@@ -246,6 +256,8 @@ async function routeApi(req, res, url) {
     return sendJson(res, 201, result);
   }
 
+  const bearerToken = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "").trim();
+  if (!bearerToken) return sendJson(res, 401, { error: "璇峰厛鐧诲綍" });
   const authState = readState();
   const authUser = getAuthUser(req, authState);
   if (!authUser) return sendJson(res, 401, { error: "请先登录" });
@@ -271,12 +283,12 @@ async function routeApi(req, res, url) {
       targetName: authUser.name,
       sourceIp: getRequestIp(req)
     });
-    writeState(state);
+    writeState(state, { immediate: true, reason: "change-password" });
     return sendJson(res, 200, { ok: true, message: "密码修改成功，请重新登录" });
   }
 
   if (req.method === "GET" && url.pathname === "/api/dashboard") {
-    return sendJson(res, 200, buildDashboard(authState, authUser, Object.fromEntries(url.searchParams.entries())));
+    return sendJson(res, 200, buildDashboardCached(authState, authUser, Object.fromEntries(url.searchParams.entries())));
   }
 
   if (req.method === "GET" && url.pathname === "/api/targets") {
@@ -494,11 +506,13 @@ async function routeApi(req, res, url) {
       const customer = findCustomer(authState.customers, opportunity.customerId);
       return sanitizePublicPoolOpportunity(customer, opportunity);
     });
+    const query = Object.fromEntries(url.searchParams.entries());
+    if (isPaginatedQuery(query)) return sendJson(res, 200, paginatePublicPoolItems(items, query));
     return sendJson(res, 200, { count: items.length, items, backendVersion: BACKEND_VERSION, moneyUnit: MONEY_UNIT });
   }
 
   if (req.method === "GET" && url.pathname === "/api/customer-board") {
-    return sendJson(res, 200, buildCustomerBoard(authState, authUser));
+    return sendJson(res, 200, buildCustomerBoard(authState, authUser, Object.fromEntries(url.searchParams.entries())));
   }
 
   const customerOpportunityCreate = url.pathname.match(/^\/api\/customers\/(\d+)\/opportunities$/);
@@ -905,10 +919,12 @@ async function routeApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/state") {
     const client = url.searchParams.get("client") || "web";
     const lite = url.searchParams.get("lite") === "1";
+    const metadata = url.searchParams.get("metadata") === "1";
     const includePublicPool = lite
       ? url.searchParams.get("includePublicPool") === "1"
       : url.searchParams.get("includePublicPool") !== "0";
     const state = authState;
+    if (metadata && client !== "mini") return sendJson(res, 200, publicMetaState(state, authUser));
     return sendJson(res, 200, client === "mini" ? toMiniState(state, authUser) : publicState(state, authUser, { includePublicPool }));
   }
 
@@ -1558,7 +1574,7 @@ async function routeApi(req, res, url) {
       targetName: target.name,
       sourceIp: getRequestIp(req)
     });
-    writeState(state);
+    writeState(state, { immediate: true, reason: "reset-password" });
     return sendJson(res, 200, { ok: true, user: publicUser(state.users[index]) });
   }
 
@@ -3716,7 +3732,32 @@ function publicState(state, viewer = null, options = {}) {
   };
 }
 
-function buildCustomerBoard(state, viewer) {
+function publicMetaState(state, viewer = null) {
+  const scoped = scopeStateForUser(state, viewer);
+  const {
+    securityLogs,
+    geocodeJobs,
+    customers,
+    opportunities,
+    visits,
+    activities,
+    routes,
+    ...safeState
+  } = scoped;
+  const publicPoolCount = viewer ? visiblePublicPoolOpportunities(state, viewer).length : 0;
+  return {
+    ...safeState,
+    users: (scoped.users || []).map(publicUser),
+    customers: [],
+    opportunities: [],
+    visits: [],
+    activities: [],
+    routes: [],
+    publicPool: { count: publicPoolCount, loaded: false }
+  };
+}
+
+function buildCustomerBoard(state, viewer, query = {}) {
   const scopedPrivateOpportunities = (state.opportunities || [])
     .filter((item) => !isOpportunityPublicPool(item) && canViewOpportunity(state, viewer, item))
     .filter((item) => findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED)
@@ -3731,7 +3772,7 @@ function buildCustomerBoard(state, viewer) {
     const customer = findCustomer(state.customers || [], opportunity.customerId);
     return sanitizeArchivedOpportunity(customer, opportunity);
   });
-  return {
+  const result = {
     backendVersion: BACKEND_VERSION,
     moneyUnit: MONEY_UNIT,
     stages: state.stages || STAGES,
@@ -3740,6 +3781,145 @@ function buildCustomerBoard(state, viewer) {
     publicPool: { count: publicItems.length, items: publicItems },
     purchased: { count: purchasedItems.length, items: purchasedItems },
     invalid: { count: invalidItems.length, items: invalidItems }
+  };
+  if (!isPaginatedQuery(query)) return result;
+  return buildPaginatedCustomerBoard(result, query);
+}
+
+function isPaginatedQuery(query = {}) {
+  return query.paginated === "1" || query.page !== undefined || query.pageSize !== undefined;
+}
+
+function safePageSize(value, fallback = 20) {
+  const size = Number(value || fallback);
+  if (!Number.isFinite(size)) return fallback;
+  return Math.min(Math.max(Math.round(size), 1), 500);
+}
+
+function safePage(value) {
+  const page = Number(value || 1);
+  if (!Number.isFinite(page)) return 1;
+  return Math.max(Math.round(page), 1);
+}
+
+function customerBoardStageCounts(board) {
+  return {
+    ...(board.counts || {}),
+    [PUBLIC_POOL_STATUS]: Number(board.publicPool?.count || 0),
+    [PURCHASED_STATUS]: Number(board.purchased?.count || 0),
+    invalid: Number(board.invalid?.count || 0),
+    "无效": Number(board.invalid?.count || 0)
+  };
+}
+
+function boardRowsForStage(board, stage) {
+  if (stage === "全部") return board.items || [];
+  if (stage === PUBLIC_POOL_STATUS) return board.publicPool?.items || [];
+  if (stage === PURCHASED_STATUS) return board.purchased?.items || [];
+  if (stage === "无效" || stage === "invalid") return board.invalid?.items || [];
+  return (board.items || []).filter((item) => !stage || item.stage === stage);
+}
+
+function latestManualFollowRecord(record = {}) {
+  return [...(record.followUps || [])]
+    .reverse()
+    .find((item) => !item.isSystem && String(item.note || "").trim());
+}
+
+function latestManualFollowDate(record = {}) {
+  const latest = latestManualFollowRecord(record);
+  return String(latest?.date || latest?.createdAt || "").slice(0, 10);
+}
+
+function hasManualFollow(record = {}) {
+  return Boolean(latestManualFollowRecord(record));
+}
+
+function stageDateForBoardRow(row = {}, stage = "") {
+  if (stage === PUBLIC_POOL_STATUS) return String(row.publicPoolAt || row.createdAt || "").slice(0, 10);
+  if (stage === PURCHASED_STATUS) return String(row.purchasedInfo?.purchasedAt || row.effectiveFollowUpAt || row.createdAt || "").slice(0, 10);
+  if (stage === "无效" || stage === "invalid") return String(row.archivedAt || row.createdAt || "").slice(0, 10);
+  if (stage === STAGES[1]) return String(row.leadAt || row.createdAt || "").slice(0, 10);
+  if (stage === STAGES[2]) return String(row.opportunityAt || row.createdAt || "").slice(0, 10);
+  if (stage === STAGES[3]) return String(row.dealAt || row.createdAt || "").slice(0, 10);
+  return String(row.createdAt || "").slice(0, 10);
+}
+
+function dateMatchesOptionalRange(value, start, end) {
+  if (!start && !end) return true;
+  const date = String(value || "").slice(0, 10);
+  if (!date) return false;
+  if (start && date < start) return false;
+  if (end && date > end) return false;
+  return true;
+}
+
+function filterBoardRows(rows = [], query = {}, stage = "") {
+  const keyword = cleanText(query.keyword);
+  const channelSource = cleanText(query.channelSource);
+  const createdBy = cleanText(query.createdBy);
+  const followPerson = cleanText(query.followPerson);
+  const unit = cleanText(query.unit);
+  const city = cleanText(query.city);
+  const followStatus = String(query.followStatus || "");
+  const idSet = new Set(String(query.ids || "")
+    .split(",")
+    .map((id) => Number(id))
+    .filter(Boolean));
+  return rows.filter((row) => {
+    if (idSet.size && !idSet.has(Number(row.id)) && !idSet.has(Number(row.customerId))) return false;
+    if (keyword && !cleanText(`${row.name || ""} ${row.phone || ""}`).includes(keyword)) return false;
+    if (channelSource && cleanText(normalizeChannelSource(row.channelSource)) !== channelSource) return false;
+    if (createdBy && !cleanText(row.createdBy).includes(createdBy)) return false;
+    if (followPerson && !cleanText(row.followPerson || row.owner).includes(followPerson)) return false;
+    if (unit && cleanText(row.unit) !== unit) return false;
+    if (city && cleanText(row.city) !== city) return false;
+    if (followStatus === "unfollowed" && hasManualFollow(row)) return false;
+    if (followStatus === "followed" && !hasManualFollow(row)) return false;
+    if (!dateMatchesOptionalRange(stageDateForBoardRow(row, stage), query.stageStart, query.stageEnd)) return false;
+    if (!dateMatchesOptionalRange(latestManualFollowDate(row), query.lastStart, query.lastEnd)) return false;
+    if (!dateMatchesOptionalRange(row.nextFollow, query.nextStart, query.nextEnd)) return false;
+    if (!dateMatchesOptionalRange(row.publicPoolAt, query.publicPoolStart, query.publicPoolEnd)) return false;
+    return true;
+  });
+}
+
+function paginateRows(rows = [], query = {}) {
+  const pageSize = safePageSize(query.pageSize, 20);
+  const total = rows.length;
+  const totalPages = Math.max(Math.ceil(total / pageSize), 1);
+  const page = Math.min(safePage(query.page), totalPages);
+  const start = (page - 1) * pageSize;
+  return { items: rows.slice(start, start + pageSize), total, page, pageSize, totalPages };
+}
+
+function buildPaginatedCustomerBoard(board, query = {}) {
+  const stage = query.stage || STAGES[0];
+  const sourceRows = boardRowsForStage(board, stage);
+  const filteredRows = filterBoardRows(sourceRows, query, stage);
+  const page = paginateRows(filteredRows, query);
+  return {
+    backendVersion: board.backendVersion,
+    moneyUnit: board.moneyUnit,
+    stages: board.stages,
+    stage,
+    stageCounts: customerBoardStageCounts(board),
+    counts: board.counts,
+    publicPool: { count: Number(board.publicPool?.count || 0) },
+    purchased: { count: Number(board.purchased?.count || 0) },
+    invalid: { count: Number(board.invalid?.count || 0) },
+    ...page
+  };
+}
+
+function paginatePublicPoolItems(items = [], query = {}) {
+  const filteredRows = filterBoardRows(items, query, PUBLIC_POOL_STATUS);
+  const page = paginateRows(filteredRows, query);
+  return {
+    backendVersion: BACKEND_VERSION,
+    moneyUnit: MONEY_UNIT,
+    count: filteredRows.length,
+    ...page
   };
 }
 
@@ -4407,6 +4587,39 @@ function buildInsights(summary, funnel, actions, industry, target) {
   const topFunctionLoss = industry.functionLossReasons?.[0];
   if (topFunctionLoss) insights.push({ title: `高频功能缺口：${topFunctionLoss.name}`, detail: `功能原因中该项出现${topFunctionLoss.count}次，可汇总给技术评估产品计划。` });
   return insights.slice(0, 4);
+}
+
+function dashboardCacheKey(viewer = {}, query = {}) {
+  const normalizedQuery = Object.keys(query || {})
+    .sort()
+    .reduce((result, key) => {
+      result[key] = query[key];
+      return result;
+    }, {});
+  return JSON.stringify({
+    userId: viewer.id,
+    roleId: viewer.roleId,
+    authVersion: viewer.authVersion || 1,
+    query: normalizedQuery
+  });
+}
+
+function buildDashboardCached(state, viewer, query = {}) {
+  const key = dashboardCacheKey(viewer, query);
+  const now = Date.now();
+  const cached = dashboardCache.get(key);
+  if (cached && DASHBOARD_CACHE_TTL_MS > 0 && now - cached.time < DASHBOARD_CACHE_TTL_MS) {
+    return { ...cached.data, cached: true, computedAt: cached.computedAt };
+  }
+  const data = buildDashboard(state, viewer, query);
+  const computedAt = new Date(now).toISOString();
+  const payload = { ...data, cached: false, computedAt };
+  dashboardCache.set(key, { time: now, computedAt, data: payload });
+  if (dashboardCache.size > 200) {
+    const oldestKey = dashboardCache.keys().next().value;
+    if (oldestKey) dashboardCache.delete(oldestKey);
+  }
+  return payload;
 }
 
 function buildDashboard(state, viewer, query = {}) {

@@ -34,8 +34,8 @@
           </div>
         </div>
         <nav class="nav">
-          <button class="nav-item active" data-view="dashboard">看板</button>
-          <button class="nav-item" data-view="customers">客户管理</button>
+          <button class="nav-item" data-view="dashboard">看板</button>
+          <button class="nav-item active" data-view="customers">客户管理</button>
           <button class="nav-item" data-view="field">地推地图</button>
           <button class="nav-item" data-view="assistant">AI话术</button>
           <button class="nav-item admin-only" data-view="settings">系统设置</button>
@@ -45,8 +45,8 @@
       <main class="main">
         <header class="topbar">
           <div>
-            <p class="breadcrumb">首页 / <span id="viewCrumb">看板</span></p>
-            <h1 id="viewTitle">看板</h1>
+            <p class="breadcrumb">首页 / <span id="viewCrumb">客户管理</span></p>
+            <h1 id="viewTitle">客户管理</h1>
           </div>
           <div class="user-chip">
             <span id="currentUserText">未登录</span>
@@ -55,7 +55,7 @@
           </div>
         </header>
 
-        <section class="view active" id="dashboardView">
+        <section class="view" id="dashboardView">
           <section class="dashboard-toolbar">
             <div class="dashboard-filter-group">
               <label>月份<input id="dashboardMonth" type="month" /></label>
@@ -124,7 +124,7 @@
           </div>
         </section>
 
-        <section class="view" id="customersView">
+        <section class="view active" id="customersView">
           <div class="stage-tabs" id="stageTabs"></div>
           <section class="panel">
             <div class="customer-filter-card collapsed" id="customerFilterCard">
@@ -168,7 +168,7 @@
             </div>
             <div class="customer-pager" id="customerPager">
               <label>每页
-                <input id="customerPageSize" type="number" min="10" max="500" step="1" value="10" />
+                <input id="customerPageSize" type="number" min="10" max="200" step="1" value="20" />
                 条
               </label>
               <span id="customerPageSummary">第 1 / 1 页</span>
