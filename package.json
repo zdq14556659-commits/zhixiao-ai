@@ -13,8 +13,10 @@
     "test:v8": "node backend/backend-v8.test.js",
     "test:v9": "node backend/backend-v9.test.js",
     "test:channels": "node backend/channel-source-import.test.js",
+    "test:import-counts": "node backend/import-counts.test.js",
+    "test:follow-persistence": "node backend/follow-persistence.test.js",
     "test:dashboard-actions": "node backend/dashboard-assigned-unfollowed.test.js",
-    "test": "npm run test:password && npm run test:customers && npm run test:v6 && npm run test:v7 && npm run test:v8 && npm run test:v9 && npm run test:channels && npm run test:dashboard-actions"
+    "test": "npm run test:password && npm run test:customers && npm run test:v6 && npm run test:v7 && npm run test:v8 && npm run test:v9 && npm run test:channels && npm run test:import-counts && npm run test:follow-persistence && npm run test:dashboard-actions"
   },
   "dependencies": {
     "jszip": "^3.10.1"

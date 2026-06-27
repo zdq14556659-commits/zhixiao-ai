@@ -136,8 +136,10 @@
                 <div class="customer-filter-row customer-search-row">
                   <input id="customerKeyword" placeholder="搜索客户 / 客户电话" />
                   <select id="channelFilter"></select>
-                  <select id="createdByFilter"></select>
-                  <select id="followPersonFilter"></select>
+                  <input id="createdByFilter" list="createdByFilterOptions" placeholder="全部录入人" />
+                  <datalist id="createdByFilterOptions"></datalist>
+                  <input id="followPersonFilter" list="followPersonFilterOptions" placeholder="全部跟进人" />
+                  <datalist id="followPersonFilterOptions"></datalist>
                   <select id="unitFilter"></select>
                   <select id="cityFilter"></select>
                   <select id="followStatusFilter"><option value="">全部跟进状态</option><option value="unfollowed">未跟进</option><option value="followed">已跟进</option></select>
@@ -467,6 +469,7 @@
           <label><input type="radio" name="assignMode" value="average" checked /> 平均分配</label>
           <label><input type="radio" name="assignMode" value="manual" /> 手动数量</label>
         </div>
+        <input id="assignUserSearch" class="assign-user-search" type="search" placeholder="搜索跟进人 / 单位 / 账号" />
         <div class="assign-candidate-list" id="assignCandidateList"></div>
         <p class="muted" id="assignPlanHint">请选择至少一名跟进人。</p>
         <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">确认分配</button></div>

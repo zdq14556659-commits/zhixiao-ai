@@ -61,6 +61,7 @@ let dashboardRequestId = 0;
 let targetManagement = { options: [], targets: [] };
 let dashboardDrilldownIds = null;
 let collapsedUserUnitIds = new Set();
+let claimingOpportunityIds = new Set();
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -356,6 +357,17 @@ function customerStageTime(customer = {}, stage = currentStage) {
 function optionList(label, values) {
   const options = [...new Set(values.filter(Boolean))];
   return `<option value="">${label}</option>${options.map((value) => `<option>${escapeHtml(value)}</option>`).join("")}`;
+}
+
+function datalistOptions(values) {
+  return [...new Set(values.filter(Boolean))]
+    .map((value) => `<option value="${escapeHtml(value)}"></option>`)
+    .join("");
+}
+
+function textIncludes(value, keyword) {
+  if (!keyword) return true;
+  return String(value || "").toLowerCase().includes(String(keyword || "").toLowerCase());
 }
 
 function normalizeChannelSource(value) {
@@ -1029,8 +1041,10 @@ function renderCustomers() {
 
   const ownerOptions = visibleFollowUsers();
   $("#channelFilter").innerHTML = optionList("全部渠道来源", channelSources);
-  $("#createdByFilter").innerHTML = optionList("全部录入人", customers.map((item) => item.createdBy));
-  $("#followPersonFilter").innerHTML = `${roleForUser(currentUser()).customerScope === "self" ? "" : '<option value="">全部跟进人</option>'}${ownerOptions.map((user) => `<option>${escapeHtml(user.name)}</option>`).join("")}`;
+  $("#createdByFilterOptions").innerHTML = datalistOptions(customers.map((item) => item.createdBy));
+  $("#followPersonFilterOptions").innerHTML = datalistOptions(ownerOptions.map((user) => user.name));
+  $("#createdByFilter").placeholder = "全部录入人";
+  $("#followPersonFilter").placeholder = roleForUser(currentUser()).customerScope === "self" ? "当前仅本人" : "全部跟进人";
   $("#unitFilter").innerHTML = optionList("全部单位", customers.map((item) => item.unit));
   $("#cityFilter").innerHTML = optionList("全部城市", customers.map((item) => item.city));
   $("#channelFilter").value = currentFilters.channel;
@@ -1102,8 +1116,8 @@ function renderCustomers() {
     }
     if (keyword && !source.includes(keyword)) return false;
     if (channel && normalizeChannelSource(item.channelSource) !== channel) return false;
-    if (createdBy && item.createdBy !== createdBy) return false;
-    if (!isReadonlyStage() && followPerson && (item.followPerson || item.owner) !== followPerson) return false;
+    if (createdBy && !textIncludes(item.createdBy, createdBy)) return false;
+    if (!isReadonlyStage() && followPerson && !textIncludes(item.followPerson || item.owner, followPerson)) return false;
     if (unit && item.unit !== unit) return false;
     if (city && item.city !== city) return false;
     if (followStatus === "unfollowed" && manualFollowUps(item).length) return false;
@@ -1251,6 +1265,7 @@ function openBatchAssignDialog() {
   const ids = selectedCustomerIdsForAssign();
   if (!ids.length) return toast("请先勾选客户");
   $("#assignSummary").textContent = `已选择 ${ids.length} 个客户`;
+  $("#assignUserSearch").value = "";
   renderAssignCandidates();
   $("#assignDialog").showModal();
 }
@@ -1260,11 +1275,19 @@ function renderAssignCandidates() {
   if (!candidateList) return;
   const candidates = visibleFollowUsers();
   candidateList.innerHTML = candidates.length ? candidates.map((user) => `
-    <article class="assign-candidate-row">
-      <label><input type="checkbox" data-assign-user="${user.id}" /> ${escapeHtml(user.name)}<small>${escapeHtml(user.unit || "待分配")}</small></label>
+    <article class="assign-candidate-row" data-assign-search="${escapeHtml(`${user.name} ${user.unit || ""} ${user.account || ""}`.toLowerCase())}">
+      <label class="assign-candidate-check"><input type="checkbox" data-assign-user="${user.id}" /><span><b>${escapeHtml(user.name)}</b><small>${escapeHtml(user.unit || "待分配")}</small></span></label>
       <input type="number" min="0" step="1" value="0" data-assign-count="${user.id}" aria-label="${escapeHtml(user.name)}分配数量" />
     </article>`).join("") : '<p class="empty">当前权限范围内没有可分配的跟进人</p>';
+  filterAssignCandidates();
   updateAssignPlanHint();
+}
+
+function filterAssignCandidates() {
+  const keyword = String($("#assignUserSearch")?.value || "").trim().toLowerCase();
+  $$("#assignCandidateList .assign-candidate-row").forEach((row) => {
+    row.hidden = keyword && !String(row.dataset.assignSearch || "").includes(keyword);
+  });
 }
 
 function selectedAssignCandidates() {
@@ -1718,20 +1741,39 @@ async function saveCustomer(event) {
   toast("已保存");
 }
 
-function claimCustomer(id) {
+async function claimCustomer(id, trigger = null) {
   const customer = scopeOpportunityRows().find((item) => Number(item.id) === Number(id))
     || currentFilteredCustomerRows.find((item) => Number(item.id) === Number(id))
     || currentCustomerRows.find((item) => Number(item.id) === Number(id));
-  const form = $("#claimForm");
-  form.reset();
-  form.opportunityId.value = id;
-  $("#claimSummary").textContent = customer
-    ? `${customer.name} · 认领后获得3天临时保护，请及时提交有效跟进。`
-    : "认领后获得3天临时保护，请及时提交有效跟进。";
-  $("#claimProductSelect").innerHTML = productOptionsHtml("请选择意向产品");
+  if (!customer) return toast("公海客户不存在或列表尚未加载完成，请刷新后重试");
+  if (claimingOpportunityIds.has(Number(id))) return toast("正在认领，请稍候");
   const productId = customer && !isPlaceholderProduct(customer) ? customer.productId : "";
-  $("#claimProductSelect").value = selectableProducts().some((item) => item.id === productId) ? productId : "";
-  $("#claimDialog").showModal();
+  const productPayload = productId && selectableProducts().some((item) => item.id === productId) ? { productId } : {};
+  claimingOpportunityIds.add(Number(id));
+  if (trigger) {
+    trigger.disabled = true;
+    trigger.dataset.originalLabel = trigger.textContent;
+    trigger.textContent = "认领中...";
+  }
+  toast("正在认领公海客户...");
+  try {
+    const claimed = await api(`/opportunities/${id}/claim`, { method: "POST", body: productPayload });
+    currentStage = claimed.stage || "名单";
+    customerPage = 1;
+    await loadState();
+    const fresh = scopeOpportunityRows().find((item) => Number(item.id) === Number(claimed.id));
+    if (fresh) openCustomerDialog(fresh);
+    toast("认领成功，请填写首次有效跟进");
+  } catch (error) {
+    toast(error.message || "认领失败，客户可能已被他人认领");
+    loadState({ includePublicPool: currentStage === PUBLIC_POOL_STAGE }).catch((refreshError) => toast(refreshError.message));
+  } finally {
+    claimingOpportunityIds.delete(Number(id));
+    if (trigger?.isConnected) {
+      trigger.disabled = false;
+      trigger.textContent = trigger.dataset.originalLabel || "认领";
+    }
+  }
 }
 
 async function submitClaim(event) {
@@ -2859,6 +2901,10 @@ function wireEvents() {
   $("#batchChannelBtn")?.addEventListener("click", openBatchChannelDialog);
   $("#assignForm").addEventListener("change", updateAssignPlanHint);
   $("#assignForm").addEventListener("input", updateAssignPlanHint);
+  $("#assignUserSearch").addEventListener("input", () => {
+    filterAssignCandidates();
+    updateAssignPlanHint();
+  });
   $("#selectAllCustomers").addEventListener("change", toggleAllCustomers);
   $("#customerRows").addEventListener("change", toggleCustomerSelection);
   $("#customerRows").addEventListener("click", (event) => {
@@ -2877,7 +2923,7 @@ function wireEvents() {
     if (button.dataset.action === "follow") openCustomerDialog(scopeOpportunityRows().find((item) => Number(item.id) === id));
     if (button.dataset.action === "ai") analyzeCustomer(id);
     if (button.dataset.action === "advance") advanceCustomer(id);
-    if (button.dataset.action === "claim") claimCustomer(id);
+    if (button.dataset.action === "claim") claimCustomer(id, button);
     if (button.dataset.action === "new-opportunity") openNewOpportunityDialog(id);
     if (button.dataset.action === "rollback-request") openRollbackDialog(scopeOpportunityRows().find((item) => Number(item.id) === id));
     if (button.dataset.action === "rollback-approve") reviewRollback(id, true);
