@@ -42,6 +42,7 @@ let stateCache = null;
 let stateIndexes = emptyStateIndexes();
 let stateWriteTimer = null;
 let stateDirty = false;
+let stateDiskSignature = "";
 const ADMIN_ROLES = ["总负责人", "运营", "管理员"];
 const DEFAULT_PERMISSIONS = ["dashboard", "customers", "field", "assistant"];
 const PUBLIC_POOL_IMPORT_PERMISSION = "publicPoolImport";
@@ -67,7 +68,7 @@ const LEGACY_MONEY_MULTIPLIER = 10000;
 const DEFAULT_EXPECTED_AMOUNT = 150000;
 const STATE_WRITE_DELAY_MS = Math.max(
   0,
-  Number(process.env.STATE_WRITE_DELAY_MS ?? (String(process.env.AUTH_TOKEN_SECRET || "").includes("test") ? 0 : 500))
+  Number(process.env.STATE_WRITE_DELAY_MS ?? 0)
 );
 const TARGET_FIELDS = ["revenueTarget", "contractTarget", "listTarget", "leadTarget", "opportunityTarget", "dealTarget"];
 const MONEY_FIELDS = ["amount", "quoteAmount", "contractAmount", "paymentAmount", "revenueTarget", "contractTarget"];
@@ -4578,14 +4579,18 @@ function toMiniCustomer(customer) {
 }
 
 function readState() {
-  if (stateCache) return stateCache;
   ensureDataFile();
+  const signature = fileSignature(DATA_FILE);
+  if (stateCache && stateDirty) return stateCache;
+  if (stateCache && signature && signature === stateDiskSignature) return stateCache;
   const raw = readJsonFileWithBackup(DATA_FILE, BACKUP_FILE);
   const migrated = migrateState(raw);
   stateCache = migrated;
   rebuildStateIndexes(stateCache);
   if (JSON.stringify(raw) !== JSON.stringify(migrated)) {
     persistStateNow("migration", { backupBeforeWrite: false, refreshBackupAfterWrite: true });
+  } else {
+    stateDiskSignature = fileSignature(DATA_FILE);
   }
   return stateCache;
 }
@@ -4623,6 +4628,7 @@ function persistStateNow(reason = "manual-flush", options = {}) {
     fs.writeFileSync(tempFile, JSON.stringify(stateCache, null, 2), "utf8");
     fs.renameSync(tempFile, DATA_FILE);
     if (options.refreshBackupAfterWrite) fs.copyFileSync(DATA_FILE, BACKUP_FILE);
+    stateDiskSignature = fileSignature(DATA_FILE);
     stateDirty = false;
     return DATA_FILE;
   } finally {
@@ -4707,6 +4713,15 @@ function isReadableJsonFile(file) {
     return true;
   } catch {
     return false;
+  }
+}
+
+function fileSignature(file) {
+  try {
+    const stat = fs.statSync(file);
+    return `${stat.size}:${stat.mtimeMs}`;
+  } catch {
+    return "";
   }
 }
 
