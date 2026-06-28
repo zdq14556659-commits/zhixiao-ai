@@ -2004,8 +2004,8 @@ function normalizeBusinessRules(input = {}) {
   const source = input && typeof input === "object" ? input : {};
   const positiveDays = (field, fallback) => {
     const value = Number(source[field]);
-    if (!Number.isFinite(value)) return fallback;
-    return Math.max(0, Math.round(value));
+    if (!Number.isFinite(value) || value <= 0) return fallback;
+    return Math.max(1, Math.round(value));
   };
   const sortMode = String(source.publicPoolSortMode || DEFAULT_BUSINESS_RULES.publicPoolSortMode);
   return {
@@ -2889,6 +2889,11 @@ function opportunityView(state, opportunity) {
   const customer = findCustomer(state.customers || [], opportunity.customerId) || {};
   const latest = (opportunity.followUps || [])[opportunity.followUps.length - 1] || {};
   const publicPool = opportunityPublicPoolInfo(opportunity, Date.now(), state);
+  const rules = businessRules(state);
+  const ownershipStatus = opportunityEffectiveOwnershipStatus(opportunity, publicPool, rules);
+  const protectionDays = !isPurchasedOpportunity(opportunity) && opportunity.stage !== STAGES[3] && ownershipStatus !== OWNERSHIP_PUBLIC
+    ? claimDaysRemaining(effectiveClaimUntil(opportunity, rules))
+    : 0;
   return {
     ...customer,
     ...opportunity,
@@ -2902,16 +2907,18 @@ function opportunityView(state, opportunity) {
     channelSource: customer.channelSource || "其他",
     address: customer.address || "",
     city: customer.city || customer.location?.city || extractCity(customer.address) || "待识别",
+    unitId: opportunity.unitId || customer.unitId || "",
+    unit: displayUnitName(state, opportunity, customer),
     software: displaySoftwareName(primaryCompetitorName(customer) || customer.software),
     competitorProfiles: customer.competitorProfiles || [],
     photos: customer.photos || [],
     location: customer.location || {},
     lifecycleStatus: customer.lifecycleStatus || LIFECYCLE_ACTIVE,
-    ownershipStatus: publicPool.isPublic ? OWNERSHIP_PUBLIC : opportunity.ownershipStatus,
+    ownershipStatus,
     publicPoolAt: publicPool.at,
     publicPoolReason: publicPool.reason,
     claimable: publicPool.isPublic,
-    claimDaysRemaining: opportunity.ownershipStatus === OWNERSHIP_PENDING ? claimDaysRemaining(opportunity.claimUntil) : 0,
+    claimDaysRemaining: protectionDays,
     lastFollow: latest.date || "",
     nextFollow: latest.nextFollow || opportunity.nextFollow || "",
     lastNote: latest.note || "",
@@ -2933,6 +2940,11 @@ function latestOpportunityManualFollow(state, opportunity = {}) {
 function opportunityListRow(state, opportunity = {}, options = {}) {
   const customer = findCustomer(state.customers || [], opportunity.customerId) || {};
   const publicPool = opportunityPublicPoolInfo(opportunity, Date.now(), state);
+  const rules = businessRules(state);
+  const ownershipStatus = opportunityEffectiveOwnershipStatus(opportunity, publicPool, rules);
+  const protectionDays = !isPurchasedOpportunity(opportunity) && opportunity.stage !== STAGES[3] && ownershipStatus !== OWNERSHIP_PUBLIC
+    ? claimDaysRemaining(effectiveClaimUntil(opportunity, rules))
+    : 0;
   const primaryContact = primaryContactForCustomer(customer);
   const manualFollows = opportunityManualFollows(state, opportunity);
   const latestManual = latestOpportunityManualFollow(state, opportunity);
@@ -2956,6 +2968,8 @@ function opportunityListRow(state, opportunity = {}, options = {}) {
     channelSource: customer.channelSource || "其他",
     address: customer.address || "",
     city: customer.city || customer.location?.city || extractCity(customer.address) || "待识别",
+    unitId: opportunity.unitId || customer.unitId || "",
+    unit: displayUnitName(state, opportunity, customer),
     software: displaySoftwareName(primaryCompetitorName(customer) || customer.software),
     competitor: primaryCompetitorName(customer),
     lifecycleStatus: archived ? LIFECYCLE_ARCHIVED : customer.lifecycleStatus || LIFECYCLE_ACTIVE,
@@ -2970,7 +2984,7 @@ function opportunityListRow(state, opportunity = {}, options = {}) {
     followPerson: opportunity.followPerson || opportunity.owner || "",
     createdBy: opportunity.createdBy || customer.createdBy || "未记录",
     unitId: opportunity.unitId || customer.unitId || "",
-    unit: opportunity.unit || customer.unit || "待分配",
+    unit: displayUnitName(state, opportunity, customer),
     zone: opportunity.zone || customer.zone || "",
     region: opportunity.region || customer.region || "",
     orgPath: opportunity.orgPath || customer.orgPath || "",
@@ -2986,11 +3000,11 @@ function opportunityListRow(state, opportunity = {}, options = {}) {
     lossReasonDetail: opportunity.lossReasonDetail || "",
     outcomeStatus: opportunity.outcomeStatus || "active",
     purchasedInfo: opportunity.purchasedInfo || {},
-    ownershipStatus: archived ? "archived" : (publicPool.isPublic ? OWNERSHIP_PUBLIC : opportunity.ownershipStatus),
+    ownershipStatus: archived ? "archived" : ownershipStatus,
     publicPoolAt: publicPool.at,
     publicPoolReason: publicPool.reason,
     claimable: publicPool.isPublic,
-    claimDaysRemaining: opportunity.ownershipStatus === OWNERSHIP_PENDING ? claimDaysRemaining(opportunity.claimUntil) : 0,
+    claimDaysRemaining: protectionDays,
     createdAt: opportunity.createdAt || customer.createdAt || "",
     leadAt: opportunity.leadAt || "",
     opportunityAt: opportunity.opportunityAt || "",
@@ -3091,18 +3105,17 @@ function opportunityPublicPoolInfo(opportunity = {}, at = Date.now(), state = {}
   if (isPurchasedOpportunity(opportunity) && !rules.purchasedCustomersEnterPublicPool) return { isPublic: false, at: "", reason: "" };
   if (opportunity.stage === STAGES[3] && !rules.dealCustomersEnterPublicPool) return { isPublic: false, at: "", reason: "" };
   if ([OWNERSHIP_PUBLIC, OWNERSHIP_CLAIMABLE].includes(opportunity.ownershipStatus)) {
+    const explicitPublicPool = isExplicitPublicPoolRecord(opportunity);
+    const deadline = protectionDeadlineTime(opportunity, rules);
+    if (!explicitPublicPool && Number.isFinite(deadline)) {
+      if (deadline > at) return { isPublic: false, at: "", reason: "" };
+      return { isPublic: true, at: new Date(deadline).toISOString(), reason: opportunity.publicPoolReason || "protection_expired" };
+    }
     return { isPublic: true, at: opportunity.publicPoolAt || opportunity.claimUntil || new Date(at).toISOString(), reason: opportunity.publicPoolReason || "inactive_30_days" };
   }
-  if (opportunity.ownershipStatus === OWNERSHIP_PENDING && opportunity.claimUntil && !opportunity.effectiveFollowUpAt) {
-    const deadline = Date.parse(opportunity.claimUntil);
-    if (Number.isFinite(deadline) && deadline <= at) return { isPublic: true, at: new Date(deadline).toISOString(), reason: "initial_followup_expired" };
-    return { isPublic: false, at: "", reason: "" };
-  }
-  const manual = (opportunity.followUps || []).filter((item) => isEffectiveFollowForRules(item, rules)).slice(-1)[0];
-  const activityAt = Date.parse(manual?.createdAt || manual?.date || opportunity.effectiveFollowUpAt || opportunity.createdAt || "");
-  const inactiveMs = rules.inactivePublicPoolDays * 86400000;
-  if (Number.isFinite(activityAt) && inactiveMs > 0 && activityAt + inactiveMs <= at) {
-    return { isPublic: true, at: new Date(activityAt + inactiveMs).toISOString(), reason: "inactive_30_days" };
+  const deadline = protectionDeadlineTime(opportunity, rules);
+  if (Number.isFinite(deadline) && deadline <= at) {
+    return { isPublic: true, at: new Date(deadline).toISOString(), reason: "protection_expired" };
   }
   return { isPublic: false, at: "", reason: "" };
 }
@@ -3665,6 +3678,55 @@ function cleanText(value) {
   return String(value || "").trim().toLowerCase();
 }
 
+function compactText(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/\s+/g, "")
+    .trim();
+}
+
+function looksLikeAddressText(value) {
+  const text = compactText(value);
+  if (!text || text.length < 8) return false;
+  if (/(工业园|产业园|科技园|开发区|小区|市场|广场|大厦|写字楼|交叉口|附近)/.test(text)) return true;
+  if (/[路街大道巷弄号]/.test(text)) return true;
+  return text.length >= 12 && /[省市区县]/.test(text) && /[镇村园楼栋室]/.test(text);
+}
+
+function displayUnitName(state = {}, record = {}, customer = {}) {
+  const units = state.units || DEFAULT_UNITS;
+  const unitId = record.unitId || customer.unitId || "";
+  const unitByRecordId = unitById(units, unitId);
+  if (unitByRecordId?.name) return unitByRecordId.name;
+
+  const rawUnit = String(record.unit || customer.unit || "").trim();
+  const rawAddress = String(record.address || customer.address || "").trim();
+  if (!rawUnit) return "待分配";
+
+  const canonical = (units || []).find((unit) => cleanText(unit.name) === cleanText(rawUnit));
+  if (canonical?.name) return canonical.name;
+
+  if (rawAddress && compactText(rawUnit) === compactText(rawAddress)) return "待分配";
+  if (looksLikeAddressText(rawUnit)) return "待分配";
+  return rawUnit;
+}
+
+function safeFallbackUnit(defaults = {}, rejected = "") {
+  const fallback = String(defaults.unit || "").trim();
+  if (!fallback) return "";
+  if (rejected && compactText(fallback) === compactText(rejected)) return "";
+  if (looksLikeAddressText(fallback)) return "";
+  return fallback;
+}
+
+function sanitizeImportedUnit(value, defaults = {}, address = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return safeFallbackUnit(defaults);
+  if (address && compactText(raw) === compactText(address)) return safeFallbackUnit(defaults, raw);
+  if (looksLikeAddressText(raw)) return safeFallbackUnit(defaults, raw);
+  return raw;
+}
+
 function normalizePhone(value) {
   const text = String(value || "")
     .trim()
@@ -3741,6 +3803,90 @@ function addDaysToIso(value, days) {
   return date.toISOString();
 }
 
+function latestEffectiveFollowTimestamp(record = {}, rules = DEFAULT_BUSINESS_RULES) {
+  const followUps = Array.isArray(record.followUps) ? record.followUps : [];
+  return followUps
+    .filter((item) => isEffectiveFollowForRules(item, rules))
+    .map((item) => Date.parse(item.createdAt || item.date || ""))
+    .filter(Number.isFinite)
+    .sort((left, right) => right - left)[0] || NaN;
+}
+
+function protectionDeadlineTime(record = {}, rules = DEFAULT_BUSINESS_RULES) {
+  const claimUntil = Date.parse(record.claimUntil || "");
+  if (!record.effectiveFollowUpAt && Number.isFinite(claimUntil)) {
+    const createdAt = Date.parse(record.createdAt || record.createdDate || "");
+    if (isSelfDevelopedRecord(record) && Number.isFinite(createdAt)) {
+      const days = Number(rules.newCustomerProtectionDays || DEFAULT_BUSINESS_RULES.newCustomerProtectionDays);
+      const createdDeadline = Number.isFinite(days) && days > 0 ? createdAt + days * 86400000 : NaN;
+      return Number.isFinite(createdDeadline) ? Math.max(claimUntil, createdDeadline) : claimUntil;
+    }
+    return claimUntil;
+  }
+
+  const latestFollowAt = latestEffectiveFollowTimestamp(record, rules);
+  if (Number.isFinite(latestFollowAt)) {
+    const days = Number(rules.inactivePublicPoolDays || DEFAULT_BUSINESS_RULES.inactivePublicPoolDays);
+    return Number.isFinite(days) && days > 0 ? latestFollowAt + days * 86400000 : NaN;
+  }
+
+  const createdAt = Date.parse(record.createdAt || record.createdDate || "");
+  const selfDeveloped = isSelfDevelopedRecord(record);
+  if (!Number.isFinite(createdAt)) return Number.isFinite(claimUntil) ? claimUntil : NaN;
+  const days = selfDeveloped
+    ? Number(rules.newCustomerProtectionDays || DEFAULT_BUSINESS_RULES.newCustomerProtectionDays)
+    : Number(rules.inactivePublicPoolDays || DEFAULT_BUSINESS_RULES.inactivePublicPoolDays);
+  const createdDeadline = Number.isFinite(days) && days > 0 ? createdAt + days * 86400000 : NaN;
+  if (selfDeveloped && Number.isFinite(claimUntil) && Number.isFinite(createdDeadline)) {
+    return Math.max(claimUntil, createdDeadline);
+  }
+  return Number.isFinite(claimUntil) ? claimUntil : createdDeadline;
+}
+
+function effectiveClaimUntil(record = {}, rules = DEFAULT_BUSINESS_RULES) {
+  const deadline = protectionDeadlineTime(record, rules);
+  return Number.isFinite(deadline) ? new Date(deadline).toISOString() : "";
+}
+
+function opportunityEffectiveOwnershipStatus(opportunity = {}, publicPool = null, rules = DEFAULT_BUSINESS_RULES) {
+  const pool = publicPool || opportunityPublicPoolInfo(opportunity);
+  if (pool.isPublic) return OWNERSHIP_PUBLIC;
+  if (opportunity.ownershipStatus === OWNERSHIP_PUBLIC || opportunity.ownershipStatus === OWNERSHIP_CLAIMABLE) return OWNERSHIP_PENDING;
+  return opportunity.ownershipStatus || OWNERSHIP_LOCKED;
+}
+
+function isSelfDevelopedRecord(record = {}) {
+  if (!record || isExplicitPublicPoolRecord(record)) return false;
+  const ownerId = String(record.ownerId || "").trim();
+  const ownerName = cleanText(record.owner || record.followPerson || "");
+  if (!ownerId && !ownerName) return false;
+  if (ownerName === cleanText("公海")) return false;
+  const createdBy = cleanText(record.createdBy || "");
+  if (createdBy && ownerName && createdBy === ownerName) return true;
+  return (record.ownershipHistory || []).some((event) => {
+    const toOwnerMatches = ownerId
+      ? String(event.toOwnerId || "") === ownerId
+      : cleanText(event.toOwner || "") === ownerName;
+    const operatorMatches = ownerId
+      ? String(event.operatorId || "") === ownerId
+      : cleanText(event.operator || "") === ownerName;
+    return event.type === "created" && toOwnerMatches && operatorMatches;
+  });
+}
+
+function isExplicitPublicPoolRecord(record = {}) {
+  if (record.publicPoolReason === "operations_import") return true;
+  const publicReason = cleanText(record.publicPoolReason || "");
+  if (publicReason && !["initial_followup_expired", "new_customer_timeout"].includes(publicReason)) return true;
+  const ownerName = cleanText(record.owner || record.followPerson || "");
+  if (!record.ownerId && ownerName === cleanText("公海")) return true;
+  return (record.ownershipHistory || []).some((event) => {
+    const reason = cleanText(event.reason || "");
+    const toOwner = cleanText(event.toOwner || "");
+    return reason.includes(cleanText("公海")) || toOwner === cleanText("公海");
+  });
+}
+
 function effectiveOwnershipStatus(customer = {}, at = Date.now()) {
   return customerPublicPoolInfo(customer, at).isPublic
     ? OWNERSHIP_PUBLIC
@@ -3763,6 +3909,12 @@ function customerPublicPoolInfo(customer = {}, at = Date.now(), state = {}) {
   if (![STAGES[0], STAGES[1], STAGES[2]].includes(customer.stage || STAGES[0])) return { isPublic: false, at: "", reason: "" };
 
   if ([OWNERSHIP_PUBLIC, OWNERSHIP_CLAIMABLE].includes(customer.ownershipStatus)) {
+    const explicitPublicPool = isExplicitPublicPoolRecord(customer);
+    const deadline = protectionDeadlineTime(customer, rules);
+    if (!explicitPublicPool && Number.isFinite(deadline)) {
+      if (deadline > at) return { isPublic: false, at: "", reason: "" };
+      return { isPublic: true, at: new Date(deadline).toISOString(), reason: customer.publicPoolReason || "protection_expired" };
+    }
     return {
       isPublic: true,
       at: customer.publicPoolAt || customer.claimUntil || new Date(at).toISOString(),
@@ -3770,21 +3922,9 @@ function customerPublicPoolInfo(customer = {}, at = Date.now(), state = {}) {
     };
   }
 
-  if (customer.ownershipStatus === OWNERSHIP_PENDING && customer.claimUntil && !customer.effectiveFollowUpAt) {
-    const deadline = Date.parse(customer.claimUntil);
-    if (Number.isFinite(deadline) && deadline <= at) {
-      return { isPublic: true, at: new Date(deadline).toISOString(), reason: "new_customer_timeout" };
-    }
-    return { isPublic: false, at: "", reason: "" };
-  }
-
-  const lastManualAt = latestEffectiveManualFollowAt(customer, rules);
-  const fallbackAt = customer.effectiveFollowUpAt || customer.createdAt || "";
-  const activityAt = Date.parse(lastManualAt || fallbackAt);
-  if (!Number.isFinite(activityAt)) return { isPublic: false, at: "", reason: "" };
-  const publicAt = activityAt + rules.inactivePublicPoolDays * 24 * 60 * 60 * 1000;
-  if (publicAt <= at) {
-    return { isPublic: true, at: new Date(publicAt).toISOString(), reason: "inactive_30_days" };
+  const deadline = protectionDeadlineTime(customer, rules);
+  if (Number.isFinite(deadline) && deadline <= at) {
+    return { isPublic: true, at: new Date(deadline).toISOString(), reason: "protection_expired" };
   }
   return { isPublic: false, at: "", reason: "" };
 }
@@ -5087,13 +5227,17 @@ function toMiniCustomer(customer) {
   const latest = (customer.followUps || [])[customer.followUps.length - 1] || {};
   const publicPool = customerPublicPoolInfo(customer);
   const ownershipStatus = effectiveOwnershipStatus(customer);
+  const rules = businessRules(stateCache || {});
+  const protectionDays = customer.stage !== STAGES[3] && ownershipStatus !== OWNERSHIP_PUBLIC
+    ? claimDaysRemaining(effectiveClaimUntil(customer, rules))
+    : 0;
   return {
     ...customer,
     ownershipStatus,
     publicPoolAt: publicPool.at,
     publicPoolReason: publicPool.reason,
     claimable: publicPool.isPublic,
-    claimDaysRemaining: ownershipStatus === OWNERSHIP_PENDING ? claimDaysRemaining(customer.claimUntil) : 0,
+    claimDaysRemaining: protectionDays,
     lastFollow: latest.date || "",
     nextFollow: latest.nextFollow || "",
     lastNote: latest.note || "",
@@ -5882,7 +6026,7 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
           owner: looksLikeTemplateOrder ? row[9] || defaults.owner || "未分配" : defaults.owner || "未分配",
           ownerId: defaults.ownerId || "",
           unitId: defaults.unitId || "",
-          unit: looksLikeTemplateOrder ? row[7] || defaults.unit || "" : defaults.unit || "",
+          unit: looksLikeTemplateOrder ? sanitizeImportedUnit(row[7], defaults, row[4] || "") : sanitizeImportedUnit(defaults.unit, defaults, ""),
           zone: defaults.zone || "",
           region: looksLikeTemplateOrder ? "" : thirdLooksLikeChannel ? "" : third || "",
           amount: normalizeImportedAmount(amountValue, inputMoneyUnit),
@@ -5921,7 +6065,7 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
         owner: record.owner || defaults.owner || record.followPerson || "未分配",
         ownerId: defaults.ownerId || "",
         unitId: defaults.unitId || "",
-        unit: record.unit || defaults.unit || "",
+        unit: sanitizeImportedUnit(record.unit, defaults, record.address || ""),
         zone: defaults.zone || "",
         region: record.region || "",
         amount: normalizeImportedAmount(record.amount, inputMoneyUnit),

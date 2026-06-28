@@ -346,7 +346,8 @@ function ownershipLabel(customer = {}) {
   if (isInvalidCustomer(customer)) return customer.archiveReason === "closed" ? "倒闭客户" : "无效客户";
   if (isPurchasedCustomer(customer)) return "已购客户";
   if (customer.ownershipStatus === "public_pool" || customer.ownershipStatus === "claimable") return "公海客户";
-  if (customer.ownershipStatus === "pending_followup") return `待有效跟进 · ${customer.claimDaysRemaining || 0}天`;
+  const days = Number(customer.claimDaysRemaining || 0);
+  if (days > 0) return `保护期剩${days}天`;
   return "";
 }
 

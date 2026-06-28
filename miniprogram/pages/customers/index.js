@@ -425,7 +425,7 @@ Page({
           ? "已购客户"
           : item.ownershipStatus === "public_pool" || item.ownershipStatus === "claimable"
           ? "公海客户"
-          : item.ownershipStatus === "pending_followup" ? `待有效跟进·${item.claimDaysRemaining || 0}天` : "",
+          : Number(item.claimDaysRemaining || 0) > 0 ? `保护期剩${item.claimDaysRemaining || 0}天` : "",
         canAssign: item.outcomeStatus !== "purchased_existing" && this.data.canAssign && app.canSeePrivateRecord(item) && this.isCustomerAssignable(item),
         poolHint: app.canOwnCustomer(currentUser) ? "公海客户需先认领" : "不在您的分配范围",
         photoCount: Array.isArray(item.photos) ? item.photos.length : 0,

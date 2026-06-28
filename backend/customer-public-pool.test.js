@@ -67,7 +67,42 @@ const legacyState = {
         { date: dateDaysAgo(1), createdAt: isoDaysAgo(1), author: "系统", note: "客户推进至线索阶段。", nextFollow: "", isSystem: true }
       ]
     }),
-    customer(6, { manualAt: isoDaysAgo(31) })
+    customer(6, { manualAt: isoDaysAgo(31) }),
+    customer(7, {
+      name: "Self import protected pending",
+      createdAt: dateDaysAgo(2),
+      ownershipStatus: "pending_followup",
+      claimUntil: isoDaysAgo(1),
+      effectiveFollowUpAt: "",
+      followUps: [],
+      ownershipHistory: [{ type: "created", toOwnerId: 1, operatorId: 1 }]
+    }),
+    customer(8, {
+      name: "Self import protected public flag",
+      createdAt: dateDaysAgo(2),
+      ownershipStatus: "public_pool",
+      publicPoolAt: isoDaysAgo(1),
+      publicPoolReason: "initial_followup_expired",
+      effectiveFollowUpAt: "",
+      followUps: [],
+      ownershipHistory: [{ type: "created", toOwnerId: 1, operatorId: 1 }]
+    }),
+    customer(9, {
+      name: "Address polluted unit",
+      unitId: "",
+      unit: "湖北省武汉市洪山区关山大道1号",
+      address: "湖北省武汉市洪山区关山大道1号",
+      manualAt: isoDaysAgo(31)
+    }),
+    customer(10, {
+      name: "Latest manual follow protected",
+      manualAt: isoDaysAgo(90),
+      followUps: [
+        { date: dateDaysAgo(1), createdAt: isoDaysAgo(1), author: "销售甲", note: "最近一次人工有效跟进", nextFollow: dateDaysAgo(-3), isSystem: false },
+        { date: dateDaysAgo(40), createdAt: isoDaysAgo(40), author: "销售甲", note: "较早人工有效跟进", nextFollow: "", isSystem: false },
+        { date: dateDaysAgo(1), createdAt: isoDaysAgo(1), author: "系统", note: "系统流水不算有效跟进", nextFollow: "", isSystem: true }
+      ]
+    })
   ],
   visits: [{
     id: 200,
@@ -152,7 +187,18 @@ async function run() {
   assert.ok(!stateA.data.customers.some((item) => [2, 4, 5].includes(item.id)));
   const publicPoolA = await request("/public-pool", { token: tokenA });
   assert.ok([2, 4, 5].every((id) => publicPoolA.data.items.some((item) => item.customerId === id)));
+  assert.ok(!publicPoolA.data.items.some((item) => [7, 8].includes(item.customerId)));
   assert.ok(publicPoolA.data.items.every((item) => item.phone === "认领后可见"));
+  const pollutedUnitRow = publicPoolA.data.items.find((item) => item.customerId === 9);
+  assert.ok(pollutedUnitRow);
+  assert.equal(pollutedUnitRow.address, "湖北省武汉市洪山区关山大道1号");
+  assert.ok(!String(pollutedUnitRow.unit || "").includes("湖北省武汉市"));
+  const protectedLeads = await request(`/customer-board?paginated=1&stage=${encodeURIComponent("线索")}&pageSize=50`, { token: tokenA });
+  assert.equal(protectedLeads.status, 200);
+  assert.ok([7, 8, 10].every((id) => protectedLeads.data.items.some((item) => item.customerId === id)));
+  assert.ok(protectedLeads.data.items.filter((item) => [7, 8].includes(item.customerId)).every((item) => item.ownershipStatus === "pending_followup"));
+  const latestManualProtected = protectedLeads.data.items.find((item) => item.customerId === 10);
+  assert.ok(latestManualProtected.claimDaysRemaining >= 29);
   assert.ok(!stateB.data.customers.some((item) => item.id === 2));
   const publicPoolB = await request("/public-pool", { token: tokenB });
   assert.equal(publicPoolB.status, 200);
