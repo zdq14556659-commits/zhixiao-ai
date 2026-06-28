@@ -79,6 +79,7 @@ let dashboardLoading = false;
 let targetManagement = { options: [], targets: [] };
 let dashboardDrilldownIds = null;
 let collapsedUserUnitIds = new Set();
+let knownUserUnitIds = new Set();
 let claimingOpportunityIds = new Set();
 
 const $ = (selector) => document.querySelector(selector);
@@ -977,6 +978,12 @@ function canImportPublicPool() {
   return canAdmin() || hasPermission(currentUser(), "publicPoolImport");
 }
 
+function canViewFullPoolInfo() {
+  const user = currentUser();
+  const role = roleForUser(user);
+  return role.customerScope === "all" || canAdmin() || hasPermission(user, "publicPoolImport");
+}
+
 function canHardDeleteCustomers() {
   const roleName = roleForUser(currentUser()).name || currentUser().role || "";
   return ["总负责人", "管理员"].includes(roleName);
@@ -1367,6 +1374,7 @@ function customerRow(item) {
     : "";
   const isInvalid = isInvalidCustomer(item);
   const isPublicPool = isPublicPoolCustomer(item);
+  const shouldMaskPublicPool = isPublicPool && !canViewFullPoolInfo();
   const isPurchased = isPurchasedCustomer(item);
   const assignable = canSelectCustomerForAssign(item);
   const selectable = canSelectCustomer(item);
@@ -1376,15 +1384,13 @@ function customerRow(item) {
   const ownership = ownershipLabel(item);
   const primaryContact = (item.contacts || []).find((contact) => contact.isPrimary) || (item.contacts || [])[0] || { phone: item.phone };
   const contactCount = (item.contacts || []).length;
-  const phoneHtml = isPublicPool
+  const phoneHtml = shouldMaskPublicPool
     ? `<span class="pool-private-value">认领后可见</span>`
-    : isInvalid
-      ? `<span class="pool-private-value">已归档</span>`
     : `<a href="tel:${escapeHtml(primaryContact.phone || item.phone)}">${escapeHtml(primaryContact.phone || item.phone)}</a>${contactCount > 1 ? `<small>另有${contactCount - 1}位联系人</small>` : ""}`;
   const manualHistory = manualFollowUps(item);
   const followCount = manualHistory.length;
   const lastNote = String(latestManualFollow(item)?.note || "").trim();
-  const followHtml = isPublicPool
+  const followHtml = shouldMaskPublicPool
     ? `<small class="pool-private-value">认领后可查看跟进历史</small>`
     : isInvalid
       ? `<small class="pool-private-value">${escapeHtml(item.archiveReason === "closed" ? "已标记倒闭" : "已标记无效")}${item.archivedAt ? ` · ${escapeHtml(String(item.archivedAt).slice(0, 10))}` : ""}</small>${followCount ? `<button class="history-link" data-action="history" data-id="${item.id}">查看历史(${followCount})</button>` : ""}`
@@ -1643,6 +1649,16 @@ function readCompetitorProfilesEditor() {
 function renderUserOrgTree() {
   const users = visibleSystemUsers();
   const units = state.units || [];
+  const currentUnitIds = new Set(units.map((unit) => String(unit.id || "")).filter(Boolean));
+  units.forEach((unit) => {
+    const unitId = String(unit.id || "");
+    if (unitId && !knownUserUnitIds.has(unitId)) {
+      collapsedUserUnitIds.add(unitId);
+      knownUserUnitIds.add(unitId);
+    }
+  });
+  collapsedUserUnitIds = new Set([...collapsedUserUnitIds].filter((unitId) => currentUnitIds.has(unitId)));
+  knownUserUnitIds = new Set([...knownUserUnitIds].filter((unitId) => currentUnitIds.has(unitId)));
   const unitMap = new Map(units.map((unit) => [String(unit.id), unit]));
   const children = new Map();
   units.forEach((unit) => {
