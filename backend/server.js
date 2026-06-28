@@ -2841,6 +2841,7 @@ function normalizeOpportunity(opportunity = {}, context = {}) {
     region: opportunity.region || customer.region || "待分区",
     createdBy: opportunity.createdBy || customer.createdBy || ownerUser.name || "未记录",
     createdAt,
+    assignedAt: opportunity.assignedAt || latestAssignmentAt(opportunity),
     amount: defaultOpportunityAmount(opportunity, customer, product),
     demoAt: opportunity.demoAt || "",
     quoteAmount: normalizeMoney(opportunity.quoteAmount),
@@ -3324,6 +3325,7 @@ function claimOpportunityAtIndex(res, state, viewer, index, body = {}) {
     unitId: viewer.unitId || "",
     unit: viewer.unit || "",
     zone: viewer.zone || "",
+    assignedAt: now,
     ownershipStatus: OWNERSHIP_PENDING,
     claimUntil: addDaysToIso(now, businessRules(state).publicPoolClaimProtectionDays),
     effectiveFollowUpAt: "",
@@ -3350,6 +3352,7 @@ function assignOpportunity(state, previous, target, viewer) {
     unitId: target.unitId || "",
     unit: target.unit || "",
     zone: target.zone || "",
+    assignedAt: now,
     ownershipStatus: wasPublic ? OWNERSHIP_PENDING : OWNERSHIP_LOCKED,
     claimUntil: wasPublic ? addDaysToIso(now, businessRules(state).publicPoolClaimProtectionDays) : "",
     effectiveFollowUpAt: wasPublic ? "" : previous.effectiveFollowUpAt,
@@ -4229,7 +4232,8 @@ function buildCustomerBoard(state, viewer, query = {}) {
   }
   const rows = rawRows.map((item) => opportunityListRow(state, item, rowOptions));
   const filteredRows = filterBoardRows(rows, query, stage);
-  const page = paginateRows(filteredRows, query);
+  const sortedRows = sortBoardRows(filteredRows, query, stage);
+  const page = paginateRows(sortedRows, query);
   return {
     ...board,
     stage,
@@ -4355,14 +4359,14 @@ function rowDateMs(value, emptyValue = 0) {
 
 function latestAssignmentAt(row = {}) {
   const histories = Array.isArray(row.ownershipHistory) ? row.ownershipHistory : [];
-  const assignmentTypes = new Set(["created", "assigned", "claimed_public_pool", "offboard_transfer"]);
+  const assignmentTypes = new Set(["assigned", "claimed_public_pool", "offboard_transfer"]);
   const latest = histories
     .filter((item) => assignmentTypes.has(item.type || item.action || ""))
     .map((item) => item.createdAt || item.time || item.date || "")
     .filter(Boolean)
     .sort()
     .pop();
-  return latest || row.assignedAt || row.claimedAt || row.createdAt || "";
+  return latest || row.assignedAt || row.claimedAt || "";
 }
 
 function boardSortValue(row = {}, sortBy = "", order = "desc") {

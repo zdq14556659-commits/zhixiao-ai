@@ -759,6 +759,7 @@ function isPublicPoolLoaded() {
 }
 
 function customerBoardQuery() {
+  sanitizeCustomerFiltersForStage(currentStage);
   const params = new URLSearchParams({
     paginated: "1",
     stage: currentStage,
@@ -2055,11 +2056,7 @@ function prepareClaimedCustomerView() {
   currentStage = stages[0];
   localStorage.setItem(CUSTOMER_STAGE_KEY, currentStage);
   customerPage = 1;
-  const viewer = currentUser();
-  const followPersonFilter = $("#followPersonFilter");
-  if (followPersonFilter) followPersonFilter.value = viewer?.name || "";
-  const followStatusFilter = $("#followStatusFilter");
-  if (followStatusFilter) followStatusFilter.value = "unfollowed";
+  clearCustomerFilters();
   setCustomerSortValue("assignedAt_desc");
 }
 
@@ -2069,8 +2066,6 @@ async function claimCustomer(id, trigger = null) {
     || currentCustomerRows.find((item) => Number(item.id) === Number(id));
   if (!customer) return toast("公海客户不存在或列表尚未加载完成，请刷新后重试");
   if (claimingOpportunityIds.has(Number(id))) return toast("正在认领，请稍候");
-  const productId = customer && !isPlaceholderProduct(customer) ? customer.productId : "";
-  const productPayload = productId && selectableProducts().some((item) => item.id === productId) ? { productId } : {};
   claimingOpportunityIds.add(Number(id));
   if (trigger) {
     trigger.disabled = true;
@@ -2079,11 +2074,10 @@ async function claimCustomer(id, trigger = null) {
   }
   toast("正在认领公海客户...");
   try {
-    const claimed = await api(`/opportunities/${id}/claim`, { method: "POST", body: productPayload });
+    await api(`/opportunities/${id}/claim`, { method: "POST", body: {} });
     prepareClaimedCustomerView();
     await refreshCustomersAfterMutation();
-    mergeOpportunityDetail({ ...claimed, hasDetail: true });
-    toast("认领成功，已进入你的名单，请尽快完成首次跟进");
+    toast("认领成功，客户已进入你的名单，请尽快跟进");
   } catch (error) {
     toast(error.message || "认领失败，客户可能已被他人认领");
     refreshCustomersAfterMutation().catch((refreshError) => toast(refreshError.message));
@@ -3028,6 +3022,14 @@ async function deleteUnit(id) {
   }
 }
 
+function sanitizeCustomerFiltersForStage(stage = currentStage) {
+  if (stage !== PUBLIC_POOL_STAGE) return;
+  ["createdByFilter", "followPersonFilter", "unitFilter", "followStatusFilter", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
+    const node = $(`#${id}`);
+    if (node) node.value = "";
+  });
+}
+
 function clearCustomerFilters() {
   ["customerKeyword", "stageTimeStart", "stageTimeEnd", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
     const node = $(`#${id}`);
@@ -3173,6 +3175,7 @@ function wireEvents() {
     currentStage = button.dataset.stage;
     localStorage.setItem(CUSTOMER_STAGE_KEY, currentStage);
     customerPage = 1;
+    sanitizeCustomerFiltersForStage(currentStage);
     loadCustomerBoardPage().catch((error) => toast(error.message));
   });
   ["customerKeyword", "channelFilter", "createdByFilter", "followPersonFilter", "unitFilter", "cityFilter", "followStatusFilter", "customerSort", "stageTimeStart", "stageTimeEnd", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
