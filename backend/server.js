@@ -170,6 +170,7 @@ const server = http.createServer(async (req, res) => {
     } else if (url.pathname.startsWith("/crm/")) {
       url.pathname = url.pathname.slice(4) || "/";
     }
+    attachSlowRequestLogger(req, res, url);
     if (url.pathname.startsWith("/api/")) {
       await routeApi(req, res, url);
       return;
@@ -190,6 +191,40 @@ server.listen(PORT, "0.0.0.0", () => {
 });
 
 module.exports = server;
+
+const SLOW_API_MS = Number(process.env.SLOW_API_MS || 2000);
+const SLOW_API_PATHS = new Set([
+  "/api/state",
+  "/api/customer-board",
+  "/api/public-pool",
+  "/api/dashboard",
+  "/api/map/points"
+]);
+
+function attachSlowRequestLogger(req, res, url) {
+  if (!url.pathname.startsWith("/api/")) return;
+  const startedAt = Date.now();
+  let responseBytes = 0;
+  const originalEnd = res.end;
+  res.end = function patchedEnd(chunk, encoding, callback) {
+    if (chunk) {
+      responseBytes += Buffer.isBuffer(chunk)
+        ? chunk.length
+        : Buffer.byteLength(String(chunk), typeof encoding === "string" ? encoding : "utf8");
+    }
+    return originalEnd.call(this, chunk, encoding, callback);
+  };
+  res.on("finish", () => {
+    const duration = Date.now() - startedAt;
+    if (duration < SLOW_API_MS) return;
+    const params = new URLSearchParams(url.searchParams);
+    const summary = ["stage", "page", "pageSize", "scope", "month"]
+      .map((key) => params.get(key) ? `${key}=${params.get(key)}` : "")
+      .filter(Boolean)
+      .join(" ");
+    console.warn(`[slow-api] ${req.method} ${url.pathname} ${res.statusCode} ${duration}ms ${Math.round(responseBytes / 1024)}KB ${summary}`.trim());
+  });
+}
 
 process.once("SIGINT", () => {
   flushStateBeforeExit();
@@ -529,17 +564,39 @@ async function routeApi(req, res, url) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/public-pool") {
-    const items = visiblePublicPoolOpportunities(authState, authUser).map((opportunity) => {
+    const query = Object.fromEntries(url.searchParams.entries());
+    const rawItems = visiblePublicPoolOpportunities(authState, authUser);
+    if (isPaginatedQuery(query)) {
+      const items = rawItems.map((opportunity) => opportunityListRow(authState, opportunity, { maskPhone: !canViewFullPublicPoolInfo(authState, authUser) }));
+      return sendJson(res, 200, paginatePublicPoolItems(items, query));
+    }
+    const items = rawItems.map((opportunity) => {
       const customer = findCustomer(authState.customers, opportunity.customerId);
       return sanitizePublicPoolOpportunity(customer, opportunity, authState, authUser);
     });
-    const query = Object.fromEntries(url.searchParams.entries());
-    if (isPaginatedQuery(query)) return sendJson(res, 200, paginatePublicPoolItems(items, query));
     return sendJson(res, 200, { count: items.length, items, backendVersion: BACKEND_VERSION, moneyUnit: MONEY_UNIT });
   }
 
   if (req.method === "GET" && url.pathname === "/api/customer-board") {
     return sendJson(res, 200, buildCustomerBoard(authState, authUser, Object.fromEntries(url.searchParams.entries())));
+  }
+
+  const opportunityDetail = url.pathname.match(/^\/api\/opportunities\/(\d+)\/detail$/);
+  if (req.method === "GET" && opportunityDetail) {
+    const opportunity = (authState.opportunities || []).find((item) => Number(item.id) === Number(opportunityDetail[1]));
+    if (!opportunity) return sendJson(res, 404, { error: "销售机会不存在" });
+    const isPublic = isOpportunityPublicPool(opportunity, Date.now(), authState);
+    const isArchived = isArchivedOpportunity(authState, opportunity);
+    if (isPublic && !canViewFullPublicPoolInfo(authState, authUser)) {
+      return sendJson(res, 409, { error: "公海客户需先认领后查看详情", code: "CUSTOMER_CLAIM_REQUIRED" });
+    }
+    if (!isPublic && !isArchived && !canViewOpportunity(authState, authUser, opportunity)) {
+      return sendJson(res, 403, { error: "无权查看该销售机会" });
+    }
+    if (isArchived && !visibleArchivedOpportunities(authState, authUser).some((item) => Number(item.id) === Number(opportunity.id))) {
+      return sendJson(res, 403, { error: "无权查看该销售机会" });
+    }
+    return sendJson(res, 200, opportunityView(authState, opportunity));
   }
 
   const customerOpportunityCreate = url.pathname.match(/^\/api\/customers\/(\d+)\/opportunities$/);
@@ -2862,6 +2919,94 @@ function opportunityView(state, opportunity) {
   };
 }
 
+function opportunityManualFollows(state, opportunity = {}) {
+  const rules = businessRules(state);
+  return (opportunity.followUps || []).filter((item) => isEffectiveFollowForRules(item, rules));
+}
+
+function latestOpportunityManualFollow(state, opportunity = {}) {
+  return opportunityManualFollows(state, opportunity)
+    .slice()
+    .sort(sortByNewest)[0] || null;
+}
+
+function opportunityListRow(state, opportunity = {}, options = {}) {
+  const customer = findCustomer(state.customers || [], opportunity.customerId) || {};
+  const publicPool = opportunityPublicPoolInfo(opportunity, Date.now(), state);
+  const primaryContact = primaryContactForCustomer(customer);
+  const manualFollows = opportunityManualFollows(state, opportunity);
+  const latestManual = latestOpportunityManualFollow(state, opportunity);
+  const latestAny = (opportunity.followUps || [])[opportunity.followUps.length - 1] || {};
+  const maskPhone = Boolean(options.maskPhone);
+  const archived = Boolean(options.archived);
+  const phone = primaryContact.phone || customer.phone || "";
+  return {
+    id: opportunity.id,
+    opportunityId: opportunity.id,
+    customerId: customer.id || opportunity.customerId,
+    name: customer.name || "",
+    phone: maskPhone ? "认领后可见" : phone,
+    phoneNormalized: maskPhone ? "" : customer.phoneNormalized || "",
+    primaryContact: maskPhone ? null : {
+      name: primaryContact.name || "",
+      phone,
+      position: primaryContact.position || ""
+    },
+    contactCount: Array.isArray(customer.contacts) ? customer.contacts.length : 0,
+    channelSource: customer.channelSource || "其他",
+    address: customer.address || "",
+    city: customer.city || customer.location?.city || extractCity(customer.address) || "待识别",
+    software: displaySoftwareName(primaryCompetitorName(customer) || customer.software),
+    competitor: primaryCompetitorName(customer),
+    lifecycleStatus: archived ? LIFECYCLE_ARCHIVED : customer.lifecycleStatus || LIFECYCLE_ACTIVE,
+    archiveReason: customer.archiveReason || "",
+    archivedAt: customer.archivedAt || "",
+    archivedBy: customer.archivedBy || "",
+    productId: opportunity.productId || "",
+    productName: opportunity.productName || "待确认产品",
+    stage: opportunity.stage || STAGES[0],
+    ownerId: opportunity.ownerId || "",
+    owner: opportunity.owner || "",
+    followPerson: opportunity.followPerson || opportunity.owner || "",
+    createdBy: opportunity.createdBy || customer.createdBy || "未记录",
+    unitId: opportunity.unitId || customer.unitId || "",
+    unit: opportunity.unit || customer.unit || "待分配",
+    zone: opportunity.zone || customer.zone || "",
+    region: opportunity.region || customer.region || "",
+    orgPath: opportunity.orgPath || customer.orgPath || "",
+    amount: opportunity.amount || 0,
+    demoAt: opportunity.demoAt || "",
+    expectedDealDate: opportunity.expectedDealDate || "",
+    contractAmount: opportunity.contractAmount || 0,
+    paymentAmount: opportunity.paymentAmount || 0,
+    paymentDate: opportunity.paymentDate || "",
+    paymentOwnerId: opportunity.paymentOwnerId || "",
+    paymentOwner: opportunity.paymentOwner || "",
+    lossReason: opportunity.lossReason || "",
+    lossReasonDetail: opportunity.lossReasonDetail || "",
+    outcomeStatus: opportunity.outcomeStatus || "active",
+    purchasedInfo: opportunity.purchasedInfo || {},
+    ownershipStatus: archived ? "archived" : (publicPool.isPublic ? OWNERSHIP_PUBLIC : opportunity.ownershipStatus),
+    publicPoolAt: publicPool.at,
+    publicPoolReason: publicPool.reason,
+    claimable: publicPool.isPublic,
+    claimDaysRemaining: opportunity.ownershipStatus === OWNERSHIP_PENDING ? claimDaysRemaining(opportunity.claimUntil) : 0,
+    createdAt: opportunity.createdAt || customer.createdAt || "",
+    leadAt: opportunity.leadAt || "",
+    opportunityAt: opportunity.opportunityAt || "",
+    dealAt: opportunity.dealAt || "",
+    lastFollow: latestManual?.date || latestManual?.createdAt || latestAny.date || "",
+    latestManualFollowAt: latestManual?.createdAt || latestManual?.date || "",
+    nextFollow: latestManual?.nextFollow || opportunity.nextFollow || latestAny.nextFollow || "",
+    lastNote: latestManual?.note || "",
+    manualFollowCount: manualFollows.length,
+    followCount: manualFollows.length,
+    photoCount: Array.isArray(customer.photos) ? customer.photos.length : 0,
+    photos: [],
+    hasDetail: false
+  };
+}
+
 function resolveProduct(state, productId, productName) {
   const products = state.products || DEFAULT_PRODUCTS;
   return products.find((item) => productId && item.id === productId)
@@ -3857,7 +4002,7 @@ function publicMetaState(state, viewer = null) {
   };
 }
 
-function buildCustomerBoard(state, viewer, query = {}) {
+function buildCustomerBoardLegacy(state, viewer, query = {}) {
   const scopedPrivateOpportunities = (state.opportunities || [])
     .filter((item) => !isOpportunityPublicPool(item, Date.now(), state) && canViewOpportunity(state, viewer, item))
     .filter((item) => findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED)
@@ -3884,6 +4029,55 @@ function buildCustomerBoard(state, viewer, query = {}) {
   };
   if (!isPaginatedQuery(query)) return result;
   return buildPaginatedCustomerBoard(result, query);
+}
+
+function buildCustomerBoard(state, viewer, query = {}) {
+  if (!isPaginatedQuery(query)) return buildCustomerBoardLegacy(state, viewer, query);
+  const now = Date.now();
+  const rawPrivate = (state.opportunities || [])
+    .filter((item) => !isOpportunityPublicPool(item, now, state) && canViewOpportunity(state, viewer, item))
+    .filter((item) => findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED);
+  const rawPurchased = rawPrivate.filter((item) => isPurchasedOpportunity(item));
+  const rawActive = rawPrivate.filter((item) => !isPurchasedOpportunity(item));
+  const rawPublic = visiblePublicPoolOpportunities(state, viewer);
+  const rawInvalid = visibleArchivedOpportunities(state, viewer);
+  const counts = Object.fromEntries((state.stages || STAGES).map((stage) => [stage, rawActive.filter((item) => item.stage === stage).length]));
+  const board = {
+    backendVersion: BACKEND_VERSION,
+    moneyUnit: MONEY_UNIT,
+    stages: state.stages || STAGES,
+    counts,
+    publicPool: { count: rawPublic.length },
+    purchased: { count: rawPurchased.length },
+    invalid: { count: rawInvalid.length }
+  };
+  const stage = query.stage || STAGES[0];
+  let rawRows = rawActive;
+  let rowOptions = {};
+  if (stage === "全部") rawRows = rawActive;
+  else if (stage === PUBLIC_POOL_STATUS) {
+    rawRows = rawPublic;
+    rowOptions = { maskPhone: !canViewFullPublicPoolInfo(state, viewer) };
+  } else if (stage === PURCHASED_STATUS) rawRows = rawPurchased;
+  else if (stage === "无效" || stage === "invalid") {
+    rawRows = rawInvalid;
+    rowOptions = { archived: true };
+  } else {
+    rawRows = rawActive.filter((item) => item.stage === stage);
+  }
+  const rows = rawRows.map((item) => opportunityListRow(state, item, rowOptions));
+  const filteredRows = filterBoardRows(rows, query, stage);
+  const page = paginateRows(filteredRows, query);
+  return {
+    ...board,
+    stage,
+    stageCounts: customerBoardStageCounts(board),
+    items: page.items,
+    total: page.total,
+    page: page.page,
+    pageSize: page.pageSize,
+    totalPages: page.totalPages
+  };
 }
 
 function isPaginatedQuery(query = {}) {
@@ -3921,6 +4115,14 @@ function boardRowsForStage(board, stage) {
 }
 
 function latestManualFollowRecord(record = {}) {
+  if ((!Array.isArray(record.followUps) || !record.followUps.length) && Number(record.manualFollowCount || record.followCount || 0) > 0) {
+    return {
+      date: record.lastFollow || record.latestManualFollowAt || "",
+      createdAt: record.latestManualFollowAt || record.lastFollow || "",
+      note: record.lastNote || "",
+      nextFollow: record.nextFollow || ""
+    };
+  }
   return [...(record.followUps || [])]
     .reverse()
     .find((item) => !item.isSystem && String(item.note || "").trim());
@@ -4969,6 +5171,9 @@ function emptyStateIndexes() {
     customersByPhone: new Map(),
     opportunitiesById: new Map(),
     opportunitiesByCustomerId: new Map(),
+    opportunitiesByStage: new Map(),
+    opportunitiesByOwnerId: new Map(),
+    opportunitiesByOwnership: new Map(),
     unitsById: new Map()
   };
 }
@@ -4989,6 +5194,15 @@ function rebuildStateIndexes(state = {}) {
     const customerId = Number(opportunity.customerId);
     if (!indexes.opportunitiesByCustomerId.has(customerId)) indexes.opportunitiesByCustomerId.set(customerId, []);
     indexes.opportunitiesByCustomerId.get(customerId).push(opportunity);
+    const stage = opportunity.stage || "";
+    if (!indexes.opportunitiesByStage.has(stage)) indexes.opportunitiesByStage.set(stage, []);
+    indexes.opportunitiesByStage.get(stage).push(opportunity);
+    const ownerId = Number(opportunity.ownerId || 0);
+    if (!indexes.opportunitiesByOwnerId.has(ownerId)) indexes.opportunitiesByOwnerId.set(ownerId, []);
+    indexes.opportunitiesByOwnerId.get(ownerId).push(opportunity);
+    const ownership = opportunity.ownershipStatus || "";
+    if (!indexes.opportunitiesByOwnership.has(ownership)) indexes.opportunitiesByOwnership.set(ownership, []);
+    indexes.opportunitiesByOwnership.get(ownership).push(opportunity);
   });
   (state.units || []).forEach((unit, index) => indexes.unitsById.set(String(unit.id), index));
   stateIndexes = indexes;
@@ -6095,6 +6309,7 @@ function buildMapPoints(state, viewer, filters = {}) {
         return {
           id: customer.id,
           customerId: customer.id,
+          opportunityId: activeOpportunity.id || "",
           name: customer.name,
           phone: "",
           stage: "公海",
@@ -6119,8 +6334,7 @@ function buildMapPoints(state, viewer, filters = {}) {
           equipment: "",
           visitCount: 0,
           lastVisitedAt: "",
-          contacts: [],
-          competitorProfiles: [],
+          contactCount: 0,
           archiveReason: "",
           isPublicPool: true,
           claimable: findRole(state.roles, viewer.roleId, viewer.role).customerScope === "self"
@@ -6133,6 +6347,7 @@ function buildMapPoints(state, viewer, filters = {}) {
       return {
         id: customer.id,
         customerId: customer.id,
+        opportunityId: activeOpportunity.id || "",
         name: customer.name,
         phone: primaryContact.phone || customer.phone,
         stage: activeOpportunity.stage || customer.stage,
@@ -6157,8 +6372,7 @@ function buildMapPoints(state, viewer, filters = {}) {
         equipment: visits[0]?.line || "",
         visitCount: visits.length,
         lastVisitedAt: customer.lastVisitedAt || visits[0]?.date || "",
-        contacts: customer.contacts || [],
-        competitorProfiles: customer.competitorProfiles || [],
+        contactCount: Array.isArray(customer.contacts) ? customer.contacts.length : 0,
         archiveReason: customer.archiveReason || "",
         isPublicPool: false,
         claimable: false

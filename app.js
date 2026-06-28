@@ -81,6 +81,7 @@ let dashboardDrilldownIds = null;
 let collapsedUserUnitIds = new Set();
 let knownUserUnitIds = new Set();
 let claimingOpportunityIds = new Set();
+let fieldRequestId = 0;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -317,6 +318,16 @@ function isManualEffectiveFollow(item = {}) {
 }
 
 function manualFollowUps(customer = {}) {
+  if ((!Array.isArray(customer.followUps) || !customer.followUps.length) && Number(customer.manualFollowCount || customer.followCount || 0) > 0) {
+    return [{
+      date: customer.lastFollow || customer.latestManualFollowAt || "",
+      createdAt: customer.latestManualFollowAt || customer.lastFollow || "",
+      author: customer.lastFollowAuthor || "",
+      note: customer.lastNote || "",
+      nextFollow: customer.nextFollow || "",
+      isSystem: false
+    }];
+  }
   return (customer.followUps || []).filter(isManualEffectiveFollow);
 }
 
@@ -510,6 +521,40 @@ async function api(path, options = {}) {
   return data;
 }
 
+function rowByOpportunityId(id) {
+  const numericId = Number(id);
+  return currentCustomerRows.find((item) => Number(item.id) === numericId)
+    || currentFilteredCustomerRows.find((item) => Number(item.id) === numericId)
+    || scopeOpportunityRows().find((item) => Number(item.id) === numericId)
+    || null;
+}
+
+function mergeOpportunityDetail(detail = {}) {
+  if (!detail?.id) return detail;
+  const mergeList = (list = []) => list.map((item) => Number(item.id) === Number(detail.id) ? { ...item, ...detail, hasDetail: true } : item);
+  currentCustomerRows = mergeList(currentCustomerRows);
+  currentFilteredCustomerRows = mergeList(currentFilteredCustomerRows);
+  state.opportunities = mergeList(state.opportunities || []);
+  state.customers = mergeList(state.customers || []);
+  if (customerBoardData?.items) customerBoardData.items = mergeList(customerBoardData.items);
+  return detail;
+}
+
+async function fetchOpportunityDetail(id, fallback = null) {
+  const current = fallback || rowByOpportunityId(id);
+  if (current?.hasDetail && Array.isArray(current.followUps)) return current;
+  const detail = await api(`/opportunities/${Number(id)}/detail`);
+  return mergeOpportunityDetail({ ...current, ...detail, hasDetail: true });
+}
+
+function debounce(fn, wait = 300) {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), wait);
+  };
+}
+
 function toast(message) {
   const node = $("#toast");
   node.textContent = message;
@@ -672,10 +717,14 @@ async function trackGeocodeProgress() {
 }
 
 async function loadState(options = {}) {
-  const includePublicPool = options.includePublicPool ?? (currentView === "customers" && currentStage === PUBLIC_POOL_STAGE);
-  state = await api(`/state?lite=1${includePublicPool ? "&includePublicPool=1" : ""}`);
-  updateChannelSourcesFromState();
-  render();
+  if (options.full === true) {
+    const includePublicPool = options.includePublicPool ?? false;
+    state = await api(`/state?lite=1${includePublicPool ? "&includePublicPool=1" : ""}`);
+    updateChannelSourcesFromState();
+    if (options.render !== false) render();
+    return;
+  }
+  await loadAppState({ render: options.render !== false });
 }
 
 async function loadAppState(options = {}) {
@@ -759,7 +808,6 @@ async function loadCustomerBoardPage(options = {}) {
 
 async function refreshCustomersAfterMutation(options = {}) {
   customerBoardData = null;
-  await loadAppState({ render: false }).catch(() => {});
   await loadCustomerBoardPage({ renderLoading: options.renderLoading !== false });
 }
 
@@ -1382,13 +1430,13 @@ function customerRow(item) {
   const disabled = selectable ? "" : "disabled";
   const title = selectable ? "选择客户" : (isInvalid ? "无效客户不可分配" : (isPublicPool ? "只能分配权限范围内的公海客户" : "当前客户暂不满足分配条件"));
   const ownership = ownershipLabel(item);
-  const primaryContact = (item.contacts || []).find((contact) => contact.isPrimary) || (item.contacts || [])[0] || { phone: item.phone };
-  const contactCount = (item.contacts || []).length;
+  const primaryContact = item.primaryContact || (item.contacts || []).find((contact) => contact.isPrimary) || (item.contacts || [])[0] || { phone: item.phone };
+  const contactCount = Number(item.contactCount ?? (item.contacts || []).length);
   const phoneHtml = shouldMaskPublicPool
     ? `<span class="pool-private-value">认领后可见</span>`
     : `<a href="tel:${escapeHtml(primaryContact.phone || item.phone)}">${escapeHtml(primaryContact.phone || item.phone)}</a>${contactCount > 1 ? `<small>另有${contactCount - 1}位联系人</small>` : ""}`;
   const manualHistory = manualFollowUps(item);
-  const followCount = manualHistory.length;
+  const followCount = Number(item.manualFollowCount || item.followCount || manualHistory.length);
   const lastNote = String(latestManualFollow(item)?.note || "").trim();
   const followHtml = shouldMaskPublicPool
     ? `<small class="pool-private-value">认领后可查看跟进历史</small>`
@@ -1984,8 +2032,8 @@ async function claimCustomer(id, trigger = null) {
     currentStage = claimed.stage || "名单";
     customerPage = 1;
     await refreshCustomersAfterMutation();
-    const fresh = scopeOpportunityRows().find((item) => Number(item.id) === Number(claimed.id));
-    if (fresh) openCustomerDialog(fresh);
+    mergeOpportunityDetail({ ...claimed, hasDetail: true });
+    openCustomerDialog({ ...claimed, hasDetail: true });
     toast("认领成功，请填写首次有效跟进");
   } catch (error) {
     toast(error.message || "认领失败，客户可能已被他人认领");
@@ -2021,7 +2069,7 @@ async function submitClaim(event) {
 }
 
 async function advanceCustomer(id) {
-  const customer = scopeOpportunityRows().find((item) => Number(item.id) === Number(id));
+  const customer = await fetchOpportunityDetail(id, rowByOpportunityId(id));
   if (!customer) return;
   const index = stages.indexOf(customer.stage);
   if (index >= stages.length - 1) return;
@@ -2081,8 +2129,8 @@ async function submitAdvance(event) {
   toast(`已推进至${nextStage}`);
 }
 
-function openNewOpportunityDialog(opportunityId) {
-  const row = scopeOpportunityRows().find((item) => Number(item.id) === Number(opportunityId));
+function openNewOpportunityDialog(opportunityId, detail = null) {
+  const row = detail || rowByOpportunityId(opportunityId);
   if (!row) return;
   const form = $("#newOpportunityForm");
   form.reset();
@@ -2418,17 +2466,17 @@ function renderMapFilterOptions(points) {
 
 async function renderField() {
   if (currentView !== "field") return;
+  const requestId = ++fieldRequestId;
   try {
     const result = await api(`/map/points?${mapFilterQuery()}`);
+    if (requestId !== fieldRequestId || currentView !== "field") return;
     fieldMapResult = result;
     fieldPoints = result.points || [];
     renderMapFilterOptions(fieldPoints);
     renderFieldSummary(result);
     renderFieldMap(fieldPoints);
-    const customerById = new Map(state.customers.map((item) => [Number(item.id), item]));
     $("#visitList").innerHTML = fieldPoints.length
       ? fieldPoints.slice(0, 20).map((point) => {
-          const customer = customerById.get(Number(point.customerId)) || {};
           return `<article>
             <b>${escapeHtml(point.name)}</b><span>${escapeHtml(point.stage)} · 拜访${point.visitCount}次</span>
             <p>${escapeHtml(point.city || "未知城市")} · ${escapeHtml(point.address || "")}</p>
@@ -2438,15 +2486,24 @@ async function renderField() {
         }).join("")
       : `<div class="empty">当前筛选条件下暂无地图工厂。</div>`;
   } catch (error) {
+    if (requestId !== fieldRequestId) return;
     $("#visitList").innerHTML = `<div class="empty">地图数据加载失败：${escapeHtml(error.message)}</div>`;
   }
 }
 
 async function openCustomerFromMap(id) {
   const point = fieldPoints.find((item) => Number(item.customerId) === Number(id));
-  const customer = state.customers.find((item) => Number(item.id) === Number(id)) || (point ? { id, name: point.name, address: point.address, lifecycleStatus: point.pointStatus === "archived" ? "archived" : "active", ownershipStatus: point.pointStatus === "pending" ? "public_pool" : "" } : null);
+  const customer = point ? { id, name: point.name, address: point.address, lifecycleStatus: point.pointStatus === "archived" ? "archived" : "active", ownershipStatus: point.isPublicPool ? "public_pool" : "", opportunityId: point.opportunityId } : null;
   if (!customer) return toast("客户资料暂未同步，请刷新后重试");
+  if (customer.lifecycleStatus !== "archived" && point?.opportunityId && (!customer.ownershipStatus || canViewFullPoolInfo())) {
+    openCustomerDialog(await fetchOpportunityDetail(point.opportunityId));
+    return;
+  }
   if (customer.lifecycleStatus !== "archived" && customer.ownershipStatus !== "public_pool") {
+    if (point?.opportunityId) {
+      openCustomerDialog(await fetchOpportunityDetail(point.opportunityId));
+      return;
+    }
     openCustomerDialog(customer);
     return;
   }
@@ -2539,7 +2596,7 @@ async function saveAiFollowDraft() {
   const note = $("#aiFollowDraft")?.value.trim();
   if (!opportunityId || !note) return toast("跟进草稿不能为空");
   await api(`/opportunities/${opportunityId}/follow`, { method: "POST", body: { note, date: today } });
-  await loadState();
+  await refreshCustomersAfterMutation();
   toast("跟进记录已保存，客户归属保护时间已更新");
 }
 
@@ -3070,9 +3127,10 @@ function wireEvents() {
       customerPage = 1;
       loadCustomerBoardPage().catch((error) => toast(error.message));
     };
+    const debouncedResetAndRender = debounce(resetAndRender, 300);
     const node = $(`#${id}`);
     if (!node) return;
-    node.addEventListener("input", resetAndRender);
+    node.addEventListener("input", debouncedResetAndRender);
     node.addEventListener("change", resetAndRender);
   });
   $("#customerFilterToggle").addEventListener("click", () => {
@@ -3136,7 +3194,7 @@ function wireEvents() {
   });
   $("#selectAllCustomers").addEventListener("change", toggleAllCustomers);
   $("#customerRows").addEventListener("change", toggleCustomerSelection);
-  $("#customerRows").addEventListener("click", (event) => {
+  $("#customerRows").addEventListener("click", async (event) => {
     const photo = event.target.closest("img[data-photo]");
     if (photo) {
       window.open(photo.dataset.photo, "_blank", "noopener");
@@ -3145,21 +3203,25 @@ function wireEvents() {
     const button = event.target.closest("button");
     if (!button) return;
     const id = Number(button.dataset.id);
-    if (button.dataset.action === "history") {
-      openFollowHistory(scopeOpportunityRows().find((item) => Number(item.id) === id));
-      return;
-    }
-    if (button.dataset.action === "follow") openCustomerDialog(scopeOpportunityRows().find((item) => Number(item.id) === id));
-    if (button.dataset.action === "ai") analyzeCustomer(id);
-    if (button.dataset.action === "advance") advanceCustomer(id);
-    if (button.dataset.action === "claim") claimCustomer(id, button);
-    if (button.dataset.action === "new-opportunity") openNewOpportunityDialog(id);
-    if (button.dataset.action === "rollback-request") openRollbackDialog(scopeOpportunityRows().find((item) => Number(item.id) === id));
-    if (button.dataset.action === "rollback-approve") reviewRollback(id, true);
-    if (button.dataset.action === "rollback-reject") reviewRollback(id, false);
-    if (button.dataset.action === "assign") {
-      const select = button.parentElement.querySelector(`select[data-role="assign-owner"][data-id="${id}"]`);
-      assignCustomer(id, select?.value);
+    try {
+      if (button.dataset.action === "history") {
+        openFollowHistory(await fetchOpportunityDetail(id));
+        return;
+      }
+      if (button.dataset.action === "follow") openCustomerDialog(await fetchOpportunityDetail(id));
+      if (button.dataset.action === "ai") analyzeCustomer(id);
+      if (button.dataset.action === "advance") await advanceCustomer(id);
+      if (button.dataset.action === "claim") await claimCustomer(id, button);
+      if (button.dataset.action === "new-opportunity") openNewOpportunityDialog(id, await fetchOpportunityDetail(id));
+      if (button.dataset.action === "rollback-request") openRollbackDialog(await fetchOpportunityDetail(id));
+      if (button.dataset.action === "rollback-approve") reviewRollback(id, true);
+      if (button.dataset.action === "rollback-reject") reviewRollback(id, false);
+      if (button.dataset.action === "assign") {
+        const select = button.parentElement.querySelector(`select[data-role="assign-owner"][data-id="${id}"]`);
+        assignCustomer(id, select?.value);
+      }
+    } catch (error) {
+      toast(error.message || "客户详情加载失败");
     }
   });
   $("#customerForm").addEventListener("submit", saveCustomer);
