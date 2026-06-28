@@ -273,12 +273,24 @@ function productOptionsHtml(placeholder = "请选择意向产品") {
 
 function productDefaultAmount(productId) {
   const price = Number(productById(productId).price || 0);
-  return Number.isFinite(price) && price > 0 ? price : 150000;
+  return Number.isFinite(price) && price > 0 ? price : 0;
 }
 
 function fillAmountFromProduct(form, productId) {
   if (!form?.amount) return;
   form.amount.value = productDefaultAmount(productId);
+}
+
+function parseCustomerSortValue(value = "") {
+  const [sortBy, sortOrder] = String(value || "").split("_");
+  const allowed = new Set(["lastFollow", "createdAt", "nextFollow", "assignedAt"]);
+  if (!allowed.has(sortBy)) return {};
+  return { sortBy, sortOrder: sortOrder === "asc" ? "asc" : "desc" };
+}
+
+function setCustomerSortValue(value) {
+  const select = $("#customerSort");
+  if (select) select.value = value || "default";
 }
 
 function selectableLossReasons(options = {}) {
@@ -564,7 +576,7 @@ function toast(message) {
 }
 
 function setFormSubmitting(form, submitting, loadingText) {
-  const button = form.querySelector("button[type='submit']");
+  const button = form.querySelector("button[type='submit'], button.primary[value='save'], button.primary:not([type]), button.primary");
   if (!button) return;
   if (!button.dataset.label) button.dataset.label = button.textContent;
   button.disabled = submitting;
@@ -771,6 +783,11 @@ function customerBoardQuery() {
   Object.entries(values).forEach(([key, value]) => {
     if (value) params.set(key, value);
   });
+  const sort = parseCustomerSortValue($("#customerSort")?.value || "");
+  if (sort.sortBy) {
+    params.set("sortBy", sort.sortBy);
+    params.set("sortOrder", sort.sortOrder);
+  }
   if (dashboardDrilldownIds?.size) params.set("ids", [...dashboardDrilldownIds].join(","));
   return params;
 }
@@ -1275,7 +1292,8 @@ function renderCustomers() {
     followPerson: $("#followPersonFilter")?.value || "",
     unit: $("#unitFilter")?.value || "",
     city: $("#cityFilter")?.value || "",
-    followStatus: $("#followStatusFilter")?.value || ""
+    followStatus: $("#followStatusFilter")?.value || "",
+    sort: $("#customerSort")?.value || "default"
   };
   $("#stageTabs").innerHTML = customerTabs
     .map((stage) => {
@@ -1307,6 +1325,7 @@ function renderCustomers() {
   $("#cityFilter").value = currentFilters.city;
   const followStatusFilter = $("#followStatusFilter");
   if (followStatusFilter) followStatusFilter.value = currentFilters.followStatus;
+  setCustomerSortValue(currentFilters.sort);
   $("#customerOwnerSelect").innerHTML = ownerOptions.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
   const paymentOwners = roleForUser(currentUser()).customerScope === "self" ? [currentUser()] : visibleUsers();
   $("#paymentOwnerSelect").innerHTML = paymentOwners.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
@@ -1926,23 +1945,38 @@ async function reviewRollback(id, approved) {
 async function saveCustomer(event) {
   event.preventDefault();
   if (event.submitter?.value === "cancel") return $("#customerDialog").close();
-  const form = new FormData(event.currentTarget);
+  const formNode = event.currentTarget;
+  if (formNode.dataset.submitting === "1") return toast("正在保存，请稍等");
+  const form = new FormData(formNode);
   const id = Number(form.get("id"));
   const opportunityId = Number(form.get("opportunityId"));
   const ownerUser = userById(form.get("owner"));
   const ownerUnit = unitForId(ownerUser.unitId);
   const note = String(form.get("note") || "").trim();
   const productId = String(form.get("productId") || "");
-  if (!productId) return toast("请选择：意向产品");
   const contacts = readContactsEditor();
   const primaryContact = contacts.find((item) => item.isPrimary) || contacts[0] || {};
+  const customerName = String(form.get("name") || "").trim();
+  const customerPhone = String(primaryContact.phone || form.get("phone") || "").trim();
+  if (!customerName) {
+    formNode.elements.name?.focus();
+    return toast("请填写：客户名称");
+  }
+  if (!customerPhone) {
+    formNode.elements.phone?.focus();
+    return toast("请填写：手机号");
+  }
+  if (!productId) {
+    formNode.elements.productId?.focus();
+    return toast("请选择：意向产品");
+  }
   const competitorProfiles = readCompetitorProfilesEditor();
   const metadataLocked = Boolean(id) && !canAdmin();
   const lossReason = String(form.get("lossReason") || "");
   const customer = {
     id: id || Date.now(),
-    name: String(form.get("name")).trim(),
-    phone: String(primaryContact.phone || form.get("phone")).trim(),
+    name: customerName,
+    phone: customerPhone,
     contacts,
     competitorProfiles,
     opportunityId: opportunityId || undefined,
@@ -1977,6 +2011,8 @@ async function saveCustomer(event) {
     nextFollow: String(form.get("nextFollow") || ""),
     lastNote: note || (id ? undefined : "新增客户。")
   };
+  formNode.dataset.submitting = "1";
+  setFormSubmitting(formNode, true, "保存中...");
   try {
     if (id) {
       await api(`/customers/${id}`, { method: "PUT", body: customer });
@@ -1997,20 +2033,34 @@ async function saveCustomer(event) {
       if (!window.confirm("该客户已释放，是否认领并接手原客户资料？")) return;
       const claimed = await api("/customers/claim", { method: "POST", body: { phone: customer.phone } });
       $("#customerDialog").close();
-      currentStage = claimed.stage || "名单";
-      customerPage = 1;
+      prepareClaimedCustomerView();
       await refreshCustomersAfterMutation();
-      const fresh = state.customers.find((item) => Number(item.id) === Number(claimed.id));
-      if (fresh) openCustomerDialog(fresh);
-      return toast("认领成功，请填写首次有效跟进");
+      mergeOpportunityDetail({ ...claimed, hasDetail: true });
+      return toast("认领成功，已进入你的名单，请尽快完成首次跟进");
     } else {
       return toast(error.code === "DUPLICATE_CUSTOMER" ? "该客户已存在" : error.message);
     }
+  } finally {
+    delete formNode.dataset.submitting;
+    setFormSubmitting(formNode, false, "保存中...");
   }
   $("#customerDialog").close();
   customerPage = 1;
   await refreshCustomersAfterMutation();
   toast("已保存");
+}
+
+function prepareClaimedCustomerView() {
+  dashboardDrilldownIds = null;
+  currentStage = stages[0];
+  localStorage.setItem(CUSTOMER_STAGE_KEY, currentStage);
+  customerPage = 1;
+  const viewer = currentUser();
+  const followPersonFilter = $("#followPersonFilter");
+  if (followPersonFilter) followPersonFilter.value = viewer?.name || "";
+  const followStatusFilter = $("#followStatusFilter");
+  if (followStatusFilter) followStatusFilter.value = "unfollowed";
+  setCustomerSortValue("assignedAt_desc");
 }
 
 async function claimCustomer(id, trigger = null) {
@@ -2030,12 +2080,10 @@ async function claimCustomer(id, trigger = null) {
   toast("正在认领公海客户...");
   try {
     const claimed = await api(`/opportunities/${id}/claim`, { method: "POST", body: productPayload });
-    currentStage = claimed.stage || "名单";
-    customerPage = 1;
+    prepareClaimedCustomerView();
     await refreshCustomersAfterMutation();
     mergeOpportunityDetail({ ...claimed, hasDetail: true });
-    openCustomerDialog({ ...claimed, hasDetail: true });
-    toast("认领成功，请填写首次有效跟进");
+    toast("认领成功，已进入你的名单，请尽快完成首次跟进");
   } catch (error) {
     toast(error.message || "认领失败，客户可能已被他人认领");
     refreshCustomersAfterMutation().catch((refreshError) => toast(refreshError.message));
@@ -2051,21 +2099,26 @@ async function claimCustomer(id, trigger = null) {
 async function submitClaim(event) {
   event.preventDefault();
   if (event.submitter?.value === "cancel") return $("#claimDialog").close();
-  const form = new FormData(event.currentTarget);
+  const formNode = event.currentTarget;
+  if (formNode.dataset.submitting === "1") return toast("正在认领，请稍候");
+  formNode.dataset.submitting = "1";
+  setFormSubmitting(formNode, true, "认领中...");
+  const form = new FormData(formNode);
   const id = Number(form.get("opportunityId"));
   const productId = String(form.get("productId") || "");
   try {
     const claimed = await api(`/opportunities/${id}/claim`, { method: "POST", body: productId ? { productId } : {} });
     $("#claimDialog").close();
-    currentStage = claimed.stage || "名单";
-    customerPage = 1;
+    prepareClaimedCustomerView();
     await refreshCustomersAfterMutation();
-    const fresh = scopeOpportunityRows().find((item) => Number(item.id) === Number(claimed.id));
-    if (fresh) openCustomerDialog(fresh);
-    toast("认领成功，请填写首次有效跟进");
+    mergeOpportunityDetail({ ...claimed, hasDetail: true });
+    toast("认领成功，已进入你的名单，请尽快完成首次跟进");
   } catch (error) {
     await refreshCustomersAfterMutation();
     toast(error.message || "认领失败，客户可能已被他人认领");
+  } finally {
+    delete formNode.dataset.submitting;
+    setFormSubmitting(formNode, false, "认领中...");
   }
 }
 
@@ -2980,9 +3033,9 @@ function clearCustomerFilters() {
     const node = $(`#${id}`);
     if (node) node.value = "";
   });
-  ["channelFilter", "createdByFilter", "followPersonFilter", "unitFilter", "cityFilter", "followStatusFilter"].forEach((id) => {
+  ["channelFilter", "createdByFilter", "followPersonFilter", "unitFilter", "cityFilter", "followStatusFilter", "customerSort"].forEach((id) => {
     const node = $(`#${id}`);
-    if (node) node.value = "";
+    if (node) node.value = id === "customerSort" ? "default" : "";
   });
 }
 
@@ -3122,7 +3175,7 @@ function wireEvents() {
     customerPage = 1;
     loadCustomerBoardPage().catch((error) => toast(error.message));
   });
-  ["customerKeyword", "channelFilter", "createdByFilter", "followPersonFilter", "unitFilter", "cityFilter", "followStatusFilter", "stageTimeStart", "stageTimeEnd", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
+  ["customerKeyword", "channelFilter", "createdByFilter", "followPersonFilter", "unitFilter", "cityFilter", "followStatusFilter", "customerSort", "stageTimeStart", "stageTimeEnd", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
     const resetAndRender = () => {
       dashboardDrilldownIds = null;
       customerPage = 1;
@@ -3203,6 +3256,7 @@ function wireEvents() {
     }
     const button = event.target.closest("button");
     if (!button) return;
+    if (button.disabled) return;
     const id = Number(button.dataset.id);
     try {
       if (button.dataset.action === "history") {

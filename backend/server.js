@@ -2506,6 +2506,21 @@ function normalizeMoney(value) {
   return Number.isFinite(number) && number > 0 ? Math.round(number * 100) / 100 : 0;
 }
 
+function hasMoneyValue(value) {
+  return value !== undefined && value !== null && String(value).trim() !== "";
+}
+
+function normalizeOptionalMoney(value, fallback = 0) {
+  return hasMoneyValue(value) ? normalizeMoney(value) : fallback;
+}
+
+function defaultOpportunityAmount(opportunity = {}, customer = {}, product = {}) {
+  if (hasMoneyValue(opportunity.amount)) return normalizeMoney(opportunity.amount);
+  if (hasMoneyValue(customer.amount)) return normalizeMoney(customer.amount);
+  if (hasMoneyValue(product.price)) return normalizeMoney(product.price);
+  return 0;
+}
+
 function formatMoneyYuan(value) {
   return new Intl.NumberFormat("zh-CN", {
     style: "currency",
@@ -2719,7 +2734,7 @@ function normalizeCustomer(customer, context = {}) {
     zone: customer.zone || ownerUser.zone || unit.zone || normalizeZone(customer.region),
     orgPath: customer.orgPath || ownerUser.orgPath || unit.path || "",
     region: customer.region || ownerUser.zone || unit.zone || "待分区",
-    amount: Number(customer.amount || DEFAULT_EXPECTED_AMOUNT),
+    amount: normalizeOptionalMoney(customer.amount, 0),
     demoAt: customer.demoAt || customer.effectiveDemoAt || "",
     quoteAmount: normalizeMoney(customer.quoteAmount),
     expectedDealDate: customer.expectedDealDate || "",
@@ -2826,7 +2841,7 @@ function normalizeOpportunity(opportunity = {}, context = {}) {
     region: opportunity.region || customer.region || "待分区",
     createdBy: opportunity.createdBy || customer.createdBy || ownerUser.name || "未记录",
     createdAt,
-    amount: normalizeMoney(opportunity.amount) || normalizeMoney(customer.amount) || normalizeMoney(product.price) || DEFAULT_EXPECTED_AMOUNT,
+    amount: defaultOpportunityAmount(opportunity, customer, product),
     demoAt: opportunity.demoAt || "",
     quoteAmount: normalizeMoney(opportunity.quoteAmount),
     expectedDealDate: opportunity.expectedDealDate || "",
@@ -3009,6 +3024,7 @@ function opportunityListRow(state, opportunity = {}, options = {}) {
     leadAt: opportunity.leadAt || "",
     opportunityAt: opportunity.opportunityAt || "",
     dealAt: opportunity.dealAt || "",
+    assignedAt: latestAssignmentAt(opportunity),
     lastFollow: latestManual?.date || latestManual?.createdAt || latestAny.date || "",
     latestManualFollowAt: latestManual?.createdAt || latestManual?.date || "",
     nextFollow: latestManual?.nextFollow || opportunity.nextFollow || latestAny.nextFollow || "",
@@ -3159,11 +3175,12 @@ function applyProductSelectionForFollow(state, previous = {}, body = {}) {
   if (!requestedProduct) return { fields: {} };
   const productPrice = normalizeMoney(requestedProduct.price);
   const previousAmount = normalizeMoney(previous.amount);
+  const shouldApplyProductAmount = !previousAmount || previousAmount === DEFAULT_EXPECTED_AMOUNT;
   return {
     fields: {
       productId: requestedProduct.id,
       productName: requestedProduct.name,
-      ...(productPrice > 0 && (!previousAmount || previousAmount === DEFAULT_EXPECTED_AMOUNT) ? { amount: productPrice } : {})
+      ...(shouldApplyProductAmount ? { amount: productPrice } : {})
     }
   };
 }
@@ -3274,7 +3291,12 @@ function sanitizeArchivedOpportunity(customer = {}, opportunity = {}) {
 
 function claimOpportunityAtIndex(res, state, viewer, index, body = {}) {
   const previous = state.opportunities[index];
-  if (!isOpportunityPublicPool(previous, Date.now(), state)) return sendJson(res, 409, { error: "该客户已被其他人认领，请刷新公海", code: "PUBLIC_POOL_ALREADY_CLAIMED" });
+  if (!isOpportunityPublicPool(previous, Date.now(), state)) {
+    if (Number(previous.ownerId) === Number(viewer.id)) {
+      return sendJson(res, 200, opportunityView(state, previous));
+    }
+    return sendJson(res, 409, { error: "该客户已被其他人认领，请刷新公海", code: "PUBLIC_POOL_ALREADY_CLAIMED" });
+  }
   if (!canOwnCustomerUser(state, viewer)) {
     return sendJson(res, 403, { error: "仅销售、主管和区域经理可以认领公海机会" });
   }
@@ -3290,7 +3312,7 @@ function claimOpportunityAtIndex(res, state, viewer, index, body = {}) {
   const now = new Date().toISOString();
   const productPrice = normalizeMoney(selectedProduct?.price);
   const previousAmount = normalizeMoney(previous.amount);
-  const shouldUseProductPrice = selectedProduct && needsProduct && productPrice > 0 && (!previousAmount || previousAmount === DEFAULT_EXPECTED_AMOUNT);
+  const shouldUseProductPrice = selectedProduct && needsProduct && (!previousAmount || previousAmount === DEFAULT_EXPECTED_AMOUNT);
   const next = normalizeOpportunity({
     ...previous,
     productId: product?.id || previous.productId,
@@ -3563,7 +3585,7 @@ function syncVisitToCustomer(state, visit) {
       owner,
       ownerId,
       region: visit.city || visit.address || "待分区",
-      amount: DEFAULT_EXPECTED_AMOUNT,
+      amount: 0,
       software: displaySoftwareName(visit.software),
       photos: normalizePhotos(visit.photos),
       location: {
@@ -4326,6 +4348,57 @@ function filterBoardRows(rows = [], query = {}, stage = "") {
   });
 }
 
+function rowDateMs(value, emptyValue = 0) {
+  const time = Date.parse(value || "");
+  return Number.isFinite(time) ? time : emptyValue;
+}
+
+function latestAssignmentAt(row = {}) {
+  const histories = Array.isArray(row.ownershipHistory) ? row.ownershipHistory : [];
+  const assignmentTypes = new Set(["created", "assigned", "claimed_public_pool", "offboard_transfer"]);
+  const latest = histories
+    .filter((item) => assignmentTypes.has(item.type || item.action || ""))
+    .map((item) => item.createdAt || item.time || item.date || "")
+    .filter(Boolean)
+    .sort()
+    .pop();
+  return latest || row.assignedAt || row.claimedAt || row.createdAt || "";
+}
+
+function boardSortValue(row = {}, sortBy = "", order = "desc") {
+  const empty = order === "asc" ? Number.MAX_SAFE_INTEGER : 0;
+  if (sortBy === "lastFollow") return rowDateMs(latestManualFollowDate(row), empty);
+  if (sortBy === "createdAt") return rowDateMs(row.createdAt, empty);
+  if (sortBy === "nextFollow") return rowDateMs(row.nextFollow, empty);
+  if (sortBy === "assignedAt") return rowDateMs(latestAssignmentAt(row), empty);
+  return 0;
+}
+
+function compareByDate(left, right, sortBy, order = "desc", tieBreak = true) {
+  const leftValue = boardSortValue(left, sortBy, order);
+  const rightValue = boardSortValue(right, sortBy, order);
+  const diff = order === "asc" ? leftValue - rightValue : rightValue - leftValue;
+  return diff || (tieBreak ? Number(right.id || 0) - Number(left.id || 0) : 0);
+}
+
+function sortBoardRows(rows = [], query = {}, stage = "") {
+  const sortBy = String(query.sortBy || "");
+  const sortOrder = query.sortOrder === "asc" ? "asc" : "desc";
+  const allowedSorts = new Set(["lastFollow", "createdAt", "nextFollow", "assignedAt"]);
+  if (allowedSorts.has(sortBy)) return [...rows].sort((left, right) => compareByDate(left, right, sortBy, sortOrder));
+  if ([STAGES[0], STAGES[1], STAGES[2]].includes(stage)) {
+    return [...rows].sort((left, right) => {
+      const leftUnfollowed = hasManualFollow(left) ? 1 : 0;
+      const rightUnfollowed = hasManualFollow(right) ? 1 : 0;
+      return leftUnfollowed - rightUnfollowed
+        || compareByDate(left, right, "lastFollow", "desc", false)
+        || compareByDate(left, right, "createdAt", "desc");
+    });
+  }
+  if (stage === PUBLIC_POOL_STATUS) return rows;
+  return [...rows].sort((left, right) => compareByDate(left, right, "createdAt", "desc"));
+}
+
 function paginateRows(rows = [], query = {}) {
   const pageSize = safePageSize(query.pageSize, 20);
   const total = rows.length;
@@ -4339,7 +4412,8 @@ function buildPaginatedCustomerBoard(board, query = {}) {
   const stage = query.stage || STAGES[0];
   const sourceRows = boardRowsForStage(board, stage);
   const filteredRows = filterBoardRows(sourceRows, query, stage);
-  const page = paginateRows(filteredRows, query);
+  const sortedRows = sortBoardRows(filteredRows, query, stage);
+  const page = paginateRows(sortedRows, query);
   return {
     backendVersion: board.backendVersion,
     moneyUnit: board.moneyUnit,
@@ -4350,13 +4424,16 @@ function buildPaginatedCustomerBoard(board, query = {}) {
     publicPool: { count: Number(board.publicPool?.count || 0) },
     purchased: { count: Number(board.purchased?.count || 0) },
     invalid: { count: Number(board.invalid?.count || 0) },
+    sortBy: query.sortBy || "",
+    sortOrder: query.sortOrder || "",
     ...page
   };
 }
 
 function paginatePublicPoolItems(items = [], query = {}) {
   const filteredRows = filterBoardRows(items, query, PUBLIC_POOL_STATUS);
-  const page = paginateRows(filteredRows, query);
+  const sortedRows = sortBoardRows(filteredRows, query, PUBLIC_POOL_STATUS);
+  const page = paginateRows(sortedRows, query);
   return {
     backendVersion: BACKEND_VERSION,
     moneyUnit: MONEY_UNIT,
@@ -5909,7 +5986,7 @@ async function importCustomers(req, viewer, target = "") {
       region: row.region || "",
       createdBy: viewer.name,
       createdAt: today(),
-      amount: row.amountProvided ? row.amount : normalizeMoney(product.price) || DEFAULT_EXPECTED_AMOUNT,
+      amount: row.amountProvided ? row.amount : normalizeOptionalMoney(product.price, 0),
       ownershipStatus: rowImportToPublicPool ? OWNERSHIP_PUBLIC : importedFollowCounts ? OWNERSHIP_LOCKED : OWNERSHIP_PENDING,
       claimUntil: rowImportToPublicPool || importedFollowCounts ? "" : addDaysToIso(now, claimProtectionDays(state, viewer, ownerUser, row.stage || "名单")),
       effectiveFollowUpAt: importedFollowCounts ? (importedFollow.createdAt || now) : "",
@@ -6082,7 +6159,7 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
 }
 
 function normalizeImportedAmount(value, inputMoneyUnit = MONEY_UNIT) {
-  if (value === undefined || value === null || String(value).trim() === "") return DEFAULT_EXPECTED_AMOUNT;
+  if (value === undefined || value === null || String(value).trim() === "") return 0;
   return inputMoneyUnit === MONEY_UNIT ? normalizeMoney(value) : multiplyLegacyMoney(value);
 }
 

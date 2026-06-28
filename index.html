@@ -142,6 +142,16 @@
                   <datalist id="followPersonFilterOptions"></datalist>
                   <select id="unitFilter"></select>
                   <select id="cityFilter"></select>
+                  <select id="customerSort">
+                    <option value="default">默认排序</option>
+                    <option value="lastFollow_desc">最新跟进时间新到旧</option>
+                    <option value="lastFollow_asc">最新跟进时间旧到新</option>
+                    <option value="createdAt_desc">录入时间新到旧</option>
+                    <option value="createdAt_asc">录入时间旧到新</option>
+                    <option value="nextFollow_asc">下次跟进时间近到远</option>
+                    <option value="nextFollow_desc">下次跟进时间远到近</option>
+                    <option value="assignedAt_desc">认领/分配时间新到旧</option>
+                  </select>
                   <select id="followStatusFilter"><option value="">全部跟进状态</option><option value="unfollowed">未跟进</option><option value="followed">已跟进</option></select>
                 </div>
                 <div class="customer-filter-row customer-time-row">
@@ -378,7 +388,7 @@
     </div>
 
     <dialog id="customerDialog">
-      <form method="dialog" class="dialog-form" id="customerForm">
+      <form method="dialog" class="dialog-form" id="customerForm" novalidate>
         <h2 id="customerDialogTitle">新增客户</h2>
         <input type="hidden" name="id" />
         <input type="hidden" name="opportunityId" />
@@ -413,7 +423,7 @@
         <button id="customerPurchasedBtn" class="danger-outline hidden" type="button">标记为已购</button>
         <button id="customerArchiveBtn" class="danger-outline hidden" type="button">标记为无效或倒闭</button>
         <button id="customerDeleteBtn" class="danger-outline hidden" type="button">删除客户</button>
-        <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">保存</button></div>
+        <div class="button-row"><button type="button" data-close-dialog="customerDialog" value="cancel">取消</button><button class="primary" type="submit" value="save">保存</button></div>
       </form>
     </dialog>
 
