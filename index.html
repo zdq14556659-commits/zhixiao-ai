@@ -238,6 +238,7 @@
             <button data-settings-tab="competitors">竞品字典</button>
             <button data-settings-tab="channels">渠道来源</button>
             <button data-settings-tab="lossReasons">未成交原因</button>
+            <button data-settings-tab="businessRules">业务规则</button>
             <button data-settings-tab="knowledge">知识库</button>
           </div>
           <section class="settings-pane panel" id="settingsKnowledgePane">
@@ -305,6 +306,26 @@
                 <button class="primary" type="submit">添加目前未成交原因</button>
               </form>
               <div class="user-list compact-list" id="lossReasonList"></div>
+            </section>
+            <section class="panel" data-settings-section="businessRules">
+              <div class="panel-title"><h2>业务规则设置</h2><span>调整客户保护期、公海轮转和有效跟进口径</span></div>
+              <form class="form-stack" id="businessRulesForm">
+                <label>新客户保护期（天）<input name="newCustomerProtectionDays" type="number" min="0" step="1" /></label>
+                <label>公海认领保护期（天）<input name="publicPoolClaimProtectionDays" type="number" min="0" step="1" /></label>
+                <label>长期未跟进入公海（天）<input name="inactivePublicPoolDays" type="number" min="0" step="1" /></label>
+                <label>公海排序方式
+                  <select name="publicPoolSortMode">
+                    <option value="daily_spread">每日分流排序</option>
+                    <option value="created_at">按进入公海时间</option>
+                  </select>
+                </label>
+                <label class="checkbox-line"><input name="dealCustomersEnterPublicPool" type="checkbox" />成交客户也进入公海</label>
+                <label class="checkbox-line"><input name="purchasedCustomersEnterPublicPool" type="checkbox" />已购客户也进入公海</label>
+                <label class="checkbox-line"><input name="systemFollowCounts" type="checkbox" />系统记录算有效跟进</label>
+                <label class="checkbox-line"><input name="importFollowCounts" type="checkbox" />Excel导入跟进记录算有效跟进</label>
+                <label class="checkbox-line"><input name="selfImportCountsAssignedUnfollowed" type="checkbox" />销售自导入计入今日分配未跟进</label>
+                <button class="primary" type="submit">保存业务规则</button>
+              </form>
             </section>
             <section class="panel" data-settings-section="roles">
               <div class="panel-title"><h2>角色权限</h2><span>设置角色能看到的客户范围和功能模块</span></div>
@@ -545,6 +566,7 @@
         <div class="import-result-details" id="importResultDetails"></div>
         <div class="button-row import-result-actions">
           <a id="importResultDownload" class="template-link" hidden target="_blank" rel="noopener">下载完整 CSV 明细</a>
+          <button id="importResultCopy" type="button" hidden>复制未导入明细</button>
           <button class="primary" value="close">知道了</button>
         </div>
       </form>

@@ -27,6 +27,17 @@ const defaultRoles = [
   { id: "role-ops", name: "运营", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "publicPoolImport"] },
   { id: "role-admin", name: "管理员", customerScope: "all", permissions: ["dashboard", "customers", "field", "assistant", "publicPoolImport", "admin"] }
 ];
+const defaultBusinessRules = {
+  newCustomerProtectionDays: 30,
+  publicPoolClaimProtectionDays: 3,
+  inactivePublicPoolDays: 30,
+  dealCustomersEnterPublicPool: false,
+  purchasedCustomersEnterPublicPool: false,
+  systemFollowCounts: false,
+  importFollowCounts: true,
+  selfImportCountsAssignedUnfollowed: false,
+  publicPoolSortMode: "daily_spread"
+};
 const orgRootId = "org-root";
 const orgTypeLabels = { root: "根节点", department: "一级部门", battle_zone: "战区", unit: "单位", team: "小组" };
 const orgTypeOptions = [
@@ -36,7 +47,7 @@ const orgTypeOptions = [
   { value: "team", label: "小组" }
 ];
 
-let state = { users: [], customers: [], opportunities: [], products: [], visits: [], knowledge: [], stages, roles: defaultRoles, units: [], competitors: [], routes: [], channelSources: [], lossReasons: [] };
+let state = { users: [], customers: [], opportunities: [], products: [], visits: [], knowledge: [], stages, roles: defaultRoles, units: [], competitors: [], routes: [], channelSources: [], lossReasons: [], businessRules: defaultBusinessRules };
 const CUSTOMER_STAGE_KEY = "zhixiao-current-customer-stage";
 let currentStage = localStorage.getItem(CUSTOMER_STAGE_KEY) || stages[0];
 let currentView = "customers";
@@ -525,6 +536,8 @@ function showImportFeedback(result, entityLabel = "客户") {
   const total = normalized.total;
   const imported = normalized.imported;
   const duplicates = normalized.duplicates;
+  const duplicateCustomers = normalized.duplicateCustomers;
+  const duplicateOpportunities = normalized.duplicateOpportunities;
   const failed = normalized.failed;
   const pendingLocation = normalized.pendingLocation;
   const channelUnrecognized = normalized.channelUnrecognized;
@@ -541,7 +554,9 @@ function showImportFeedback(result, entityLabel = "客户") {
   $("#importResultStats").innerHTML = [
     ["总行数", total, ""],
     ["成功", imported, "success"],
-    ["重复", duplicates, "warning"],
+    ["重复客户", duplicateCustomers, "warning"],
+    ["重复机会", duplicateOpportunities, "warning"],
+    ...(duplicates && !duplicateCustomers && !duplicateOpportunities ? [["跳过", duplicates, "warning"]] : []),
     ["失败", failed, "danger"],
     ...(channelUnrecognized ? [["渠道未识别", channelUnrecognized, "warning"]] : []),
     ...(pendingLocation ? [["待定位", pendingLocation, "warning"]] : [])
@@ -549,9 +564,36 @@ function showImportFeedback(result, entityLabel = "客户") {
   $("#importResultDetails").innerHTML = details.length
     ? details.map((item) => {
       const rowLabel = item.rowNumber ? `第${escapeHtml(item.rowNumber)}行 · ` : "";
-      return `<article><b>${rowLabel}${escapeHtml(item.name || "未命名客户")}</b><span>${escapeHtml(item.phone || "手机号未填写")} · ${escapeHtml(item.reason || "未导入")}</span></article>`;
+      const meta = [
+        item.phone || "手机号未填写",
+        item.productName ? `意向产品：${item.productName}` : "",
+        item.status ? `状态：${item.status}` : "",
+        item.code ? `代码：${item.code}` : ""
+      ].filter(Boolean).join(" · ");
+      return `<article><b>${rowLabel}${escapeHtml(item.name || "未命名客户")}</b><span>${escapeHtml(meta)} · ${escapeHtml(item.reason || "未导入")}</span></article>`;
     }).join("")
     : `<div class="empty">本次没有未导入${entityLabel}</div>`;
+  const copyButton = $("#importResultCopy");
+  if (copyButton) {
+    copyButton.hidden = !details.length;
+    copyButton.onclick = async () => {
+      const text = details.map((item) => [
+        item.rowNumber ? `第${item.rowNumber}行` : "未知行",
+        item.name || "未命名客户",
+        item.phone || "手机号未填写",
+        item.productName ? `意向产品:${item.productName}` : "",
+        item.status ? `状态:${item.status}` : "",
+        item.reason || "未导入",
+        item.code ? `代码:${item.code}` : ""
+      ].filter(Boolean).join(" | ")).join("\n");
+      try {
+        await navigator.clipboard.writeText(text);
+        toast("未导入明细已复制");
+      } catch {
+        toast("复制失败，请下载CSV明细");
+      }
+    };
+  }
   const link = $("#importResultDownload");
   if (normalized.reportUrl) {
     const apiOrigin = API_BASE.replace(/\/api\/?$/, "");
@@ -569,10 +611,14 @@ function normalizeImportResult(result = {}) {
   const skipped = Array.isArray(result.skipped) ? result.skipped : [];
   const failures = Array.isArray(result.failures) ? result.failures : [];
   const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+  const duplicateCustomerRows = Array.isArray(result.duplicateCustomerRows) ? result.duplicateCustomerRows : [];
+  const duplicateOpportunityRows = Array.isArray(result.duplicateOpportunityRows) ? result.duplicateOpportunityRows : [];
   return {
     total: Number(result.total || 0),
     imported: Number(result.imported || 0),
     duplicates: Number(result.duplicates ?? skipped.length ?? 0),
+    duplicateCustomers: Number(result.duplicateCustomers ?? duplicateCustomerRows.length ?? 0),
+    duplicateOpportunities: Number(result.duplicateOpportunities ?? duplicateOpportunityRows.length ?? 0),
     failed: Number(result.failed ?? failures.length ?? 0),
     channelUnrecognized: Number(result.channelUnrecognized ?? warnings.length ?? 0),
     pendingLocation: Number(result.pendingLocation || 0),
@@ -589,12 +635,14 @@ function importErrorResult(error) {
   const skipped = Array.isArray(data.skipped) ? data.skipped : [];
   let failures = Array.isArray(data.failures) ? data.failures : [];
   if (!skipped.length && !failures.length) {
-    failures = [{ rowNumber: "", name: "", phone: "", reason: data.error || error?.message || "导入失败" }];
+    failures = [{ rowNumber: "", name: "", phone: "", productName: "", status: "", code: data.code || "", reason: data.error || error?.message || "导入失败" }];
   }
   return {
     total: Number(data.total || 0),
     imported: Number(data.imported || 0),
     duplicates: Number(data.duplicates || skipped.length || 0),
+    duplicateCustomers: Number(data.duplicateCustomers || 0),
+    duplicateOpportunities: Number(data.duplicateOpportunities || 0),
     failed: Number(data.failed || failures.length || 1),
     channelUnrecognized: Number(data.channelUnrecognized || 0),
     pendingLocation: Number(data.pendingLocation || 0),
@@ -2503,7 +2551,7 @@ async function addKnowledge(event) {
 }
 
 function renderAdmin() {
-  const settingsTabs = ["employees", "org", "roles", "products", "competitors", "channels", "lossReasons", "knowledge"];
+  const settingsTabs = ["employees", "org", "roles", "products", "competitors", "channels", "lossReasons", "businessRules", "knowledge"];
   if (!settingsTabs.includes(currentSettingsTab)) currentSettingsTab = "employees";
   const showKnowledge = currentSettingsTab === "knowledge";
   $("#settingsAccountsPane").classList.toggle("active", !showKnowledge);
@@ -2537,6 +2585,7 @@ function renderAdmin() {
   if (unitTypeSelect) {
     unitTypeSelect.innerHTML = orgTypeOptions.map((item) => `<option value="${item.value}">${item.label}</option>`).join("");
   }
+  renderBusinessRulesForm();
   $("#userList").innerHTML = renderUserOrgTree();
   $("#competitorList").innerHTML = (state.competitors || []).map((item) => `<article><b><i class="competitor-swatch" style="background:${escapeHtml(item.color)}"></i>${escapeHtml(item.name)}</b><span>${item.active === false ? "停用" : "启用"}</span></article>`).join("");
   $("#productList").innerHTML = selectableProducts().map((item) => `
@@ -3136,6 +3185,7 @@ function wireEvents() {
   $("#claimForm").addEventListener("submit", submitClaim);
   $("#assignForm").addEventListener("submit", batchAssignCustomers);
   $("#channelSourceBatchForm")?.addEventListener("submit", batchUpdateChannelSource);
+  $("#businessRulesForm")?.addEventListener("submit", saveBusinessRules);
   $("#targetForm").addEventListener("submit", saveTarget);
   $("#recommendBtn").addEventListener("click", recommend);
   $("#aiResult").addEventListener("click", (event) => {
@@ -3222,6 +3272,48 @@ if (requireLogin()) {
       return loadCustomerBoardPage({ renderLoading: true });
     })
     .catch((error) => toast(error.message));
+}
+
+function renderBusinessRulesForm() {
+  const form = $("#businessRulesForm");
+  if (!form) return;
+  const rules = { ...defaultBusinessRules, ...(state.businessRules || {}) };
+  form.elements.newCustomerProtectionDays.value = Number(rules.newCustomerProtectionDays ?? defaultBusinessRules.newCustomerProtectionDays);
+  form.elements.publicPoolClaimProtectionDays.value = Number(rules.publicPoolClaimProtectionDays ?? defaultBusinessRules.publicPoolClaimProtectionDays);
+  form.elements.inactivePublicPoolDays.value = Number(rules.inactivePublicPoolDays ?? defaultBusinessRules.inactivePublicPoolDays);
+  form.elements.publicPoolSortMode.value = rules.publicPoolSortMode || defaultBusinessRules.publicPoolSortMode;
+  form.elements.dealCustomersEnterPublicPool.checked = Boolean(rules.dealCustomersEnterPublicPool);
+  form.elements.purchasedCustomersEnterPublicPool.checked = Boolean(rules.purchasedCustomersEnterPublicPool);
+  form.elements.systemFollowCounts.checked = Boolean(rules.systemFollowCounts);
+  form.elements.importFollowCounts.checked = rules.importFollowCounts !== false;
+  form.elements.selfImportCountsAssignedUnfollowed.checked = Boolean(rules.selfImportCountsAssignedUnfollowed);
+}
+
+async function saveBusinessRules(event) {
+  event.preventDefault();
+  const formNode = event.currentTarget;
+  const form = new FormData(formNode);
+  const body = {
+    newCustomerProtectionDays: Number(form.get("newCustomerProtectionDays") || 0),
+    publicPoolClaimProtectionDays: Number(form.get("publicPoolClaimProtectionDays") || 0),
+    inactivePublicPoolDays: Number(form.get("inactivePublicPoolDays") || 0),
+    publicPoolSortMode: form.get("publicPoolSortMode"),
+    dealCustomersEnterPublicPool: form.get("dealCustomersEnterPublicPool") === "on",
+    purchasedCustomersEnterPublicPool: form.get("purchasedCustomersEnterPublicPool") === "on",
+    systemFollowCounts: form.get("systemFollowCounts") === "on",
+    importFollowCounts: form.get("importFollowCounts") === "on",
+    selfImportCountsAssignedUnfollowed: form.get("selfImportCountsAssignedUnfollowed") === "on"
+  };
+  setFormSubmitting(formNode, true, "保存中...");
+  try {
+    state.businessRules = await api("/business-rules", { method: "PUT", body });
+    renderBusinessRulesForm();
+    showSuccessFeedback("业务规则已保存", "新导入、认领、公海轮转和有效跟进判断会按新规则执行。");
+  } catch (error) {
+    toast(error.message || "业务规则保存失败");
+  } finally {
+    setFormSubmitting(formNode, false, "保存中...");
+  }
 }
 window.addEventListener("focus", () => {
   if (session() && currentView === "customers") loadCustomerBoardPage({ renderLoading: false }).catch(() => {});

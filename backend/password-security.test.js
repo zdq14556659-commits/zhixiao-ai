@@ -143,7 +143,7 @@ async function run() {
   assert.equal(duplicateImport.status, 201);
   assert.equal(duplicateImport.data.imported, 0);
   assert.equal(duplicateImport.data.duplicates, 1);
-  assert.equal(duplicateImport.data.skipped[0].reason, "系统已有该客户；如需创建增购机会，请填写意向产品");
+  assert.equal(duplicateImport.data.skipped[0].reason, "该客户已存在");
   assert.ok(duplicateImport.data.reportUrl);
 
   const unitAdminLogin = await login("unitadmin", "123456", "10.0.0.12");

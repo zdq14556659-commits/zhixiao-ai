@@ -58,6 +58,19 @@ const OWNERSHIP_CLAIMABLE = "claimable";
 const OWNERSHIP_PUBLIC = "public_pool";
 const PUBLIC_POOL_DAYS = 30;
 const UNKNOWN_SOFTWARE = "未知";
+const PUBLIC_POOL_SORT_DAILY_SPREAD = "daily_spread";
+const PUBLIC_POOL_SORT_CREATED_AT = "created_at";
+const DEFAULT_BUSINESS_RULES = {
+  newCustomerProtectionDays: SELF_DEVELOPED_CLAIM_DAYS,
+  publicPoolClaimProtectionDays: CUSTOMER_CLAIM_DAYS,
+  inactivePublicPoolDays: PUBLIC_POOL_DAYS,
+  dealCustomersEnterPublicPool: false,
+  purchasedCustomersEnterPublicPool: false,
+  systemFollowCounts: false,
+  importFollowCounts: true,
+  selfImportCountsAssignedUnfollowed: false,
+  publicPoolSortMode: PUBLIC_POOL_SORT_DAILY_SPREAD
+};
 const LIFECYCLE_ACTIVE = "active";
 const LIFECYCLE_ARCHIVED = "archived";
 const OUTCOME_ACTIVE = "active";
@@ -438,6 +451,20 @@ async function routeApi(req, res, url) {
     return sendJson(res, 200, { ok: true });
   }
 
+  if (req.method === "GET" && url.pathname === "/api/business-rules") {
+    return sendJson(res, 200, businessRules(authState));
+  }
+
+  if ((req.method === "PUT" || req.method === "PATCH") && url.pathname === "/api/business-rules") {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无业务规则设置权限" });
+    state.businessRules = normalizeBusinessRules(body);
+    writeState(state);
+    return sendJson(res, 200, state.businessRules);
+  }
+
   if (req.method === "GET" && url.pathname === "/api/loss-reasons") {
     return sendJson(res, 200, authState.lossReasons || normalizeLossReasons());
   }
@@ -504,7 +531,7 @@ async function routeApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/public-pool") {
     const items = visiblePublicPoolOpportunities(authState, authUser).map((opportunity) => {
       const customer = findCustomer(authState.customers, opportunity.customerId);
-      return sanitizePublicPoolOpportunity(customer, opportunity);
+      return sanitizePublicPoolOpportunity(customer, opportunity, authState, authUser);
     });
     const query = Object.fromEntries(url.searchParams.entries());
     if (isPaginatedQuery(query)) return sendJson(res, 200, paginatePublicPoolItems(items, query));
@@ -548,7 +575,7 @@ async function routeApi(req, res, url) {
       createdBy: viewer.name,
       createdAt: today(),
       ownershipStatus: OWNERSHIP_PENDING,
-      claimUntil: addDaysToIso(new Date().toISOString(), CUSTOMER_CLAIM_DAYS),
+      claimUntil: addDaysToIso(new Date().toISOString(), claimProtectionDays(state, viewer, owner.user, body.stage || STAGES[1])),
       nextFollow: String(body.nextFollow || ""),
       followUps: [normalizeFollowUp({ date: today(), author: viewer.name, note, nextFollow: body.nextFollow, isSystem: false }, customer)],
       effectiveFollowUpAt: new Date().toISOString()
@@ -569,7 +596,7 @@ async function routeApi(req, res, url) {
     const index = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunityUpdate[1]));
     if (index < 0) return sendJson(res, 404, { error: "销售机会不存在" });
     const previous = state.opportunities[index];
-    if (isOpportunityPublicPool(previous)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
+    if (isOpportunityPublicPool(previous, Date.now(), state)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
     if (!canViewOpportunity(state, viewer, previous)) return sendJson(res, 403, { error: "无权修改该销售机会" });
     if (body.productId !== undefined || body.productName !== undefined) {
       const product = resolveProduct(state, body.productId, body.productName);
@@ -597,7 +624,7 @@ async function routeApi(req, res, url) {
     const index = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunityAdvance[1]));
     if (index < 0) return sendJson(res, 404, { error: "销售机会不存在" });
     const previous = state.opportunities[index];
-    if (isOpportunityPublicPool(previous)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
+    if (isOpportunityPublicPool(previous, Date.now(), state)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
     if (!canViewOpportunity(state, viewer, previous)) return sendJson(res, 403, { error: "无权推进该销售机会" });
     const stageIndex = STAGES.indexOf(previous.stage);
     if (stageIndex < 0 || stageIndex >= STAGES.length - 1) return sendJson(res, 409, { error: "该销售机会已成交" });
@@ -630,7 +657,7 @@ async function routeApi(req, res, url) {
     const index = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunityFollow[1]));
     if (index < 0) return sendJson(res, 404, { error: "销售机会不存在" });
     const previous = state.opportunities[index];
-    if (isOpportunityPublicPool(previous)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
+    if (isOpportunityPublicPool(previous, Date.now(), state)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
     if (!canViewOpportunity(state, viewer, previous)) return sendJson(res, 403, { error: "无权跟进该销售机会" });
     const note = String(body.note || "").trim();
     if (!note) return sendJson(res, 400, { error: "请填写跟进内容" });
@@ -669,7 +696,7 @@ async function routeApi(req, res, url) {
     const index = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunityPurchased[1]));
     if (index < 0) return sendJson(res, 404, { error: "销售机会不存在" });
     const previous = state.opportunities[index];
-    if (isOpportunityPublicPool(previous)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
+    if (isOpportunityPublicPool(previous, Date.now(), state)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
     if (previous.stage === "成交") return sendJson(res, 409, { error: "已成交机会不能标记为已购" });
     if (!canViewOpportunity(state, viewer, previous)) return sendJson(res, 403, { error: "无权标记该销售机会" });
     const note = String(body.note || "").trim();
@@ -709,7 +736,7 @@ async function routeApi(req, res, url) {
     const index = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunityRollbackRequest[1]));
     if (index < 0) return sendJson(res, 404, { error: "销售机会不存在" });
     const opportunity = state.opportunities[index];
-    if (isOpportunityPublicPool(opportunity)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
+    if (isOpportunityPublicPool(opportunity, Date.now(), state)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
     if (isPurchasedOpportunity(opportunity)) return sendJson(res, 409, { error: "已购客户不需要阶段回撤" });
     if (opportunity.stage === "成交") return sendJson(res, 409, { error: "成交机会请联系管理员做成交纠错" });
     if (!canViewOpportunity(state, viewer, opportunity)) return sendJson(res, 403, { error: "无权申请该销售机会回撤" });
@@ -1053,7 +1080,7 @@ async function routeApi(req, res, url) {
     const index = state.customers.findIndex((item) => Number(item.id) === Number(customerContacts[1]));
     if (index < 0) return sendJson(res, 404, { error: "客户不存在" });
     const customer = state.customers[index];
-    if (isCustomerPublicPool(customer)) return sendJson(res, 409, { error: "公海客户需先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
+    if (isCustomerPublicPool(customer, Date.now(), state)) return sendJson(res, 409, { error: "公海客户需先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
     if (!canViewRecord(state, viewer, customer)) return sendJson(res, 403, { error: "无权维护该客户联系人" });
     const contacts = normalizeContacts(body.contacts || [], customer);
     const primary = contacts.find((item) => item.isPrimary);
@@ -1076,7 +1103,7 @@ async function routeApi(req, res, url) {
     const viewer = getAuthUser(req, state);
     const customer = state.customers.find((item) => Number(item.id) === Number(customerCompetitors[1]));
     if (!customer) return sendJson(res, 404, { error: "客户不存在" });
-    if (isCustomerPublicPool(customer)) return sendJson(res, 409, { error: "公海客户需先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
+    if (isCustomerPublicPool(customer, Date.now(), state)) return sendJson(res, 409, { error: "公海客户需先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
     if (!canViewRecord(state, viewer, customer)) return sendJson(res, 403, { error: "无权维护该客户竞品档案" });
     customer.competitorProfiles = normalizeCompetitorProfiles(body.competitorProfiles || body.profiles || [], state.competitors);
     customer.software = primaryCompetitorName(customer) || customer.software;
@@ -1166,7 +1193,7 @@ async function routeApi(req, res, url) {
     const viewer = getAuthUser(req, state);
     const opportunity = state.opportunities.find((item) => Number(item.id) === Number(body.opportunityId)) || primaryOpportunity(state, customer.id);
     if (!opportunity) return sendJson(res, 404, { error: "销售机会不存在" });
-    if (isOpportunityPublicPool(opportunity)) {
+    if (isOpportunityPublicPool(opportunity, Date.now(), state)) {
       return sendJson(res, 409, { error: "公海客户需先认领后跟进", code: "CUSTOMER_CLAIM_REQUIRED" });
     }
     if (!canViewOpportunity(state, viewer, opportunity)) return sendJson(res, 403, { error: "无权跟进该销售机会" });
@@ -1302,7 +1329,7 @@ async function routeApi(req, res, url) {
     if (index < 0) return sendJson(res, 404, { error: "customer not found" });
     const previous = state.customers[index];
     const viewer = getAuthUser(req, state);
-    if (isCustomerPublicPool(previous)) {
+    if (isCustomerPublicPool(previous, Date.now(), state)) {
       return sendJson(res, 409, { error: "公海客户需先认领后修改", code: "CUSTOMER_CLAIM_REQUIRED" });
     }
     if (!canViewRecord(state, viewer, previous)) return sendJson(res, 403, { error: "无权修改该客户" });
@@ -1396,7 +1423,7 @@ async function routeApi(req, res, url) {
     if (conflict) return sendJson(res, conflict.status, conflict.payload);
     const visitOpportunity = body.opportunityId
       ? state.opportunities.find((item) => Number(item.id) === Number(body.opportunityId))
-      : (state.opportunities || []).find((item) => Number(item.customerId) === Number(body.customerId) && !isOpportunityPublicPool(item) && canViewOpportunity(state, viewer, item));
+      : (state.opportunities || []).find((item) => Number(item.customerId) === Number(body.customerId) && !isOpportunityPublicPool(item, Date.now(), state) && canViewOpportunity(state, viewer, item));
     const visit = normalizeVisit({
       id: Date.now(),
       date: today(),
@@ -1831,7 +1858,7 @@ async function routeApi(req, res, url) {
     const customer = state.customers.find((item) => Number(item.id) === Number(customerId));
     if (!customer || !canViewRecord(state, viewer, customer)) return sendJson(res, 404, { error: "客户不存在" });
     const opportunity = selectedOpportunity || primaryOpportunity(state, customer.id);
-    if (opportunity && isOpportunityPublicPool(opportunity)) return sendJson(res, 409, { error: "请先认领公海销售机会", code: "CUSTOMER_CLAIM_REQUIRED" });
+    if (opportunity && isOpportunityPublicPool(opportunity, Date.now(), state)) return sendJson(res, 409, { error: "请先认领公海销售机会", code: "CUSTOMER_CLAIM_REQUIRED" });
     if (opportunity && !canViewOpportunity(state, viewer, opportunity)) return sendJson(res, 404, { error: "销售机会不存在" });
     const context = buildCustomerAiContext(state, customer, opportunity, viewer);
     const result = await generateStructuredXiaozhiAdvice(body.question || "", state.knowledge || [], context);
@@ -1868,6 +1895,7 @@ function normalizeIncomingState(input) {
     lossReasons: mergeById(current.lossReasons, input.lossReasons),
     routes: mergeById(current.routes, input.routes),
     geocodeJobs: mergeById(current.geocodeJobs, input.geocodeJobs),
+    businessRules: input.businessRules ? normalizeBusinessRules(input.businessRules) : current.businessRules,
     knowledge: input.knowledge || current.knowledge || [],
     resources: input.resources || current.resources || [],
     securityLogs: current.securityLogs || []
@@ -1915,6 +1943,33 @@ function mergeUsers(incomingUsers, existingUsers) {
   return merged;
 }
 
+function normalizeBusinessRules(input = {}) {
+  const source = input && typeof input === "object" ? input : {};
+  const positiveDays = (field, fallback) => {
+    const value = Number(source[field]);
+    if (!Number.isFinite(value)) return fallback;
+    return Math.max(0, Math.round(value));
+  };
+  const sortMode = String(source.publicPoolSortMode || DEFAULT_BUSINESS_RULES.publicPoolSortMode);
+  return {
+    newCustomerProtectionDays: positiveDays("newCustomerProtectionDays", DEFAULT_BUSINESS_RULES.newCustomerProtectionDays),
+    publicPoolClaimProtectionDays: positiveDays("publicPoolClaimProtectionDays", DEFAULT_BUSINESS_RULES.publicPoolClaimProtectionDays),
+    inactivePublicPoolDays: positiveDays("inactivePublicPoolDays", DEFAULT_BUSINESS_RULES.inactivePublicPoolDays),
+    dealCustomersEnterPublicPool: Boolean(source.dealCustomersEnterPublicPool),
+    purchasedCustomersEnterPublicPool: Boolean(source.purchasedCustomersEnterPublicPool),
+    systemFollowCounts: Boolean(source.systemFollowCounts),
+    importFollowCounts: source.importFollowCounts !== false,
+    selfImportCountsAssignedUnfollowed: Boolean(source.selfImportCountsAssignedUnfollowed),
+    publicPoolSortMode: [PUBLIC_POOL_SORT_DAILY_SPREAD, PUBLIC_POOL_SORT_CREATED_AT].includes(sortMode)
+      ? sortMode
+      : DEFAULT_BUSINESS_RULES.publicPoolSortMode
+  };
+}
+
+function businessRules(state = {}) {
+  return normalizeBusinessRules(state.businessRules || {});
+}
+
 function migrateState(state) {
   const source = migrateMoneyToYuan(state);
   const legacyOwnership = !["backend-v4", "backend-v5", "backend-v6", "backend-v7", "backend-v8", "backend-v9"].includes(source.version);
@@ -1958,6 +2013,7 @@ function migrateState(state) {
     products,
     channelSources,
     lossReasons,
+    businessRules: normalizeBusinessRules(source.businessRules || {}),
     users,
     customers,
     opportunities,
@@ -2755,7 +2811,7 @@ function normalizePurchasedInfo(value = {}) {
 
 function primaryOpportunity(state, customerId) {
   const items = (state.opportunities || []).filter((item) => Number(item.customerId) === Number(customerId));
-  return items.find((item) => item.stage !== "成交" && !isOpportunityPublicPool(item) && !isPurchasedOpportunity(item))
+  return items.find((item) => item.stage !== "成交" && !isOpportunityPublicPool(item, Date.now(), state) && !isPurchasedOpportunity(item))
     || items.find((item) => item.stage !== "成交" && !isPurchasedOpportunity(item))
     || items.find((item) => isPurchasedOpportunity(item))
     || items.slice().sort((a, b) => String(b.dealAt || b.createdAt).localeCompare(String(a.dealAt || a.createdAt)))[0]
@@ -2775,7 +2831,7 @@ function syncCustomerCompatibility(state, customerId) {
 function opportunityView(state, opportunity) {
   const customer = findCustomer(state.customers || [], opportunity.customerId) || {};
   const latest = (opportunity.followUps || [])[opportunity.followUps.length - 1] || {};
-  const publicPool = opportunityPublicPoolInfo(opportunity);
+  const publicPool = opportunityPublicPoolInfo(opportunity, Date.now(), state);
   return {
     ...customer,
     ...opportunity,
@@ -2885,9 +2941,10 @@ function lockOpportunityOwnership(opportunity, actor, reason) {
   opportunity.ownershipHistory = [...(opportunity.ownershipHistory || []), ownershipEvent("locked", opportunity, actor, actor, reason)];
 }
 
-function opportunityPublicPoolInfo(opportunity = {}, at = Date.now()) {
-  if (isPurchasedOpportunity(opportunity)) return { isPublic: false, at: "", reason: "" };
-  if (opportunity.stage === "成交") return { isPublic: false, at: "", reason: "" };
+function opportunityPublicPoolInfo(opportunity = {}, at = Date.now(), state = {}) {
+  const rules = businessRules(state);
+  if (isPurchasedOpportunity(opportunity) && !rules.purchasedCustomersEnterPublicPool) return { isPublic: false, at: "", reason: "" };
+  if (opportunity.stage === STAGES[3] && !rules.dealCustomersEnterPublicPool) return { isPublic: false, at: "", reason: "" };
   if ([OWNERSHIP_PUBLIC, OWNERSHIP_CLAIMABLE].includes(opportunity.ownershipStatus)) {
     return { isPublic: true, at: opportunity.publicPoolAt || opportunity.claimUntil || new Date(at).toISOString(), reason: opportunity.publicPoolReason || "inactive_30_days" };
   }
@@ -2896,16 +2953,17 @@ function opportunityPublicPoolInfo(opportunity = {}, at = Date.now()) {
     if (Number.isFinite(deadline) && deadline <= at) return { isPublic: true, at: new Date(deadline).toISOString(), reason: "initial_followup_expired" };
     return { isPublic: false, at: "", reason: "" };
   }
-  const manual = (opportunity.followUps || []).filter((item) => !item.isSystem && String(item.note || "").trim()).slice(-1)[0];
+  const manual = (opportunity.followUps || []).filter((item) => isEffectiveFollowForRules(item, rules)).slice(-1)[0];
   const activityAt = Date.parse(manual?.createdAt || manual?.date || opportunity.effectiveFollowUpAt || opportunity.createdAt || "");
-  if (Number.isFinite(activityAt) && activityAt + PUBLIC_POOL_DAYS * 86400000 <= at) {
-    return { isPublic: true, at: new Date(activityAt + PUBLIC_POOL_DAYS * 86400000).toISOString(), reason: "inactive_30_days" };
+  const inactiveMs = rules.inactivePublicPoolDays * 86400000;
+  if (Number.isFinite(activityAt) && inactiveMs > 0 && activityAt + inactiveMs <= at) {
+    return { isPublic: true, at: new Date(activityAt + inactiveMs).toISOString(), reason: "inactive_30_days" };
   }
   return { isPublic: false, at: "", reason: "" };
 }
 
-function isOpportunityPublicPool(opportunity = {}, at = Date.now()) {
-  return opportunityPublicPoolInfo(opportunity, at).isPublic;
+function isOpportunityPublicPool(opportunity = {}, at = Date.now(), state = {}) {
+  return opportunityPublicPoolInfo(opportunity, at, state).isPublic;
 }
 
 function isPurchasedOpportunity(opportunity = {}) {
@@ -2958,7 +3016,7 @@ function canViewOpportunity(state, viewer, opportunity) {
 }
 
 function canManageOpportunityAssignment(state, viewer, opportunity) {
-  if (!isOpportunityPublicPool(opportunity)) return canViewOpportunity(state, viewer, opportunity);
+  if (!isOpportunityPublicPool(opportunity, Date.now(), state)) return canViewOpportunity(state, viewer, opportunity);
   const role = findRole(state.roles, viewer.roleId, viewer.role);
   if (role.customerScope === "all") return true;
   if (role.customerScope === "self") return false;
@@ -2966,7 +3024,11 @@ function canManageOpportunityAssignment(state, viewer, opportunity) {
 }
 
 function visiblePublicPoolOpportunities(state, viewer) {
-  return (state.opportunities || []).filter((item) => isOpportunityPublicPool(item) && (findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED));
+  return sortPublicPoolOpportunitiesForViewer(
+    (state.opportunities || []).filter((item) => isOpportunityPublicPool(item, Date.now(), state) && (findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED)),
+    state,
+    viewer
+  );
 }
 
 function isArchivedOpportunity(state, opportunity = {}) {
@@ -2979,8 +3041,30 @@ function visibleArchivedOpportunities(state, viewer) {
   return (state.opportunities || []).filter((item) => isArchivedOpportunity(state, item));
 }
 
-function sanitizePublicPoolOpportunity(customer = {}, opportunity = {}) {
-  const pool = opportunityPublicPoolInfo(opportunity);
+function canViewFullPublicPoolInfo(state, viewer) {
+  if (!viewer) return false;
+  const role = findRole(state.roles, viewer.roleId, viewer.role);
+  return role.customerScope === "all" || canUseAdmin(state, viewer) || canImportPublicPool(state, viewer);
+}
+
+function stablePublicPoolScore(viewer = {}, opportunity = {}, date = today()) {
+  const seed = `${viewer.id || viewer.account || viewer.name || "viewer"}|${opportunity.id || opportunity.customerId}|${date}`;
+  return crypto.createHash("sha1").update(seed).digest("hex");
+}
+
+function sortPublicPoolOpportunitiesForViewer(items = [], state = {}, viewer = {}) {
+  const rules = businessRules(state);
+  const managementView = canViewFullPublicPoolInfo(state, viewer);
+  const list = [...items];
+  if (managementView || rules.publicPoolSortMode === PUBLIC_POOL_SORT_CREATED_AT) {
+    return list.sort((a, b) => String(a.publicPoolAt || a.createdAt || "").localeCompare(String(b.publicPoolAt || b.createdAt || "")) || Number(a.id || 0) - Number(b.id || 0));
+  }
+  return list.sort((a, b) => stablePublicPoolScore(viewer, a).localeCompare(stablePublicPoolScore(viewer, b)));
+}
+
+function sanitizePublicPoolOpportunity(customer = {}, opportunity = {}, state = {}, viewer = null) {
+  if (canViewFullPublicPoolInfo(state, viewer)) return opportunityView(state, opportunity);
+  const pool = opportunityPublicPoolInfo(opportunity, Date.now(), state);
   return {
     id: opportunity.id,
     opportunityId: opportunity.id,
@@ -3004,6 +3088,7 @@ function sanitizePublicPoolOpportunity(customer = {}, opportunity = {}) {
 
 function sanitizeArchivedOpportunity(customer = {}, opportunity = {}) {
   const latest = (opportunity.followUps || [])[opportunity.followUps.length - 1] || {};
+  const primaryContact = primaryContactForCustomer(customer);
   return {
     id: opportunity.id,
     opportunityId: opportunity.id,
@@ -3020,8 +3105,8 @@ function sanitizeArchivedOpportunity(customer = {}, opportunity = {}) {
     archivedAt: customer.archivedAt || "",
     archivedBy: customer.archivedBy || "",
     ownershipStatus: "archived",
-    phone: "已归档",
-    contacts: [],
+    phone: customer.phone || primaryContact.phone || "",
+    contacts: customer.contacts || [],
     followUps: (opportunity.followUps || []).map((item) => normalizeFollowUp(item, opportunity)),
     lastFollow: latest.date || "",
     nextFollow: latest.nextFollow || opportunity.nextFollow || "",
@@ -3031,7 +3116,7 @@ function sanitizeArchivedOpportunity(customer = {}, opportunity = {}) {
 
 function claimOpportunityAtIndex(res, state, viewer, index, body = {}) {
   const previous = state.opportunities[index];
-  if (!isOpportunityPublicPool(previous)) return sendJson(res, 409, { error: "该机会已被认领或不在公海", code: "DUPLICATE_CUSTOMER" });
+  if (!isOpportunityPublicPool(previous, Date.now(), state)) return sendJson(res, 409, { error: "该客户已被其他人认领，请刷新公海", code: "PUBLIC_POOL_ALREADY_CLAIMED" });
   if (!canOwnCustomerUser(state, viewer)) {
     return sendJson(res, 403, { error: "仅销售、主管和区域经理可以认领公海机会" });
   }
@@ -3060,7 +3145,7 @@ function claimOpportunityAtIndex(res, state, viewer, index, body = {}) {
     unit: viewer.unit || "",
     zone: viewer.zone || "",
     ownershipStatus: OWNERSHIP_PENDING,
-    claimUntil: addDaysToIso(now, CUSTOMER_CLAIM_DAYS),
+    claimUntil: addDaysToIso(now, businessRules(state).publicPoolClaimProtectionDays),
     effectiveFollowUpAt: "",
     publicPoolAt: "",
     publicPoolReason: "",
@@ -3076,7 +3161,7 @@ function claimOpportunityAtIndex(res, state, viewer, index, body = {}) {
 
 function assignOpportunity(state, previous, target, viewer) {
   const now = new Date().toISOString();
-  const wasPublic = isOpportunityPublicPool(previous);
+  const wasPublic = isOpportunityPublicPool(previous, Date.now(), state);
   return normalizeOpportunity({
     ...previous,
     owner: target.name,
@@ -3086,7 +3171,7 @@ function assignOpportunity(state, previous, target, viewer) {
     unit: target.unit || "",
     zone: target.zone || "",
     ownershipStatus: wasPublic ? OWNERSHIP_PENDING : OWNERSHIP_LOCKED,
-    claimUntil: wasPublic ? addDaysToIso(now, CUSTOMER_CLAIM_DAYS) : "",
+    claimUntil: wasPublic ? addDaysToIso(now, businessRules(state).publicPoolClaimProtectionDays) : "",
     effectiveFollowUpAt: wasPublic ? "" : previous.effectiveFollowUpAt,
     publicPoolAt: "",
     publicPoolReason: "",
@@ -3117,6 +3202,11 @@ function normalizeContacts(contacts = [], customer = {}) {
     primarySeen = true;
   });
   return normalized;
+}
+
+function primaryContactForCustomer(customer = {}) {
+  const contacts = Array.isArray(customer.contacts) ? customer.contacts : [];
+  return contacts.find((item) => item.isPrimary) || contacts[0] || {};
 }
 
 function normalizeCompetitorProfiles(profiles = [], competitors = DEFAULT_COMPETITORS, legacySoftware = "") {
@@ -3197,6 +3287,7 @@ function normalizeFollowUp(item = {}, customer = {}) {
     author: item.author || item.owner || customer.followPerson || customer.owner || "历史数据",
     note: item.note || item.lastNote || "更新了客户信息。",
     nextFollow: item.nextFollow || "",
+    source: item.source || "",
     isSystem: Boolean(item.isSystem)
   };
 }
@@ -3511,19 +3602,20 @@ function effectiveOwnershipStatus(customer = {}, at = Date.now()) {
     : (customer.ownershipStatus || OWNERSHIP_LOCKED);
 }
 
-function isCustomerClaimable(customer = {}) {
-  return customerPublicPoolInfo(customer).isPublic;
+function isCustomerClaimable(customer = {}, state = {}) {
+  return customerPublicPoolInfo(customer, Date.now(), state).isPublic;
 }
 
-function isCustomerPublicPool(customer = {}, at = Date.now()) {
-  return customerPublicPoolInfo(customer, at).isPublic;
+function isCustomerPublicPool(customer = {}, at = Date.now(), state = {}) {
+  return customerPublicPoolInfo(customer, at, state).isPublic;
 }
 
-function customerPublicPoolInfo(customer = {}, at = Date.now()) {
-  if (customer.outcomeStatus === OUTCOME_PURCHASED) return { isPublic: false, at: "", reason: "" };
+function customerPublicPoolInfo(customer = {}, at = Date.now(), state = {}) {
+  const rules = businessRules(state);
+  if (customer.outcomeStatus === OUTCOME_PURCHASED && !rules.purchasedCustomersEnterPublicPool) return { isPublic: false, at: "", reason: "" };
   if (customer.lifecycleStatus === LIFECYCLE_ARCHIVED) return { isPublic: false, at: "", reason: "" };
-  if (customer.stage === "成交") return { isPublic: false, at: "", reason: "" };
-  if (!["名单", "线索", "商机"].includes(customer.stage || "名单")) return { isPublic: false, at: "", reason: "" };
+  if (customer.stage === STAGES[3] && !rules.dealCustomersEnterPublicPool) return { isPublic: false, at: "", reason: "" };
+  if (![STAGES[0], STAGES[1], STAGES[2]].includes(customer.stage || STAGES[0])) return { isPublic: false, at: "", reason: "" };
 
   if ([OWNERSHIP_PUBLIC, OWNERSHIP_CLAIMABLE].includes(customer.ownershipStatus)) {
     return {
@@ -3541,21 +3633,21 @@ function customerPublicPoolInfo(customer = {}, at = Date.now()) {
     return { isPublic: false, at: "", reason: "" };
   }
 
-  const lastManualAt = latestEffectiveManualFollowAt(customer);
+  const lastManualAt = latestEffectiveManualFollowAt(customer, rules);
   const fallbackAt = customer.effectiveFollowUpAt || customer.createdAt || "";
   const activityAt = Date.parse(lastManualAt || fallbackAt);
   if (!Number.isFinite(activityAt)) return { isPublic: false, at: "", reason: "" };
-  const publicAt = activityAt + PUBLIC_POOL_DAYS * 24 * 60 * 60 * 1000;
+  const publicAt = activityAt + rules.inactivePublicPoolDays * 24 * 60 * 60 * 1000;
   if (publicAt <= at) {
     return { isPublic: true, at: new Date(publicAt).toISOString(), reason: "inactive_30_days" };
   }
   return { isPublic: false, at: "", reason: "" };
 }
 
-function latestEffectiveManualFollowAt(customer = {}) {
+function latestEffectiveManualFollowAt(customer = {}, rules = DEFAULT_BUSINESS_RULES) {
   const followUps = Array.isArray(customer.followUps) ? customer.followUps : [];
   return followUps
-    .filter(isManualEffectiveFollow)
+    .filter((item) => isEffectiveFollowForRules(item, rules))
     .map((item) => item.createdAt || item.date || "")
     .filter((value) => Number.isFinite(Date.parse(value)))
     .sort((left, right) => Date.parse(right) - Date.parse(left))[0] || "";
@@ -3565,6 +3657,14 @@ function isManualEffectiveFollow(item = {}) {
   const note = String(item.note || "").trim();
   const syntheticNotes = new Set(["新增客户。", "名单文件导入。", "更新了客户信息。"]);
   return !item.isSystem && Boolean(note) && !syntheticNotes.has(note);
+}
+
+function isEffectiveFollowForRules(item = {}, rules = DEFAULT_BUSINESS_RULES) {
+  const note = String(item.note || "").trim();
+  if (!note) return false;
+  if (item.source === "import") return rules.importFollowCounts !== false;
+  if (item.isSystem) return Boolean(rules.systemFollowCounts);
+  return isManualEffectiveFollow(item);
 }
 
 function claimDaysRemaining(claimUntil) {
@@ -3602,7 +3702,7 @@ function lockCustomerOwnership(customer, operator, reason) {
 
 function claimCustomerAtIndex(res, state, viewer, index) {
   const customerId = state.customers[index]?.id;
-  const opportunityIndex = state.opportunities.findIndex((item) => Number(item.customerId) === Number(customerId) && isOpportunityPublicPool(item));
+  const opportunityIndex = state.opportunities.findIndex((item) => Number(item.customerId) === Number(customerId) && isOpportunityPublicPool(item, Date.now(), state));
   if (opportunityIndex >= 0) return claimOpportunityAtIndex(res, state, viewer, opportunityIndex, { allowPlaceholderProduct: true });
   const role = findRole(state.roles, viewer.roleId, viewer.role);
   if (role.customerScope !== "self" && role.name !== "销售") {
@@ -3683,7 +3783,7 @@ function visitCustomerConflict(state, viewer, body = {}) {
     if (!opportunity || (referenced && Number(opportunity.customerId) !== Number(referenced.id))) {
       return { status: 400, payload: { error: "销售机会与所选工厂不一致", code: "OPPORTUNITY_CUSTOMER_MISMATCH" } };
     }
-    if (isOpportunityPublicPool(opportunity)) {
+    if (isOpportunityPublicPool(opportunity, Date.now(), state)) {
       return { status: 409, payload: { error: "公海销售机会需先认领", code: "CUSTOMER_CLAIM_REQUIRED" } };
     }
     if (!canViewOpportunity(state, viewer, opportunity)) {
@@ -3714,11 +3814,11 @@ function publicState(state, viewer = null, options = {}) {
   const includePublicPool = options.includePublicPool !== false;
   const scoped = scopeStateForUser(state, viewer);
   const { securityLogs, geocodeJobs, ...safeState } = scoped;
-  const privateOpportunities = (scoped.opportunities || []).filter((item) => !isOpportunityPublicPool(item) && !isArchivedOpportunity(state, item));
+  const privateOpportunities = (scoped.opportunities || []).filter((item) => !isOpportunityPublicPool(item, Date.now(), state) && !isArchivedOpportunity(state, item));
   const privateCustomerIds = new Set(privateOpportunities.map((item) => Number(item.customerId)));
   const publicOpportunities = viewer ? visiblePublicPoolOpportunities(state, viewer) : [];
   const sanitizedPublicOpportunities = includePublicPool
-    ? publicOpportunities.map((item) => sanitizePublicPoolOpportunity(findCustomer(state.customers, item.customerId), item))
+    ? publicOpportunities.map((item) => sanitizePublicPoolOpportunity(findCustomer(state.customers, item.customerId), item, state, viewer))
     : [];
   const sanitizedArchivedOpportunities = viewer
     ? visibleArchivedOpportunities(state, viewer).map((item) => sanitizeArchivedOpportunity(findCustomer(state.customers, item.customerId), item))
@@ -3759,14 +3859,14 @@ function publicMetaState(state, viewer = null) {
 
 function buildCustomerBoard(state, viewer, query = {}) {
   const scopedPrivateOpportunities = (state.opportunities || [])
-    .filter((item) => !isOpportunityPublicPool(item) && canViewOpportunity(state, viewer, item))
+    .filter((item) => !isOpportunityPublicPool(item, Date.now(), state) && canViewOpportunity(state, viewer, item))
     .filter((item) => findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED)
     .map((item) => opportunityView(state, item));
   const purchasedItems = scopedPrivateOpportunities.filter((item) => isPurchasedOpportunity(item));
   const privateOpportunities = scopedPrivateOpportunities.filter((item) => !isPurchasedOpportunity(item));
   const publicItems = visiblePublicPoolOpportunities(state, viewer).map((opportunity) => {
     const customer = findCustomer(state.customers || [], opportunity.customerId);
-    return sanitizePublicPoolOpportunity(customer, opportunity);
+    return sanitizePublicPoolOpportunity(customer, opportunity, state, viewer);
   });
   const invalidItems = visibleArchivedOpportunities(state, viewer).map((opportunity) => {
     const customer = findCustomer(state.customers || [], opportunity.customerId);
@@ -3931,7 +4031,7 @@ function publicUser(user = {}) {
 function toMiniState(state, viewer = null) {
   const next = publicState(state, viewer, { includePublicPool: false });
   const privateOpportunities = (state.opportunities || [])
-    .filter((item) => !isOpportunityPublicPool(item) && canViewOpportunity(state, viewer, item))
+    .filter((item) => !isOpportunityPublicPool(item, Date.now(), state) && canViewOpportunity(state, viewer, item))
     .filter((item) => findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED);
   const privateCustomerIds = new Set(privateOpportunities.map((item) => Number(item.customerId)));
   return {
@@ -3947,7 +4047,7 @@ function toMiniState(state, viewer = null) {
 function scopeStateForUser(state, viewer = null) {
   if (!viewer) return state;
   const user = state.users.find((item) => Number(item.id) === Number(viewer.id)) || viewer;
-  const opportunities = (state.opportunities || []).filter((item) => canViewOpportunity(state, user, item) || isOpportunityPublicPool(item) || isArchivedOpportunity(state, item));
+  const opportunities = (state.opportunities || []).filter((item) => canViewOpportunity(state, user, item) || isOpportunityPublicPool(item, Date.now(), state) || isArchivedOpportunity(state, item));
   const opportunityCustomerIds = new Set(opportunities.map((item) => Number(item.customerId)));
   return {
     ...state,
@@ -3960,7 +4060,7 @@ function scopeStateForUser(state, viewer = null) {
     activities: (state.activities || []).filter((activity) => {
       if (!activity.customerId) return true;
       const customer = (state.customers || []).find((item) => Number(item.id) === Number(activity.customerId));
-      return !customer || canViewRecord(state, user, customer) || isCustomerPublicPool(customer);
+      return !customer || canViewRecord(state, user, customer) || isCustomerPublicPool(customer, Date.now(), state);
     })
   };
 }
@@ -3987,10 +4087,11 @@ function canOwnCustomerUser(state, user = {}) {
 }
 
 function claimProtectionDays(state, viewer = {}, owner = {}, stage = "名单") {
-  if (stage === "成交") return CUSTOMER_CLAIM_DAYS;
-  if (!viewer?.id || !owner?.id) return CUSTOMER_CLAIM_DAYS;
-  if (Number(viewer.id) !== Number(owner.id)) return CUSTOMER_CLAIM_DAYS;
-  return canOwnCustomerUser(state, viewer) ? SELF_DEVELOPED_CLAIM_DAYS : CUSTOMER_CLAIM_DAYS;
+  const rules = businessRules(state);
+  if (stage === STAGES[3]) return rules.publicPoolClaimProtectionDays;
+  if (!viewer?.id || !owner?.id) return rules.publicPoolClaimProtectionDays;
+  if (Number(viewer.id) !== Number(owner.id)) return rules.publicPoolClaimProtectionDays;
+  return canOwnCustomerUser(state, viewer) ? rules.newCustomerProtectionDays : rules.publicPoolClaimProtectionDays;
 }
 
 function canViewRecord(state, viewer, record = {}) {
@@ -4500,7 +4601,7 @@ function hasManualFollowOnOrAfter(item = {}, actionAt = "") {
 }
 
 function isAssignedTodayUnfollowed(state, item = {}) {
-  if (item.stage === "成交" || isOpportunityPublicPool(item) || isPurchasedOpportunity(item)) return false;
+  if (item.stage === "成交" || isOpportunityPublicPool(item, Date.now(), state) || isPurchasedOpportunity(item)) return false;
   const assignment = latestAssignmentActionToday(state, item);
   if (!assignment?.createdAt) return false;
   return !hasManualFollowOnOrAfter(item, assignment.createdAt);
@@ -4629,7 +4730,7 @@ function buildDashboard(state, viewer, query = {}) {
   const activeCustomers = (state.customers || []).filter((item) => item.lifecycleStatus !== LIFECYCLE_ARCHIVED);
   const activeCustomerIds = new Set(activeCustomers.map((item) => Number(item.id)));
   const activeOpportunities = (state.opportunities || [])
-    .filter((item) => activeCustomerIds.has(Number(item.customerId)) && !isOpportunityPublicPool(item) && !isPurchasedOpportunity(item))
+    .filter((item) => activeCustomerIds.has(Number(item.customerId)) && !isOpportunityPublicPool(item, Date.now(), state) && !isPurchasedOpportunity(item))
     .map((item) => opportunityView(state, item));
   const dashboardState = { ...state, customers: activeOpportunities };
   const publicPoolCount = visiblePublicPoolOpportunities(state, viewer).filter((item) => recordMatchesScope(state, opportunityView(state, item), scope)).length;
@@ -4716,7 +4817,7 @@ function canAssignCustomers(state, user) {
 
 function buildAssignedCustomer(state, viewer, customer, target, body = {}) {
   const previousStage = customer.stage;
-  const wasPublicPool = isCustomerPublicPool(customer);
+  const wasPublicPool = isCustomerPublicPool(customer, Date.now(), state);
   const note = `${viewer.name || "管理员"}已将客户分配给${target.name}。`;
   const next = normalizeCustomer({
     ...customer,
@@ -4728,7 +4829,7 @@ function buildAssignedCustomer(state, viewer, customer, target, body = {}) {
     zone: target.zone || "",
     region: target.zone || customer.region,
     ownershipStatus: wasPublicPool ? OWNERSHIP_PENDING : OWNERSHIP_LOCKED,
-    claimUntil: wasPublicPool ? addDaysToIso(new Date().toISOString(), CUSTOMER_CLAIM_DAYS) : customer.claimUntil,
+    claimUntil: wasPublicPool ? addDaysToIso(new Date().toISOString(), businessRules(state).publicPoolClaimProtectionDays) : customer.claimUntil,
     effectiveFollowUpAt: wasPublicPool ? "" : customer.effectiveFollowUpAt,
     publicPoolAt: "",
     publicPoolReason: "",
@@ -4753,7 +4854,7 @@ function buildAssignedCustomer(state, viewer, customer, target, body = {}) {
 }
 
 function isCustomerAssignable(customer = {}) {
-  if (isCustomerPublicPool(customer)) return customer.stage !== "成交";
+  if (isCustomerPublicPool(customer, Date.now(), state)) return customer.stage !== "成交";
   if (customer.stage === "名单") return true;
   if (!["线索", "商机"].includes(customer.stage)) return false;
   const latest = latestCustomerFollow(customer);
@@ -5312,6 +5413,9 @@ async function importCustomers(req, viewer, target = "") {
       rowNumber: "",
       name: file?.filename || "导入数据",
       phone: "",
+      productName: "",
+      status: target === "public_pool" ? PUBLIC_POOL_STATUS : "",
+      code: "IMPORT_ROWS_EMPTY",
       reason: "未识别到客户数据，请检查表头是否包含客户名称、客户电话，或粘贴格式是否为：客户名称,手机号,渠道来源,客户地址"
     };
     const reportUrl = writeImportReport([failure]);
@@ -5338,7 +5442,10 @@ async function importCustomers(req, viewer, target = "") {
   const skipped = [];
   const failed = [];
   const warnings = [];
+  const duplicateCustomers = [];
+  const duplicateOpportunities = [];
   const fileOpportunityKeys = new Set();
+  const rules = businessRules(state);
   if (hasPrivateRows && !canOwnCustomerUser(state, ownerUser)) {
     throw new Error("请选择销售、主管或区域经理作为默认跟进人");
   }
@@ -5350,12 +5457,15 @@ async function importCustomers(req, viewer, target = "") {
         rowNumber,
         name: row.name || "",
         phone: row.phone || "",
+        productName: row.productName || "",
+        status: rowImportToPublicPool ? PUBLIC_POOL_STATUS : row.stage,
+        code: "CHANNEL_SOURCE_UNRECOGNIZED",
         reason: `渠道来源“${row.channelSourceRaw || ""}”未识别，已按其他处理`
       });
     }
     const phoneNormalized = normalizePhone(row.phone);
     if (!phoneNormalized) {
-      failed.push({ rowNumber, name: row.name || "", phone: row.phone || "", reason: "手机号无效" });
+      failed.push({ rowNumber, name: row.name || "", phone: row.phone || "", productName: row.productName || "", status: rowImportToPublicPool ? PUBLIC_POOL_STATUS : row.stage, reason: "手机号无效", code: "INVALID_CUSTOMER_PHONE" });
       return;
     }
     const existingCustomer = findCustomerByPhone(state, phoneNormalized);
@@ -5363,21 +5473,29 @@ async function importCustomers(req, viewer, target = "") {
     const product = resolveProduct(state, row.productId, explicitProductName) || normalizeProduct({ id: stableId("product", explicitProductName || "待确认产品"), name: explicitProductName || "待确认产品" });
     const fileKey = `${phoneNormalized}|${cleanText(product.name)}`;
     if (fileOpportunityKeys.has(fileKey)) {
-      skipped.push({ rowNumber, name: row.name || "", phone: row.phone || "", reason: "文件内手机号和意向产品重复，已按首次出现处理" });
+      skipped.push({ rowNumber, name: row.name || "", phone: row.phone || "", productName: product.name, status: rowImportToPublicPool ? PUBLIC_POOL_STATUS : row.stage, reason: "文件内手机号和意向产品重复，已按首次出现处理", code: "FILE_DUPLICATE_OPPORTUNITY" });
       return;
     }
     fileOpportunityKeys.add(fileKey);
     let customer = existingCustomer;
     if (customer && !explicitProductName) {
-      skipped.push({ rowNumber, name: row.name || "", phone: row.phone || "", reason: "系统已有该客户；如需创建增购机会，请填写意向产品" });
+      const item = { rowNumber, name: row.name || customer.name || "", phone: row.phone || customer.phone || "", productName: "", status: rowImportToPublicPool ? PUBLIC_POOL_STATUS : row.stage, reason: "该客户已存在", code: "DUPLICATE_CUSTOMER" };
+      skipped.push(item);
+      duplicateCustomers.push(item);
+      return;
+    }
+    if (explicitProductName && !resolveProduct(state, row.productId, explicitProductName)) {
+      failed.push({ rowNumber, name: row.name || "", phone: row.phone || "", productName: explicitProductName, status: rowImportToPublicPool ? PUBLIC_POOL_STATUS : row.stage, reason: "意向产品无效", code: "INVALID_PRODUCT" });
       return;
     }
     if (customer && hasActiveProductOpportunity(state, customer.id, product.id)) {
-      skipped.push({ rowNumber, name: row.name || "", phone: row.phone || "", reason: `该客户已有${product.name}进行中机会` });
+      const item = { rowNumber, name: row.name || customer.name || "", phone: row.phone || customer.phone || "", productName: product.name, status: rowImportToPublicPool ? PUBLIC_POOL_STATUS : row.stage, reason: "该销售机会已存在", code: "DUPLICATE_ACTIVE_OPPORTUNITY" };
+      skipped.push(item);
+      duplicateOpportunities.push(item);
       return;
     }
     if (!customer && findSimilarCustomer(state, row)) {
-      failed.push({ rowNumber, name: row.name || "", phone: row.phone || "", reason: "同城存在名称相似客户，请单个添加并确认" });
+      failed.push({ rowNumber, name: row.name || "", phone: row.phone || "", productName: product.name, status: rowImportToPublicPool ? PUBLIC_POOL_STATUS : row.stage, reason: "同城存在名称相似客户，请单个添加并确认", code: "SIMILAR_CUSTOMER_WARNING" });
       return;
     }
     const now = new Date().toISOString();
@@ -5407,6 +5525,17 @@ async function importCustomers(req, viewer, target = "") {
       createdCustomers.push(customer);
       if (row.address && (!customer.location?.city || rowImportToPublicPool)) state.geocodeJobs.push(normalizeGeocodeJob({ customerId: customer.id, address: customer.address, status: "pending" }));
     }
+    const importedFollowNote = String(row.lastNote || "").trim();
+    const importedFollow = importedFollowNote ? normalizeFollowUp({
+      date: row.lastFollow || today(),
+      createdAt: row.lastFollow || now,
+      author: row.followPerson || ownerUser.name || viewer.name,
+      note: importedFollowNote,
+      nextFollow: row.nextFollow || "",
+      isSystem: false,
+      source: "import"
+    }, customer) : null;
+    const importedFollowCounts = Boolean(importedFollow && rules.importFollowCounts !== false);
     const opportunity = normalizeOpportunity({
       id: Date.now() + index * 10 + 1,
       customerId: customer.id,
@@ -5423,13 +5552,14 @@ async function importCustomers(req, viewer, target = "") {
       createdBy: viewer.name,
       createdAt: today(),
       amount: row.amountProvided ? row.amount : normalizeMoney(product.price) || DEFAULT_EXPECTED_AMOUNT,
-      ownershipStatus: rowImportToPublicPool ? OWNERSHIP_PUBLIC : OWNERSHIP_PENDING,
-      claimUntil: rowImportToPublicPool ? "" : addDaysToIso(now, claimProtectionDays(state, viewer, ownerUser, row.stage || "名单")),
-      effectiveFollowUpAt: "",
+      ownershipStatus: rowImportToPublicPool ? OWNERSHIP_PUBLIC : importedFollowCounts ? OWNERSHIP_LOCKED : OWNERSHIP_PENDING,
+      claimUntil: rowImportToPublicPool || importedFollowCounts ? "" : addDaysToIso(now, claimProtectionDays(state, viewer, ownerUser, row.stage || "名单")),
+      effectiveFollowUpAt: importedFollowCounts ? (importedFollow.createdAt || now) : "",
       publicPoolAt: rowImportToPublicPool ? now : "",
       publicPoolReason: rowImportToPublicPool ? "operations_import" : "",
       ownershipHistory: [ownershipEvent("created", null, rowImportToPublicPool ? { id: "", name: "公海" } : ownerUser, viewer, rowImportToPublicPool ? "运营导入公海机会" : "批量导入机会")],
-      followUps: []
+      nextFollow: importedFollow?.nextFollow || row.nextFollow || "",
+      followUps: importedFollow ? [importedFollow] : []
     }, state);
     state.opportunities.unshift(opportunity);
     state.activities.push({ date: today(), owner: opportunity.owner, type: opportunity.stage, customerId: customer.id, opportunityId: opportunity.id });
@@ -5446,12 +5576,16 @@ async function importCustomers(req, viewer, target = "") {
     total: rows.length,
     imported: importedOpportunities.length,
     duplicates: skipped.length,
+    duplicateCustomers: duplicateCustomers.length,
+    duplicateOpportunities: duplicateOpportunities.length,
     failed: failed.length,
     channelUnrecognized: warnings.length,
     pendingLocation,
     pendingGeocode,
     reportUrl,
     skipped,
+    duplicateCustomerRows: duplicateCustomers,
+    duplicateOpportunityRows: duplicateOpportunities,
     warnings,
     failures: failed,
     message: skipped.length
@@ -5466,8 +5600,8 @@ function writeImportReport(rows) {
   if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
   const fileName = `customer-import-report-${Date.now()}-${crypto.randomBytes(3).toString("hex")}.csv`;
   const csv = [
-    ["原始行号", "客户名称", "手机号", "跳过原因"],
-    ...rows.map((item) => [item.rowNumber, item.name, item.phone, item.reason])
+    ["原始行号", "客户名称", "手机号", "意向产品", "状态", "原因", "业务码"],
+    ...rows.map((item) => [item.rowNumber, item.name, item.phone, item.productName, item.status, item.reason, item.code])
   ].map((row) => row.map(csvCell).join(",")).join("\r\n");
   fs.writeFileSync(path.join(UPLOAD_DIR, fileName), `\ufeff${csv}`, "utf8");
   return `/uploads/${fileName}`;
@@ -5541,7 +5675,7 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
           amountProvided: String(amountValue || "").trim() !== "",
           software: looksLikeTemplateOrder ? row[13] || "待补充" : thirdLooksLikeChannel ? row[4] || "待补充" : row[4] || "待补充",
           productName: looksLikeTemplateOrder ? row[6] || "" : row[6] || "",
-          lastNote: looksLikeTemplateOrder ? row[10] || "名单文件导入。" : "名单文件导入。",
+          lastNote: looksLikeTemplateOrder ? row[10] || "" : "",
           lastFollow: looksLikeTemplateOrder ? normalizeDateText(row[11] || "") : "",
           nextFollow: looksLikeTemplateOrder ? normalizeDateText(row[12] || "") : "",
           rowNumber
@@ -5580,7 +5714,7 @@ function parseCustomerRowsFromMatrix(matrix, defaults = {}) {
         amountProvided,
         software: record.software || "待补充",
         productName: record.productName || "",
-        lastNote: record.lastNote || record.followRecord || "名单文件导入。",
+        lastNote: record.lastNote || record.followRecord || "",
         lastFollow: normalizeDateText(record.lastFollow || ""),
         nextFollow: normalizeDateText(record.nextFollow || ""),
         rowNumber
@@ -5928,7 +6062,7 @@ function canViewMapCustomer(state, viewer, customer) {
 function customerMapAccess(state, viewer, customer = {}) {
   if (!viewer || !customer?.id) return { mode: "none", opportunities: [] };
   const opportunities = (state.opportunities || []).filter((item) => Number(item.customerId) === Number(customer.id));
-  const privateOpportunities = opportunities.filter((item) => !isOpportunityPublicPool(item) && canViewOpportunity(state, viewer, item));
+  const privateOpportunities = opportunities.filter((item) => !isOpportunityPublicPool(item, Date.now(), state) && canViewOpportunity(state, viewer, item));
   if (privateOpportunities.length || (!opportunities.length && canViewRecord(state, viewer, customer))) {
     return { mode: "private", opportunities: privateOpportunities };
   }

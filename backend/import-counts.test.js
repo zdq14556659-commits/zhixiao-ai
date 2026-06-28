@@ -162,7 +162,7 @@ async function run() {
     JSON.stringify(imported.data)
   );
   assert.ok(imported.data.skipped.some((item) => String(item.reason || "").includes("\u6587\u4ef6\u5185\u624b\u673a\u53f7")));
-  assert.ok(imported.data.skipped.some((item) => String(item.reason || "").includes("\u5df2\u6709")));
+  assert.ok(imported.data.skipped.some((item) => item.code === "DUPLICATE_ACTIVE_OPPORTUNITY" || String(item.reason || "").includes("\u8be5\u9500\u552e\u673a\u4f1a\u5df2\u5b58\u5728")));
   assert.ok(imported.data.failures.some((item) => String(item.reason || "").includes("\u624b\u673a\u53f7")));
   assert.ok(imported.data.warnings.some((item) => String(item.reason || "").includes("\u6e20\u9053\u6765\u6e90")));
 

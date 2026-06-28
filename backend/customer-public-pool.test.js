@@ -221,7 +221,7 @@ async function run() {
   assert.equal(importResult.data.failed, 1);
   assert.equal(importResult.data.customers[0].followUps.length, 0);
   assert.ok(importResult.data.customers[0].claimDaysRemaining >= 29);
-  assert.ok(importResult.data.skipped.some((item) => item.reason.includes("系统已有该客户")));
+  assert.ok(importResult.data.skipped.some((item) => item.reason === "该客户已存在"));
   assert.ok(importResult.data.skipped.some((item) => item.reason.includes("文件内手机号")));
   assert.ok(importResult.data.failures.some((item) => item.reason === "手机号无效"));
   assert.ok(importResult.data.reportUrl);
