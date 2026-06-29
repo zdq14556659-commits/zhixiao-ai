@@ -4,9 +4,14 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: zhixiao-ai-production
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -64,3 +69,32 @@ jobs:
         run: |
           ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
             "/usr/local/sbin/zhixiao-release /tmp/zhixiao-ai.tar.gz"
+
+      - name: Health check
+        run: |
+          for i in {1..30}; do
+            if curl -fsS --max-time 5 https://isales.santi.ren/crm/api/health; then
+              echo ""
+              echo "Health check passed"
+              exit 0
+            fi
+            echo "Waiting for backend health... ($i/30)"
+            sleep 2
+          done
+          echo "Health check failed: https://isales.santi.ren/crm/api/health"
+          exit 1
+
+      - name: Collect server diagnostics on failure
+        if: failure()
+        run: |
+          ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "bash -s" <<'EOF' || true
+          set +e
+          echo "===== process ====="
+          pgrep -af "node|zhixiao|server.js" || true
+          echo "===== service status ====="
+          systemctl status zhixiao-ai --no-pager || true
+          echo "===== service journal ====="
+          journalctl -u zhixiao-ai -n 200 --no-pager || true
+          echo "===== nginx error log ====="
+          tail -n 200 /var/log/nginx/error.log || true
+          EOF

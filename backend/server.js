@@ -44,6 +44,7 @@ let stateIndexes = emptyStateIndexes();
 let stateWriteTimer = null;
 let stateDirty = false;
 let stateDiskSignature = "";
+let stateWriteFailureCount = 0;
 const ADMIN_ROLES = ["总负责人", "运营", "管理员"];
 const DEFAULT_PERMISSIONS = ["dashboard", "customers", "field", "assistant"];
 const PUBLIC_POOL_IMPORT_PERMISSION = "publicPoolImport";
@@ -162,6 +163,7 @@ try {
 
 const server = http.createServer(async (req, res) => {
   try {
+    res.isHeadRequest = req.method === "HEAD";
     res.shouldGzipJson = /\bgzip\b/i.test(String(req.headers["accept-encoding"] || ""));
     const url = new URL(req.url, `http://${req.headers.host}`);
     if (url.pathname === "/crm") url.pathname = "/crm/";
@@ -243,7 +245,7 @@ process.once("beforeExit", () => {
 async function routeApi(req, res, url) {
   if (req.method === "OPTIONS") return sendNoContent(res);
 
-  if (req.method === "GET" && url.pathname === "/api/health") {
+  if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/api/health") {
     return sendJson(res, 200, { ok: true, service: "zhixiao-ai-backend", backendVersion: BACKEND_VERSION, moneyUnit: MONEY_UNIT });
   }
 
@@ -5384,9 +5386,31 @@ function scheduleStateWrite(reason = "queued-write") {
   if (stateWriteTimer) clearTimeout(stateWriteTimer);
   stateWriteTimer = setTimeout(() => {
     stateWriteTimer = null;
-    persistStateNow(reason);
+    persistStateSafely(reason, { retryOnFailure: true });
   }, STATE_WRITE_DELAY_MS);
   if (typeof stateWriteTimer.unref === "function") stateWriteTimer.unref();
+}
+
+function persistStateSafely(reason = "safe-flush", options = {}) {
+  try {
+    const filePath = persistStateNow(reason, options);
+    stateWriteFailureCount = 0;
+    return filePath;
+  } catch (error) {
+    stateWriteFailureCount += 1;
+    console.error(`[db] persist failed (${reason}, attempt ${stateWriteFailureCount})`, error);
+    stateDirty = true;
+    if (options.retryOnFailure !== false) {
+      const retryDelay = Math.min(30000, Math.max(STATE_WRITE_DELAY_MS, 1000) * Math.min(stateWriteFailureCount + 1, 10));
+      if (stateWriteTimer) clearTimeout(stateWriteTimer);
+      stateWriteTimer = setTimeout(() => {
+        stateWriteTimer = null;
+        persistStateSafely(`${reason}-retry`, { retryOnFailure: true });
+      }, retryDelay);
+      if (typeof stateWriteTimer.unref === "function") stateWriteTimer.unref();
+    }
+    return "";
+  }
 }
 
 function persistStateNow(reason = "manual-flush", options = {}) {
@@ -5411,7 +5435,7 @@ function persistStateNow(reason = "manual-flush", options = {}) {
 }
 
 function flushStateBeforeExit() {
-  if (stateDirty || stateWriteTimer) persistStateNow("shutdown");
+  if (stateDirty || stateWriteTimer) persistStateSafely("shutdown", { retryOnFailure: false });
 }
 
 function emptyStateIndexes() {
@@ -5538,7 +5562,7 @@ function sendJson(res, status, payload) {
     "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization"
   };
-  if (res.shouldGzipJson && body.length > 1024) {
+  if (!res.isHeadRequest && res.shouldGzipJson && body.length > 1024) {
     try {
       const compressed = zlib.gzipSync(body);
       res.writeHead(status, {
@@ -5557,7 +5581,7 @@ function sendJson(res, status, payload) {
   res.writeHead(status, {
     ...headers
   });
-  res.end(body);
+  res.end(res.isHeadRequest ? undefined : body);
 }
 
 function sendNoContent(res) {
@@ -5658,11 +5682,15 @@ function sendFile(res, filePath, contentType, downloadName = "") {
   if (downloadName) {
     headers["Content-Disposition"] = `attachment; filename*=UTF-8''${encodeURIComponent(downloadName)}`;
   }
-  res.writeHead(200, headers);
-  fs.createReadStream(filePath).pipe(res);
+  streamFileSafely(res, filePath, headers);
 }
 
 function serveStatic(req, res, url) {
+  if (!["GET", "HEAD"].includes(req.method)) {
+    res.writeHead(405, { "Allow": "GET, HEAD" });
+    res.end("method not allowed");
+    return;
+  }
   let pathname = decodeURIComponent(url.pathname);
   if (pathname.startsWith("/uploads/")) {
     const uploadPath = path.resolve(UPLOAD_DIR, pathname.replace("/uploads/", ""));
@@ -5685,8 +5713,7 @@ function serveStatic(req, res, url) {
       ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     }[ext] || "application/octet-stream";
-    res.writeHead(200, { "Content-Type": contentType });
-    fs.createReadStream(uploadPath).pipe(res);
+    streamFileSafely(res, uploadPath, { "Content-Type": contentType });
     return;
   }
 
@@ -5713,8 +5740,37 @@ function serveStatic(req, res, url) {
     ".webmanifest": "application/manifest+json",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
   }[ext] || "application/octet-stream";
-  res.writeHead(200, { "Content-Type": contentType });
-  fs.createReadStream(filePath).pipe(res);
+  streamFileSafely(res, filePath, { "Content-Type": contentType });
+}
+
+function streamFileSafely(res, filePath, headers = {}) {
+  let stats;
+  try {
+    stats = fs.statSync(filePath);
+  } catch (error) {
+    console.error("[static] file stat failed", filePath, error);
+    if (!res.headersSent) {
+      res.writeHead(404);
+      res.end("not found");
+    }
+    return;
+  }
+  res.writeHead(200, { ...headers, "Content-Length": stats.size });
+  if (res.isHeadRequest) {
+    res.end();
+    return;
+  }
+  const stream = fs.createReadStream(filePath);
+  stream.on("error", (error) => {
+    console.error("[static] file stream failed", filePath, error);
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end("file read error");
+      return;
+    }
+    res.destroy();
+  });
+  stream.pipe(res);
 }
 
 async function saveMultipartUpload(req) {
