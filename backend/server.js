@@ -186,7 +186,6 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`智销AI backend running: http://localhost:${PORT}`);
-  processGeocodeQueue().catch((error) => console.error("geocode queue failed", error));
   if (!process.env.AUTH_TOKEN_SECRET) {
     console.warn("AUTH_TOKEN_SECRET 未配置，当前使用开发环境密钥；正式环境必须配置高强度随机字符串。");
   }
@@ -948,7 +947,7 @@ async function routeApi(req, res, url) {
       result[job.status] = (result[job.status] || 0) + 1;
       return result;
     }, { pending: 0, processing: 0, resolved: 0, failed: 0 });
-    return sendJson(res, 200, { configured: Boolean(TENCENT_MAP_SERVER_KEY), counts, remaining: counts.pending + counts.processing });
+    return sendJson(res, 200, { configured: false, disabled: true, counts, remaining: 0, message: "后端地址解析已停用，地图点位以小程序选择位置为准。" });
   }
 
   if (req.method === "POST" && url.pathname === "/api/routes/optimize") {
@@ -5363,12 +5362,19 @@ function readState() {
   const migrated = migrateState(raw);
   stateCache = migrated;
   rebuildStateIndexes(stateCache);
-  if (JSON.stringify(raw) !== JSON.stringify(migrated)) {
+  if (shouldPersistMigratedState(raw)) {
     persistStateNow("migration", { backupBeforeWrite: false, refreshBackupAfterWrite: true });
   } else {
     stateDiskSignature = fileSignature(DATA_FILE);
   }
   return stateCache;
+}
+
+function shouldPersistMigratedState(raw = {}) {
+  if (!raw || typeof raw !== "object") return true;
+  if (raw.version !== BACKEND_VERSION) return true;
+  if (raw.moneyUnit !== MONEY_UNIT) return true;
+  return ["roles", "units", "users", "customers", "opportunities", "products", "channelSources", "lossReasons", "businessRules"].some((key) => raw[key] === undefined);
 }
 
 function writeState(state, options = {}) {
@@ -5420,10 +5426,10 @@ function persistStateNow(reason = "manual-flush", options = {}) {
     stateWriteTimer = null;
   }
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (options.backupBeforeWrite !== false && isReadableJsonFile(DATA_FILE)) fs.copyFileSync(DATA_FILE, BACKUP_FILE);
+  if (options.backupBeforeWrite !== false && isBackupableDataFile(DATA_FILE)) fs.copyFileSync(DATA_FILE, BACKUP_FILE);
   const tempFile = `${DATA_FILE}.${process.pid}.${Date.now()}.tmp`;
   try {
-    fs.writeFileSync(tempFile, JSON.stringify(stateCache, null, 2), "utf8");
+    fs.writeFileSync(tempFile, JSON.stringify(stateCache), "utf8");
     fs.renameSync(tempFile, DATA_FILE);
     if (options.refreshBackupAfterWrite) fs.copyFileSync(DATA_FILE, BACKUP_FILE);
     stateDiskSignature = fileSignature(DATA_FILE);
@@ -5517,10 +5523,10 @@ function readJsonFile(file) {
   return JSON.parse(text);
 }
 
-function isReadableJsonFile(file) {
+function isBackupableDataFile(file) {
   try {
-    readJsonFile(file);
-    return true;
+    const stat = fs.statSync(file);
+    return stat.isFile() && stat.size > 0;
   } catch {
     return false;
   }
@@ -6044,7 +6050,6 @@ async function importCustomers(req, viewer, target = "") {
       }, state);
       state.customers.unshift(customer);
       createdCustomers.push(customer);
-      if (row.address && (!customer.location?.city || rowImportToPublicPool)) state.geocodeJobs.push(normalizeGeocodeJob({ customerId: customer.id, address: customer.address, status: "pending" }));
     }
     const importedFollowNote = String(row.lastNote || "").trim();
     const importedFollow = importedFollowNote ? normalizeFollowUp({
@@ -6088,11 +6093,10 @@ async function importCustomers(req, viewer, target = "") {
     importedOpportunities.push(opportunity);
   });
   if (importedOpportunities.length) writeState(state);
-  if (createdCustomers.length) setTimeout(() => processGeocodeQueue().catch(() => {}), 20);
   const reportRows = [...skipped, ...failed, ...warnings];
   const reportUrl = reportRows.length ? writeImportReport(reportRows) : "";
   const pendingLocation = createdCustomers.filter((item) => item.location?.status !== "resolved").length;
-  const pendingGeocode = createdCustomers.filter((item) => String(item.address || "").trim() && item.location?.status !== "resolved").length;
+  const pendingGeocode = 0;
   return {
     total: rows.length,
     imported: importedOpportunities.length,
@@ -6770,40 +6774,7 @@ function tencentDistanceRow(origin, customers) {
 }
 
 async function processGeocodeQueue() {
-  if (geocodeQueueRunning || !TENCENT_MAP_SERVER_KEY) return;
-  geocodeQueueRunning = true;
-  try {
-    while (true) {
-      const state = readState();
-      const job = (state.geocodeJobs || []).find((item) => ["pending", "processing"].includes(item.status) && item.attempts < 3);
-      if (!job) break;
-      job.status = "processing";
-      job.attempts += 1;
-      job.updatedAt = new Date().toISOString();
-      writeState(state);
-      try {
-        const result = await tencentGeocode(job.address);
-        const latest = readState();
-        const currentJob = latest.geocodeJobs.find((item) => item.id === job.id);
-        const customer = latest.customers.find((item) => Number(item.id) === Number(job.customerId));
-        if (customer) {
-          customer.location = normalizeLocation({ ...result, address: customer.address, status: "resolved", resolvedAt: new Date().toISOString() }, customer);
-          customer.city = result.city || customer.city || extractCity(customer.address) || "待识别";
-        }
-        if (currentJob) { currentJob.status = "resolved"; currentJob.error = ""; currentJob.updatedAt = new Date().toISOString(); }
-        writeState(latest);
-      } catch (error) {
-        const latest = readState();
-        const currentJob = latest.geocodeJobs.find((item) => item.id === job.id);
-        const customer = latest.customers.find((item) => Number(item.id) === Number(job.customerId));
-        if (currentJob) { currentJob.status = currentJob.attempts >= 3 ? "failed" : "pending"; currentJob.error = error.message; currentJob.updatedAt = new Date().toISOString(); }
-        if (customer) customer.location = normalizeLocation({ ...customer.location, status: currentJob?.status === "failed" ? "failed" : "pending" }, customer);
-        writeState(latest);
-      }
-    }
-  } finally {
-    geocodeQueueRunning = false;
-  }
+  return { disabled: true, processed: 0 };
 }
 
 function tencentGeocode(address) {
