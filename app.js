@@ -1312,13 +1312,21 @@ function renderCustomers() {
     .join("");
 
   const ownerOptions = visibleFollowUsers();
+  const filterOptions = serverBoard?.filterOptions || {};
+  const createdByOptions = filterOptions.createdBy || customers.map((item) => item.createdBy);
+  const followPersonOptions = [
+    ...(filterOptions.followPerson || []),
+    ...ownerOptions.map((user) => user.name)
+  ];
+  const unitOptions = filterOptions.units || customers.map((item) => item.unit);
+  const cityOptions = filterOptions.cities || customers.map((item) => item.city);
   $("#channelFilter").innerHTML = optionList("全部渠道来源", channelSources);
-  $("#createdByFilterOptions").innerHTML = datalistOptions(customers.map((item) => item.createdBy));
-  $("#followPersonFilterOptions").innerHTML = datalistOptions(ownerOptions.map((user) => user.name));
+  $("#createdByFilterOptions").innerHTML = datalistOptions(createdByOptions);
+  $("#followPersonFilterOptions").innerHTML = datalistOptions(followPersonOptions);
   $("#createdByFilter").placeholder = "全部录入人";
   $("#followPersonFilter").placeholder = roleForUser(currentUser()).customerScope === "self" ? "当前仅本人" : "全部跟进人";
-  $("#unitFilter").innerHTML = optionList("全部单位", customers.map((item) => item.unit));
-  $("#cityFilter").innerHTML = optionList("全部城市", customers.map((item) => item.city));
+  $("#unitFilter").innerHTML = optionList("全部单位", unitOptions);
+  $("#cityFilter").innerHTML = optionList("全部城市", cityOptions);
   $("#channelFilter").value = currentFilters.channel;
   $("#createdByFilter").value = currentFilters.createdBy;
   $("#followPersonFilter").value = currentFilters.followPerson;
@@ -3024,7 +3032,7 @@ async function deleteUnit(id) {
 
 function sanitizeCustomerFiltersForStage(stage = currentStage) {
   if (stage !== PUBLIC_POOL_STAGE) return;
-  ["createdByFilter", "followPersonFilter", "unitFilter", "followStatusFilter", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
+  ["followPersonFilter", "unitFilter", "followStatusFilter", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
     const node = $(`#${id}`);
     if (node) node.value = "";
   });

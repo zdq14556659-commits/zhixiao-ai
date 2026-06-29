@@ -287,6 +287,10 @@ async function run() {
   assert.equal(publicImportResult.status, 201, JSON.stringify(publicImportResult.data));
   assert.equal(publicImportResult.data.total, 1);
   assert.equal(publicImportResult.data.imported, 1, JSON.stringify(publicImportResult.data));
+  const publicBoardOps = await request(`/customer-board?paginated=1&stage=${encodeURIComponent("\u516c\u6d77")}&pageSize=5`, { token: tokenOps });
+  assert.equal(publicBoardOps.status, 200, JSON.stringify(publicBoardOps.data));
+  assert.equal(publicBoardOps.data.items[0].phone, "13988889999");
+  assert.ok((publicBoardOps.data.filterOptions?.createdBy || []).includes("Ops"));
 
   const blockedPublicImport = await request("/import/customers?target=public_pool", {
     method: "POST",

@@ -3233,7 +3233,7 @@ function sortPublicPoolOpportunitiesForViewer(items = [], state = {}, viewer = {
   const managementView = canViewFullPublicPoolInfo(state, viewer);
   const list = [...items];
   if (managementView || rules.publicPoolSortMode === PUBLIC_POOL_SORT_CREATED_AT) {
-    return list.sort((a, b) => String(a.publicPoolAt || a.createdAt || "").localeCompare(String(b.publicPoolAt || b.createdAt || "")) || Number(a.id || 0) - Number(b.id || 0));
+    return list.sort((a, b) => String(b.publicPoolAt || b.createdAt || "").localeCompare(String(a.publicPoolAt || a.createdAt || "")) || Number(b.id || 0) - Number(a.id || 0));
   }
   return list.sort((a, b) => stablePublicPoolScore(viewer, a).localeCompare(stablePublicPoolScore(viewer, b)));
 }
@@ -4231,6 +4231,7 @@ function buildCustomerBoard(state, viewer, query = {}) {
     rawRows = rawActive.filter((item) => item.stage === stage);
   }
   const rows = rawRows.map((item) => opportunityListRow(state, item, rowOptions));
+  const filterOptions = customerBoardFilterOptions(rows);
   const filteredRows = filterBoardRows(rows, query, stage);
   const sortedRows = sortBoardRows(filteredRows, query, stage);
   const page = paginateRows(sortedRows, query);
@@ -4242,7 +4243,8 @@ function buildCustomerBoard(state, viewer, query = {}) {
     total: page.total,
     page: page.page,
     pageSize: page.pageSize,
-    totalPages: page.totalPages
+    totalPages: page.totalPages,
+    filterOptions
   };
 }
 
@@ -4269,6 +4271,26 @@ function customerBoardStageCounts(board) {
     [PURCHASED_STATUS]: Number(board.purchased?.count || 0),
     invalid: Number(board.invalid?.count || 0),
     "无效": Number(board.invalid?.count || 0)
+  };
+}
+
+function uniqueBoardOptionValues(values = []) {
+  const map = new Map();
+  values.forEach((value) => {
+    const text = String(value || "").trim();
+    if (!text) return;
+    const key = cleanText(text);
+    if (!map.has(key)) map.set(key, text);
+  });
+  return [...map.values()].sort((left, right) => String(left).localeCompare(String(right), "zh-Hans-CN"));
+}
+
+function customerBoardFilterOptions(rows = []) {
+  return {
+    createdBy: uniqueBoardOptionValues(rows.map((row) => row.createdBy)),
+    followPerson: uniqueBoardOptionValues(rows.map((row) => row.followPerson || row.owner)),
+    units: uniqueBoardOptionValues(rows.map((row) => row.unit)),
+    cities: uniqueBoardOptionValues(rows.map((row) => row.city))
   };
 }
 
@@ -4415,6 +4437,7 @@ function paginateRows(rows = [], query = {}) {
 function buildPaginatedCustomerBoard(board, query = {}) {
   const stage = query.stage || STAGES[0];
   const sourceRows = boardRowsForStage(board, stage);
+  const filterOptions = customerBoardFilterOptions(sourceRows);
   const filteredRows = filterBoardRows(sourceRows, query, stage);
   const sortedRows = sortBoardRows(filteredRows, query, stage);
   const page = paginateRows(sortedRows, query);
@@ -4430,11 +4453,13 @@ function buildPaginatedCustomerBoard(board, query = {}) {
     invalid: { count: Number(board.invalid?.count || 0) },
     sortBy: query.sortBy || "",
     sortOrder: query.sortOrder || "",
+    filterOptions,
     ...page
   };
 }
 
 function paginatePublicPoolItems(items = [], query = {}) {
+  const filterOptions = customerBoardFilterOptions(items);
   const filteredRows = filterBoardRows(items, query, PUBLIC_POOL_STATUS);
   const sortedRows = sortBoardRows(filteredRows, query, PUBLIC_POOL_STATUS);
   const page = paginateRows(sortedRows, query);
@@ -4442,6 +4467,7 @@ function paginatePublicPoolItems(items = [], query = {}) {
     backendVersion: BACKEND_VERSION,
     moneyUnit: MONEY_UNIT,
     count: filteredRows.length,
+    filterOptions,
     ...page
   };
 }
