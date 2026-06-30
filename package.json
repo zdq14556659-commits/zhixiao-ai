@@ -6,6 +6,8 @@
   "scripts": {
     "start": "node backend/server.js",
     "check": "node --check backend/server.js",
+    "mysql:migrate": "node scripts/mysql/migrate-json-to-mysql.mjs",
+    "mysql:verify": "node scripts/mysql/verify-mysql-migration.mjs",
     "test:password": "node backend/password-security.test.js",
     "test:customers": "node backend/customer-public-pool.test.js",
     "test:v6": "node backend/customer-v6.test.js",
@@ -19,7 +21,8 @@
     "test": "npm run test:password && npm run test:customers && npm run test:v6 && npm run test:v7 && npm run test:v8 && npm run test:v9 && npm run test:channels && npm run test:import-counts && npm run test:follow-persistence && npm run test:dashboard-actions"
   },
   "dependencies": {
-    "jszip": "^3.10.1"
+    "jszip": "^3.10.1",
+    "mysql2": "^3.11.5"
   },
   "engines": {
     "node": ">=20"

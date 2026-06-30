@@ -1,0 +1,158 @@
+name: Bootstrap MySQL
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "install_import_verify, import_verify, verify_only"
+        required: true
+        default: "install_import_verify"
+      data_file:
+        description: "Production db.json path on server"
+        required: true
+        default: "/opt/zhixiao-ai/shared/data/db.json"
+      db_name:
+        description: "MySQL database name"
+        required: true
+        default: "zhixiao_ai"
+      db_user:
+        description: "MySQL app user"
+        required: true
+        default: "zhixiao_user"
+      reset_mysql_tables:
+        description: "Reset MySQL tables before import"
+        required: true
+        default: "true"
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check secrets
+        run: |
+          test -n "${{ secrets.DEPLOY_HOST }}" || (echo "DEPLOY_HOST is empty" && exit 1)
+          test -n "${{ secrets.DEPLOY_USER }}" || (echo "DEPLOY_USER is empty" && exit 1)
+          test -n "${{ secrets.DEPLOY_SSH_KEY }}" || (echo "DEPLOY_SSH_KEY is empty" && exit 1)
+          test -n "${{ secrets.MYSQL_APP_PASSWORD }}" || (echo "MYSQL_APP_PASSWORD is empty" && exit 1)
+          echo "Secrets check passed"
+
+      - name: Pack MySQL tools
+        run: |
+          tar -czf /tmp/zhixiao-mysql-tools.tar.gz \
+            deploy/mysql/schema.sql \
+            scripts/mysql/migrate-json-to-mysql.mjs \
+            scripts/mysql/verify-mysql-migration.mjs
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Add server to known_hosts
+        run: ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Upload MySQL tools
+        run: |
+          scp /tmp/zhixiao-mysql-tools.tar.gz \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/tmp/zhixiao-mysql-tools.tar.gz
+
+      - name: Install MySQL, import and verify
+        env:
+          MYSQL_APP_PASSWORD: ${{ secrets.MYSQL_APP_PASSWORD }}
+          BOOTSTRAP_ACTION: ${{ inputs.action }}
+          DATA_FILE: ${{ inputs.data_file }}
+          DB_NAME: ${{ inputs.db_name }}
+          DB_USER: ${{ inputs.db_user }}
+          RESET_MYSQL_TABLES: ${{ inputs.reset_mysql_tables }}
+        run: |
+          ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "MYSQL_APP_PASSWORD='$MYSQL_APP_PASSWORD' BOOTSTRAP_ACTION='$BOOTSTRAP_ACTION' DATA_FILE='$DATA_FILE' DB_NAME='$DB_NAME' DB_USER='$DB_USER' RESET_MYSQL_TABLES='$RESET_MYSQL_TABLES' bash -s" <<'EOF'
+          set -euo pipefail
+
+          case "$MYSQL_APP_PASSWORD" in
+            *[!A-Za-z0-9_-]*)
+              echo "MYSQL_APP_PASSWORD may only contain letters, numbers, underscore, and hyphen." >&2
+              exit 1
+              ;;
+          esac
+
+          WORK_DIR="/tmp/zhixiao-mysql-tools"
+          rm -rf "$WORK_DIR"
+          mkdir -p "$WORK_DIR"
+          tar -xzf /tmp/zhixiao-mysql-tools.tar.gz -C "$WORK_DIR"
+          cd "$WORK_DIR"
+
+          if [ "$BOOTSTRAP_ACTION" = "install_import_verify" ]; then
+            if ! command -v mysql >/dev/null 2>&1; then
+              if command -v apt-get >/dev/null 2>&1; then
+                apt-get update
+                DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server
+              elif command -v yum >/dev/null 2>&1; then
+                yum install -y mysql-server || yum install -y mariadb-server
+              else
+                echo "No supported package manager found. Install MySQL manually first." >&2
+                exit 1
+              fi
+            fi
+            systemctl enable --now mysql 2>/dev/null || systemctl enable --now mysqld 2>/dev/null || systemctl enable --now mariadb 2>/dev/null || true
+          fi
+
+          if [ "$BOOTSTRAP_ACTION" != "verify_only" ]; then
+            SQL_FILE="/tmp/zhixiao-create-db.sql"
+            cat > "$SQL_FILE" <<SQL
+          CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`
+            DEFAULT CHARACTER SET utf8mb4
+            DEFAULT COLLATE utf8mb4_unicode_ci;
+          CREATE USER IF NOT EXISTS '$DB_USER'@'127.0.0.1' IDENTIFIED BY '$MYSQL_APP_PASSWORD';
+          ALTER USER '$DB_USER'@'127.0.0.1' IDENTIFIED BY '$MYSQL_APP_PASSWORD';
+          GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'127.0.0.1';
+          FLUSH PRIVILEGES;
+          SQL
+            if command -v sudo >/dev/null 2>&1; then
+              sudo mysql < "$SQL_FILE" || mysql -uroot < "$SQL_FILE"
+            else
+              mysql -uroot < "$SQL_FILE"
+            fi
+            rm -f "$SQL_FILE"
+
+            MYSQL_PWD="$MYSQL_APP_PASSWORD" mysql -h127.0.0.1 -u"$DB_USER" "$DB_NAME" < deploy/mysql/schema.sql
+          fi
+
+          if [ ! -f "$DATA_FILE" ]; then
+            echo "DATA_FILE not found: $DATA_FILE" >&2
+            exit 1
+          fi
+
+          BACKUP_DIR="$(dirname "$DATA_FILE")/manual-backups"
+          mkdir -p "$BACKUP_DIR"
+          BACKUP_FILE="$BACKUP_DIR/db-before-mysql-bootstrap-$(date +%Y%m%d-%H%M%S).json"
+          cp "$DATA_FILE" "$BACKUP_FILE"
+          echo "DB backup saved: $BACKUP_FILE"
+
+          if [ ! -d node_modules/mysql2 ]; then
+            npm init -y >/dev/null
+            npm install mysql2@^3.11.5 >/dev/null
+          fi
+
+          export MYSQL_URL="mysql://$DB_USER:$MYSQL_APP_PASSWORD@127.0.0.1:3306/$DB_NAME"
+          export DATA_FILE
+
+          if [ "$BOOTSTRAP_ACTION" != "verify_only" ]; then
+            RESET_FLAG=""
+            if [ "$RESET_MYSQL_TABLES" = "true" ]; then RESET_FLAG="--reset"; fi
+            node scripts/mysql/migrate-json-to-mysql.mjs $RESET_FLAG --snapshot
+          fi
+
+          node scripts/mysql/verify-mysql-migration.mjs
+
+          MYSQL_ENV="/opt/zhixiao-ai/shared/mysql.env"
+          mkdir -p "$(dirname "$MYSQL_ENV")"
+          cat > "$MYSQL_ENV" <<ENV
+          MYSQL_URL=mysql://$DB_USER:$MYSQL_APP_PASSWORD@127.0.0.1:3306/$DB_NAME
+          ENV
+          chmod 600 "$MYSQL_ENV"
+          echo "MySQL connection saved for later phase: $MYSQL_ENV"
+          echo "MYSQL_BOOTSTRAP_OK"
+          EOF
