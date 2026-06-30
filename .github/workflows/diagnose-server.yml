@@ -71,6 +71,31 @@ jobs:
           df -h || true
           echo
 
+          echo "===== ecs / aliyun network metadata ====="
+          echo "os=$(grep -E '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2- | tr -d '\"' || true)"
+          echo "cpu_cores=$(nproc 2>/dev/null || true)"
+          echo "private_ips=$(hostname -I 2>/dev/null || true)"
+          echo "public_ip=$(curl -sS --max-time 5 https://ifconfig.me 2>/dev/null || curl -sS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+          META="http://100.100.100.200/latest/meta-data"
+          echo "instance_id=$(curl -sS --max-time 3 "$META/instance-id" 2>/dev/null || true)"
+          echo "region_id=$(curl -sS --max-time 3 "$META/region-id" 2>/dev/null || true)"
+          echo "zone_id=$(curl -sS --max-time 3 "$META/zone-id" 2>/dev/null || true)"
+          echo "private_ipv4=$(curl -sS --max-time 3 "$META/private-ipv4" 2>/dev/null || true)"
+          echo "public_ipv4=$(curl -sS --max-time 3 "$META/public-ipv4" 2>/dev/null || true)"
+          echo "eip_ipv4=$(curl -sS --max-time 3 "$META/eipv4" 2>/dev/null || true)"
+          MACS="$(curl -sS --max-time 3 "$META/network/interfaces/macs/" 2>/dev/null || true)"
+          echo "macs=$MACS"
+          for MAC in $MACS; do
+            CLEAN_MAC="${MAC%/}"
+            echo "mac=$CLEAN_MAC"
+            echo "  vpc_id=$(curl -sS --max-time 3 "$META/network/interfaces/macs/$CLEAN_MAC/vpc-id" 2>/dev/null || true)"
+            echo "  vswitch_id=$(curl -sS --max-time 3 "$META/network/interfaces/macs/$CLEAN_MAC/vswitch-id" 2>/dev/null || true)"
+            echo "  security_group_ids=$(curl -sS --max-time 3 "$META/network/interfaces/macs/$CLEAN_MAC/security-group-ids" 2>/dev/null || true)"
+            echo "  primary_ip=$(curl -sS --max-time 3 "$META/network/interfaces/macs/$CLEAN_MAC/primary-ip-address" 2>/dev/null || true)"
+          done
+          echo "ip_route=$(ip route 2>/dev/null | head -n 5 || true)"
+          echo
+
           echo "===== top memory processes ====="
           ps aux --sort=-%mem | head -n 20 || true
           echo
