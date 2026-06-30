@@ -2020,6 +2020,7 @@ async function saveCustomer(event) {
     nextFollow: String(form.get("nextFollow") || ""),
     lastNote: note || (id ? undefined : "新增客户。")
   };
+  const shouldKeepCurrentPage = Boolean(id) && customer.stage === currentStage;
   formNode.dataset.submitting = "1";
   setFormSubmitting(formNode, true, "保存中...");
   try {
@@ -2054,7 +2055,7 @@ async function saveCustomer(event) {
     setFormSubmitting(formNode, false, "保存中...");
   }
   $("#customerDialog").close();
-  customerPage = 1;
+  if (!shouldKeepCurrentPage) customerPage = 1;
   await refreshCustomersAfterMutation();
   toast("已保存");
 }

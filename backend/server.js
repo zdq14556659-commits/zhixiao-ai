@@ -4322,6 +4322,11 @@ function latestManualFollowDate(record = {}) {
   return String(latest?.date || latest?.createdAt || "").slice(0, 10);
 }
 
+function latestManualFollowTime(record = {}) {
+  const latest = latestManualFollowRecord(record);
+  return latest?.createdAt || latest?.date || record.latestManualFollowAt || record.lastFollow || "";
+}
+
 function hasManualFollow(record = {}) {
   return Boolean(latestManualFollowRecord(record));
 }
@@ -4394,10 +4399,11 @@ function latestAssignmentAt(row = {}) {
 
 function boardSortValue(row = {}, sortBy = "", order = "desc") {
   const empty = order === "asc" ? Number.MAX_SAFE_INTEGER : 0;
-  if (sortBy === "lastFollow") return rowDateMs(latestManualFollowDate(row), empty);
+  if (sortBy === "lastFollow") return rowDateMs(latestManualFollowTime(row), empty);
   if (sortBy === "createdAt") return rowDateMs(row.createdAt, empty);
   if (sortBy === "nextFollow") return rowDateMs(row.nextFollow, empty);
   if (sortBy === "assignedAt") return rowDateMs(latestAssignmentAt(row), empty);
+  if (sortBy === "stageTime") return rowDateMs(stageDateForBoardRow(row, row.stage || ""), empty);
   return 0;
 }
 
@@ -4411,19 +4417,15 @@ function compareByDate(left, right, sortBy, order = "desc", tieBreak = true) {
 function sortBoardRows(rows = [], query = {}, stage = "") {
   const sortBy = String(query.sortBy || "");
   const sortOrder = query.sortOrder === "asc" ? "asc" : "desc";
-  const allowedSorts = new Set(["lastFollow", "createdAt", "nextFollow", "assignedAt"]);
+  const allowedSorts = new Set(["lastFollow", "createdAt", "nextFollow", "assignedAt", "stageTime"]);
   if (allowedSorts.has(sortBy)) return [...rows].sort((left, right) => compareByDate(left, right, sortBy, sortOrder));
-  if ([STAGES[0], STAGES[1], STAGES[2]].includes(stage)) {
-    return [...rows].sort((left, right) => {
-      const leftUnfollowed = hasManualFollow(left) ? 1 : 0;
-      const rightUnfollowed = hasManualFollow(right) ? 1 : 0;
-      return leftUnfollowed - rightUnfollowed
-        || compareByDate(left, right, "lastFollow", "desc", false)
-        || compareByDate(left, right, "createdAt", "desc");
-    });
-  }
   if (stage === PUBLIC_POOL_STATUS) return rows;
-  return [...rows].sort((left, right) => compareByDate(left, right, "createdAt", "desc"));
+  return [...rows].sort((left, right) => {
+    const leftStageTime = rowDateMs(stageDateForBoardRow(left, stage || left.stage), 0);
+    const rightStageTime = rowDateMs(stageDateForBoardRow(right, stage || right.stage), 0);
+    return rightStageTime - leftStageTime
+      || compareByDate(left, right, "createdAt", "desc");
+  });
 }
 
 function paginateRows(rows = [], query = {}) {
