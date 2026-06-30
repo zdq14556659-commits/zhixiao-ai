@@ -1,0 +1,125 @@
+name: Control MySQL
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "status, stop_disable, drop_zhixiao_db"
+        required: true
+        default: "stop_disable"
+      db_name:
+        description: "MySQL database name to drop when action=drop_zhixiao_db"
+        required: true
+        default: "zhixiao_ai"
+      db_user:
+        description: "MySQL user to drop when action=drop_zhixiao_db"
+        required: true
+        default: "zhixiao_user"
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check secrets
+        run: |
+          test -n "${{ secrets.DEPLOY_HOST }}" || (echo "DEPLOY_HOST is empty" && exit 1)
+          test -n "${{ secrets.DEPLOY_USER }}" || (echo "DEPLOY_USER is empty" && exit 1)
+          test -n "${{ secrets.DEPLOY_SSH_KEY }}" || (echo "DEPLOY_SSH_KEY is empty" && exit 1)
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Add server to known_hosts
+        run: ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Control MySQL on server
+        env:
+          MYSQL_CONTROL_ACTION: ${{ inputs.action }}
+          DB_NAME: ${{ inputs.db_name }}
+          DB_USER: ${{ inputs.db_user }}
+        run: |
+          ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "MYSQL_CONTROL_ACTION='${MYSQL_CONTROL_ACTION}' DB_NAME='${DB_NAME}' DB_USER='${DB_USER}' bash -s" <<'EOF'
+          set -euo pipefail
+
+          stop_mysql() {
+            systemctl stop mysql 2>/dev/null || true
+            systemctl stop mysqld 2>/dev/null || true
+            systemctl stop mariadb 2>/dev/null || true
+          }
+
+          disable_mysql() {
+            systemctl disable mysql 2>/dev/null || true
+            systemctl disable mysqld 2>/dev/null || true
+            systemctl disable mariadb 2>/dev/null || true
+          }
+
+          start_mysql() {
+            systemctl start mysql 2>/dev/null || true
+            systemctl start mysqld 2>/dev/null || true
+            systemctl start mariadb 2>/dev/null || true
+          }
+
+          print_status() {
+            echo "===== memory ====="
+            free -h || true
+            echo
+            echo "===== mysql service status ====="
+            systemctl is-active mysql 2>/dev/null || true
+            systemctl is-active mysqld 2>/dev/null || true
+            systemctl is-active mariadb 2>/dev/null || true
+            echo
+            echo "===== mysql processes ====="
+            pgrep -af "mysql|mysqld|mariadb" || true
+            echo
+            echo "===== zhixiao service ====="
+            systemctl status zhixiao-ai --no-pager || true
+            echo
+            echo "===== health ====="
+            curl -k -sS --max-time 10 https://isales.santi.ren/crm/api/health || true
+            echo
+          }
+
+          case "${MYSQL_CONTROL_ACTION}" in
+            status)
+              print_status
+              ;;
+
+            stop_disable)
+              echo "Stopping and disabling MySQL. db.json will not be touched."
+              stop_mysql
+              disable_mysql
+              rm -f /opt/zhixiao-ai/shared/mysql.env
+              systemctl restart zhixiao-ai || true
+              print_status
+              ;;
+
+            drop_zhixiao_db)
+              echo "Dropping database ${DB_NAME} and user ${DB_USER}. db.json will not be touched."
+              start_mysql
+              sleep 3
+              SQL_FILE="/tmp/zhixiao-drop-db.sql"
+              cat > "$SQL_FILE" <<SQL
+          DROP DATABASE IF EXISTS \`${DB_NAME}\`;
+          DROP USER IF EXISTS '${DB_USER}'@'127.0.0.1';
+          DROP USER IF EXISTS '${DB_USER}'@'localhost';
+          FLUSH PRIVILEGES;
+          SQL
+              mysql < "$SQL_FILE" || mysql -uroot < "$SQL_FILE"
+              rm -f "$SQL_FILE"
+              rm -f /opt/zhixiao-ai/shared/mysql.env
+              stop_mysql
+              disable_mysql
+              systemctl restart zhixiao-ai || true
+              print_status
+              ;;
+
+            *)
+              echo "Unknown action: ${MYSQL_CONTROL_ACTION}" >&2
+              exit 1
+              ;;
+          esac
+          EOF
