@@ -1,0 +1,132 @@
+name: Diagnose Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "Log start time, for example: 2 hours ago or 2026-06-30 16:50:00"
+        required: false
+        default: "2 hours ago"
+      until:
+        description: "Log end time, for example: now or 2026-06-30 17:20:00"
+        required: false
+        default: "now"
+      service:
+        description: "Backend systemd service name"
+        required: false
+        default: "zhixiao-ai"
+      lines:
+        description: "Recent log lines to collect"
+        required: false
+        default: "300"
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check secrets
+        run: |
+          test -n "${{ secrets.DEPLOY_HOST }}" || (echo "DEPLOY_HOST is empty" && exit 1)
+          test -n "${{ secrets.DEPLOY_USER }}" || (echo "DEPLOY_USER is empty" && exit 1)
+          test -n "${{ secrets.DEPLOY_SSH_KEY }}" || (echo "DEPLOY_SSH_KEY is empty" && exit 1)
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Add server to known_hosts
+        run: ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Collect diagnostics
+        env:
+          DIAG_SINCE: ${{ github.event.inputs.since }}
+          DIAG_UNTIL: ${{ github.event.inputs.until }}
+          DIAG_SERVICE: ${{ github.event.inputs.service }}
+          DIAG_LINES: ${{ github.event.inputs.lines }}
+        run: |
+          mkdir -p diagnostics
+          ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "DIAG_SINCE='${DIAG_SINCE}' DIAG_UNTIL='${DIAG_UNTIL}' DIAG_SERVICE='${DIAG_SERVICE}' DIAG_LINES='${DIAG_LINES}' bash -s" > diagnostics/server-diagnostics.txt 2>&1 <<'EOF'
+          set +e
+
+          echo "===== diagnose meta ====="
+          echo "time_utc=$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "host=$(hostname)"
+          echo "service=${DIAG_SERVICE:-zhixiao-ai}"
+          echo "since=${DIAG_SINCE:-2 hours ago}"
+          echo "until=${DIAG_UNTIL:-now}"
+          echo "lines=${DIAG_LINES:-300}"
+          echo
+
+          echo "===== health check ====="
+          curl -k -sS --max-time 10 https://isales.santi.ren/crm/api/health || true
+          echo
+          echo
+
+          echo "===== system resources ====="
+          uptime || true
+          free -h || true
+          df -h || true
+          echo
+
+          echo "===== top memory processes ====="
+          ps aux --sort=-%mem | head -n 20 || true
+          echo
+
+          echo "===== node / zhixiao process ====="
+          pgrep -af "node|zhixiao|server.js" || true
+          echo
+
+          echo "===== service status ====="
+          systemctl status "${DIAG_SERVICE:-zhixiao-ai}" --no-pager || true
+          echo
+
+          echo "===== service journal selected window ====="
+          journalctl -u "${DIAG_SERVICE:-zhixiao-ai}" --since "${DIAG_SINCE:-2 hours ago}" --until "${DIAG_UNTIL:-now}" --no-pager || true
+          echo
+
+          echo "===== service journal recent lines ====="
+          journalctl -u "${DIAG_SERVICE:-zhixiao-ai}" -n "${DIAG_LINES:-300}" --no-pager || true
+          echo
+
+          echo "===== kernel oom / killed logs ====="
+          if command -v sudo >/dev/null 2>&1; then
+            sudo -n dmesg -T 2>/dev/null | grep -i -E "oom|out of memory|killed process|node|zhixiao" || true
+          fi
+          dmesg -T 2>/dev/null | grep -i -E "oom|out of memory|killed process|node|zhixiao" || true
+          echo
+
+          echo "===== nginx error log recent ====="
+          tail -n "${DIAG_LINES:-300}" /var/log/nginx/error.log 2>/dev/null || true
+          echo
+
+          echo "===== nginx access 502/504 recent ====="
+          if [ -f /var/log/nginx/access.log ]; then
+            grep -E " 502 | 504 " /var/log/nginx/access.log | tail -n 120 || true
+          fi
+          echo
+
+          echo "===== app data size ====="
+          DATA_DIR="${ZHIXIAO_DATA_DIR:-/opt/zhixiao-ai/shared/data}"
+          if [ -d "$DATA_DIR" ]; then
+            du -sh "$DATA_DIR" 2>/dev/null || true
+            ls -lh "$DATA_DIR" 2>/dev/null || true
+            if [ -f "$DATA_DIR/db.json" ]; then
+              wc -c "$DATA_DIR/db.json" || true
+            fi
+          else
+            echo "data dir not found: $DATA_DIR"
+          fi
+          echo
+
+          echo "===== diagnostics done ====="
+          EOF
+
+      - name: Upload diagnostics artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-diagnostics
+          path: diagnostics/server-diagnostics.txt
+          retention-days: 3
