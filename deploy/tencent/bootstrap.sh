@@ -34,6 +34,8 @@ EOF
 fi
 
 install -m 0644 "$DEPLOY_DIR/zhixiao-ai.service" /etc/systemd/system/zhixiao-ai.service
+mkdir -p /etc/systemd/system/zhixiao-ai.service.d
+install -m 0644 "$DEPLOY_DIR/zhixiao-ai-resources.conf" /etc/systemd/system/zhixiao-ai.service.d/zz-resources.conf
 sed "s/__SERVER_NAME__/$SERVER_NAME/g" "$DEPLOY_DIR/nginx.conf" >/etc/nginx/sites-available/zhixiao-ai
 ln -sfn /etc/nginx/sites-available/zhixiao-ai /etc/nginx/sites-enabled/zhixiao-ai
 rm -f /etc/nginx/sites-enabled/default

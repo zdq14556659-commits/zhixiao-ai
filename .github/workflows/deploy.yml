@@ -47,6 +47,26 @@ jobs:
           scp /tmp/zhixiao-ai.tar.gz \
             ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/tmp/zhixiao-ai.tar.gz
 
+      - name: Sync server runtime config
+        run: |
+          scp \
+            deploy/tencent/zhixiao-ai.service \
+            deploy/tencent/zhixiao-ai-resources.conf \
+            deploy/tencent/release.sh \
+            deploy/tencent/backup.sh \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/tmp/
+          ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "bash -s" <<'EOF'
+          set -euo pipefail
+          install -m 0644 /tmp/zhixiao-ai.service /etc/systemd/system/zhixiao-ai.service
+          mkdir -p /etc/systemd/system/zhixiao-ai.service.d
+          install -m 0644 /tmp/zhixiao-ai-resources.conf /etc/systemd/system/zhixiao-ai.service.d/zz-resources.conf
+          install -m 0755 /tmp/release.sh /usr/local/sbin/zhixiao-release
+          install -m 0755 /tmp/backup.sh /usr/local/sbin/zhixiao-backup
+          rm -f /tmp/zhixiao-ai.service /tmp/zhixiao-ai-resources.conf /tmp/release.sh /tmp/backup.sh
+          systemctl daemon-reload
+          systemctl show zhixiao-ai -p MemoryHigh -p MemoryMax -p Environment --no-pager || true
+          EOF
+
       - name: Backup server database
         run: |
           ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "DEPLOY_RUN_ID=${{ github.run_id }} bash -s" <<'EOF'

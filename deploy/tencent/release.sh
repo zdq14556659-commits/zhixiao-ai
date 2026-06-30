@@ -9,6 +9,7 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 RELEASE="$RELEASES/$STAMP"
 
 mkdir -p "$RELEASES" "$SHARED/data" "$SHARED/uploads" "$SHARED/backups"
+find "$SHARED/data" -maxdepth 1 -type f -name 'db.json.*.tmp' -mmin +60 -print -delete 2>/dev/null || true
 
 if [ -f "$SHARED/data/db.json" ]; then
   /usr/local/sbin/zhixiao-backup

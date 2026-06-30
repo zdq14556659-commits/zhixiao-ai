@@ -34,7 +34,7 @@ try {
     .
 
   & ssh @SshArgs $Target "mkdir -p $RemoteDir"
-  & scp @SshArgs "$PSScriptRoot/bootstrap.sh" "$PSScriptRoot/release.sh" "$PSScriptRoot/backup.sh" "$PSScriptRoot/enable-https.sh" "$PSScriptRoot/zhixiao-ai.service" "$PSScriptRoot/nginx.conf" "${Target}:$RemoteDir/"
+  & scp @SshArgs "$PSScriptRoot/bootstrap.sh" "$PSScriptRoot/release.sh" "$PSScriptRoot/backup.sh" "$PSScriptRoot/enable-https.sh" "$PSScriptRoot/zhixiao-ai.service" "$PSScriptRoot/zhixiao-ai-resources.conf" "$PSScriptRoot/nginx.conf" "${Target}:$RemoteDir/"
   & scp @SshArgs $Archive "${Target}:$RemoteArchive"
   & ssh @SshArgs $Target "chmod +x $RemoteDir/*.sh && bash $RemoteDir/bootstrap.sh '$Domain' && /usr/local/sbin/zhixiao-release '$RemoteArchive'"
 

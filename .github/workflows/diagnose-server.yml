@@ -82,6 +82,10 @@ jobs:
           echo "===== service status ====="
           systemctl status "${DIAG_SERVICE:-zhixiao-ai}" --no-pager || true
           echo
+          echo "===== service unit config ====="
+          systemctl cat "${DIAG_SERVICE:-zhixiao-ai}" --no-pager || true
+          systemctl show "${DIAG_SERVICE:-zhixiao-ai}" -p MemoryHigh -p MemoryMax -p Environment --no-pager || true
+          echo
 
           echo "===== service journal selected window ====="
           journalctl -u "${DIAG_SERVICE:-zhixiao-ai}" --since "${DIAG_SINCE:-2 hours ago}" --until "${DIAG_UNTIL:-now}" --no-pager || true
