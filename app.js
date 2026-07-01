@@ -1496,7 +1496,7 @@ function customerRow(item) {
       <td>${escapeHtml(item.city || "待识别")}</td>
       <td>${escapeHtml(normalizeChannelSource(item.channelSource))}</td>
       <td>${escapeHtml(item.createdBy || "未记录")}</td>
-      <td>${escapeHtml(item.followPerson || item.owner || "未分配")}</td>
+      <td>${escapeHtml(item.followPersonDisplay || item.followPerson || item.owner || "未分配")}</td>
       <td>${escapeHtml(customerStageTime(item) || "-")}</td>
       <td>${followHtml}</td>
       <td>${latestManualFollowDate(item) || "-"}</td>
@@ -2069,6 +2069,28 @@ function prepareClaimedCustomerView() {
   setCustomerSortValue("assignedAt_desc");
 }
 
+function removeClaimedPublicPoolRow(id) {
+  const numericId = Number(id);
+  const remove = (rows = []) => rows.filter((item) => Number(item.id) !== numericId && Number(item.opportunityId) !== numericId);
+  currentCustomerRows = remove(currentCustomerRows);
+  currentFilteredCustomerRows = remove(currentFilteredCustomerRows);
+  if (customerBoardData) {
+    customerBoardData.items = remove(customerBoardData.items || []);
+    customerBoardData.total = Math.max(0, Number(customerBoardData.total || 0) - 1);
+    if (customerBoardData.stageCounts) {
+      customerBoardData.stageCounts[PUBLIC_POOL_STAGE] = Math.max(0, Number(customerBoardData.stageCounts[PUBLIC_POOL_STAGE] || 0) - 1);
+      customerBoardData.stageCounts[stages[0]] = Number(customerBoardData.stageCounts[stages[0]] || 0) + 1;
+    }
+    if (customerBoardData.publicPool) customerBoardData.publicPool.count = Math.max(0, Number(customerBoardData.publicPool.count || 0) - 1);
+  }
+  if (state.publicPool) state.publicPool.count = Math.max(0, Number(state.publicPool.count || 0) - 1);
+  selectedCustomerIds.delete(numericId);
+  renderCustomers();
+  if (currentStage === PUBLIC_POOL_STAGE && customerBoardData && !customerBoardData.items.length && Number(customerBoardData.total || 0) > 0) {
+    loadCustomerBoardPage({ renderLoading: true, keepData: true }).catch((error) => toast(error.message));
+  }
+}
+
 async function claimCustomer(id, trigger = null) {
   const customer = scopeOpportunityRows().find((item) => Number(item.id) === Number(id))
     || currentFilteredCustomerRows.find((item) => Number(item.id) === Number(id))
@@ -2084,9 +2106,8 @@ async function claimCustomer(id, trigger = null) {
   toast("正在认领公海客户...");
   try {
     await api(`/opportunities/${id}/claim`, { method: "POST", body: {} });
-    prepareClaimedCustomerView();
-    await refreshCustomersAfterMutation();
-    toast("认领成功，客户已进入你的名单，请尽快跟进");
+    removeClaimedPublicPoolRow(id);
+    toast("认领成功，客户已进入你的名单，可继续认领下一条");
   } catch (error) {
     toast(error.message || "认领失败，客户可能已被他人认领");
     refreshCustomersAfterMutation().catch((refreshError) => toast(refreshError.message));
@@ -2108,14 +2129,11 @@ async function submitClaim(event) {
   setFormSubmitting(formNode, true, "认领中...");
   const form = new FormData(formNode);
   const id = Number(form.get("opportunityId"));
-  const productId = String(form.get("productId") || "");
   try {
-    const claimed = await api(`/opportunities/${id}/claim`, { method: "POST", body: productId ? { productId } : {} });
+    await api(`/opportunities/${id}/claim`, { method: "POST", body: {} });
     $("#claimDialog").close();
-    prepareClaimedCustomerView();
-    await refreshCustomersAfterMutation();
-    mergeOpportunityDetail({ ...claimed, hasDetail: true });
-    toast("认领成功，已进入你的名单，请尽快完成首次跟进");
+    removeClaimedPublicPoolRow(id);
+    toast("认领成功，客户已进入你的名单，可继续认领下一条");
   } catch (error) {
     await refreshCustomersAfterMutation();
     toast(error.message || "认领失败，客户可能已被他人认领");

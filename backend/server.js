@@ -16,6 +16,7 @@ const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : pat
 const DATA_FILE = path.join(DATA_DIR, "db.json");
 const BACKUP_FILE = path.join(DATA_DIR, "db.backup.json");
 const SEED_FILE = path.join(DATA_DIR, "seed.json");
+const FOLLOWUP_DIR = path.join(DATA_DIR, "followups");
 const UPLOAD_DIR = process.env.UPLOAD_DIR ? path.resolve(process.env.UPLOAD_DIR) : path.join(__dirname, "uploads");
 const FALLBACK_SEED_FILE = path.join(__dirname, "data", "seed.json");
 const PUBLIC_ROOT = path.resolve(__dirname, "..");
@@ -597,7 +598,7 @@ async function routeApi(req, res, url) {
     if (isArchived && !visibleArchivedOpportunities(authState, authUser).some((item) => Number(item.id) === Number(opportunity.id))) {
       return sendJson(res, 403, { error: "无权查看该销售机会" });
     }
-    return sendJson(res, 200, opportunityView(authState, opportunity));
+    return sendJson(res, 200, opportunityView(authState, opportunity, { includeExternalFollowUps: true }));
   }
 
   const customerOpportunityCreate = url.pathname.match(/^\/api\/customers\/(\d+)\/opportunities$/);
@@ -726,14 +727,14 @@ async function routeApi(req, res, url) {
     const next = normalizeOpportunity({
       ...previous,
       ...productUpdate.fields,
-      nextFollow: String(body.nextFollow || ""),
-      followUps: [...(previous.followUps || []), normalizeFollowUp({ date: body.date || today(), createdAt: new Date().toISOString(), author: viewer.name, note, nextFollow: body.nextFollow || "", isSystem: false }, previous)]
+      nextFollow: String(body.nextFollow || "")
     }, state);
+    appendManualFollowUp(state, next, { date: body.date || today(), createdAt: new Date().toISOString(), author: viewer.name, note, nextFollow: body.nextFollow || "" }, viewer);
     lockOpportunityOwnership(next, viewer, "提交有效跟进");
     state.opportunities[index] = next;
     syncCustomerCompatibility(state, next.customerId);
     writeState(state);
-    return sendJson(res, 200, opportunityView(state, next));
+    return sendJson(res, 200, opportunityView(state, next, { includeExternalFollowUps: true }));
   }
 
   const opportunityClaim = url.pathname.match(/^\/api\/opportunities\/(\d+)\/claim$/);
@@ -1262,20 +1263,11 @@ async function routeApi(req, res, url) {
       return sendJson(res, productUpdate.error.code === "DUPLICATE_ACTIVE_OPPORTUNITY" ? 409 : 400, productUpdate.error);
     }
     Object.assign(opportunity, productUpdate.fields);
-    opportunity.followUps = opportunity.followUps || [];
-    opportunity.followUps.push({
-      date: body.date || today(),
-      createdAt: new Date().toISOString(),
-      author: viewer?.name || "未记录",
-      note,
-      nextFollow: body.nextFollow || "",
-      isSystem: false
-    });
-    opportunity.nextFollow = String(body.nextFollow || "");
+    appendManualFollowUp(state, opportunity, { date: body.date || today(), createdAt: new Date().toISOString(), author: viewer?.name, note, nextFollow: body.nextFollow || "" }, viewer);
     lockOpportunityOwnership(opportunity, viewer, "提交有效跟进");
     syncCustomerCompatibility(state, customer.id);
     writeState(state);
-    return sendJson(res, 200, opportunityView(state, opportunity));
+    return sendJson(res, 200, opportunityView(state, opportunity, { includeExternalFollowUps: true }));
   }
 
   const customerAssign = url.pathname.match(/^\/api\/customers\/(\d+)\/assign$/);
@@ -2825,6 +2817,7 @@ function normalizeOpportunity(opportunity = {}, context = {}) {
     ? opportunity.followUps.map((item) => normalizeFollowUp(item, opportunity))
     : [normalizeFollowUp({ date: createdAt, author: opportunity.createdBy || ownerUser.name || "历史数据", note: "新增销售机会。", isSystem: true }, opportunity)];
   const latest = followUps[followUps.length - 1] || {};
+  const manualFollowCount = Number(opportunity.manualFollowCount || opportunity.followCount || followUps.filter((item) => isManualEffectiveFollow(item)).length || 0);
   const stage = STAGES.includes(opportunity.stage) ? opportunity.stage : "名单";
   return {
     id: Number(opportunity.id || Date.now()),
@@ -2858,6 +2851,12 @@ function normalizeOpportunity(opportunity = {}, context = {}) {
     purchasedInfo: normalizePurchasedInfo(opportunity.purchasedInfo || {}),
     rollbackHistory: Array.isArray(opportunity.rollbackHistory) ? opportunity.rollbackHistory : [],
     nextFollow: latest.nextFollow || opportunity.nextFollow || "",
+    manualFollowCount,
+    followCount: Number(opportunity.followCount || manualFollowCount || 0),
+    latestManualFollowAt: opportunity.latestManualFollowAt || opportunity.effectiveFollowUpAt || "",
+    lastFollow: opportunity.lastFollow || "",
+    lastFollowAuthor: opportunity.lastFollowAuthor || "",
+    lastNote: opportunity.lastNote || "",
     ownershipStatus: [OWNERSHIP_PENDING, OWNERSHIP_LOCKED, OWNERSHIP_PUBLIC, OWNERSHIP_CLAIMABLE].includes(opportunity.ownershipStatus)
       ? opportunity.ownershipStatus
       : OWNERSHIP_LOCKED,
@@ -2896,15 +2895,16 @@ function syncCustomerCompatibility(state, customerId) {
   const customer = findCustomer(state.customers || [], customerId);
   const opportunity = primaryOpportunity(state, customerId);
   if (!customer || !opportunity) return customer;
-  ["stage", "owner", "ownerId", "followPerson", "unitId", "unit", "zone", "region", "orgPath", "amount", "demoAt", "quoteAmount", "expectedDealDate", "contractAmount", "paymentAmount", "paymentDate", "paymentOwnerId", "paymentOwner", "lossReason", "lossReasonDetail", "outcomeStatus", "purchasedInfo", "rollbackHistory", "ownershipStatus", "claimUntil", "effectiveFollowUpAt", "publicPoolAt", "publicPoolReason", "ownershipHistory", "leadAt", "opportunityAt", "dealAt", "followUps"].forEach((field) => {
+  ["stage", "owner", "ownerId", "followPerson", "unitId", "unit", "zone", "region", "orgPath", "amount", "demoAt", "quoteAmount", "expectedDealDate", "contractAmount", "paymentAmount", "paymentDate", "paymentOwnerId", "paymentOwner", "lossReason", "lossReasonDetail", "outcomeStatus", "purchasedInfo", "rollbackHistory", "ownershipStatus", "claimUntil", "effectiveFollowUpAt", "publicPoolAt", "publicPoolReason", "ownershipHistory", "leadAt", "opportunityAt", "dealAt", "nextFollow", "manualFollowCount", "followCount", "latestManualFollowAt", "lastFollow", "lastFollowAuthor", "lastNote"].forEach((field) => {
     customer[field] = opportunity[field];
   });
   return customer;
 }
 
-function opportunityView(state, opportunity) {
+function opportunityView(state, opportunity, options = {}) {
   const customer = findCustomer(state.customers || [], opportunity.customerId) || {};
-  const latest = (opportunity.followUps || [])[opportunity.followUps.length - 1] || {};
+  const followUps = mergedFollowUpsForOpportunity(opportunity, { includeExternal: options.includeExternalFollowUps === true });
+  const latest = followUps[0] || {};
   const publicPool = opportunityPublicPoolInfo(opportunity, Date.now(), state);
   const rules = businessRules(state);
   const ownershipStatus = opportunityEffectiveOwnershipStatus(opportunity, publicPool, rules);
@@ -2939,13 +2939,16 @@ function opportunityView(state, opportunity) {
     lastFollow: latest.date || "",
     nextFollow: latest.nextFollow || opportunity.nextFollow || "",
     lastNote: latest.note || "",
-    followUps: (opportunity.followUps || []).map((item) => normalizeFollowUp(item, opportunity))
+    followUps
   };
 }
 
 function opportunityManualFollows(state, opportunity = {}) {
   const rules = businessRules(state);
-  return (opportunity.followUps || []).filter((item) => isEffectiveFollowForRules(item, rules));
+  const follows = inlineFollowUps(opportunity).filter((item) => isEffectiveFollowForRules(item, rules));
+  if (follows.length) return follows;
+  const summary = summaryFollowUp(opportunity);
+  return summary && isEffectiveFollowForRules(summary, rules) ? [summary] : [];
 }
 
 function latestOpportunityManualFollow(state, opportunity = {}) {
@@ -2996,9 +2999,10 @@ function opportunityListRow(state, opportunity = {}, options = {}) {
     productId: opportunity.productId || "",
     productName: opportunity.productName || "待确认产品",
     stage: opportunity.stage || STAGES[0],
-    ownerId: opportunity.ownerId || "",
-    owner: opportunity.owner || "",
-    followPerson: opportunity.followPerson || opportunity.owner || "",
+    ownerId: publicPool.isPublic ? "" : opportunity.ownerId || "",
+    owner: publicPool.isPublic ? PUBLIC_POOL_STATUS : opportunity.owner || "",
+    followPerson: publicPool.isPublic ? PUBLIC_POOL_STATUS : opportunity.followPerson || opportunity.owner || "",
+    followPersonDisplay: publicPool.isPublic ? PUBLIC_POOL_STATUS : opportunity.followPerson || opportunity.owner || "",
     createdBy: opportunity.createdBy || customer.createdBy || "未记录",
     unitId: opportunity.unitId || customer.unitId || "",
     unit: displayUnitName(state, opportunity, customer),
@@ -3295,7 +3299,7 @@ function claimOpportunityAtIndex(res, state, viewer, index, body = {}) {
   const previous = state.opportunities[index];
   if (!isOpportunityPublicPool(previous, Date.now(), state)) {
     if (Number(previous.ownerId) === Number(viewer.id)) {
-      return sendJson(res, 200, opportunityView(state, previous));
+      return sendJson(res, 200, claimOpportunityResponse(state, previous));
     }
     return sendJson(res, 409, { error: "该客户已被其他人认领，请刷新公海", code: "PUBLIC_POOL_ALREADY_CLAIMED" });
   }
@@ -3339,7 +3343,28 @@ function claimOpportunityAtIndex(res, state, viewer, index, body = {}) {
   const customer = findCustomer(state.customers || [], next.customerId);
   if (customer) transferCustomerVisits(state, customer, next);
   writeState(state);
-  return sendJson(res, 200, opportunityView(state, next));
+  return sendJson(res, 200, claimOpportunityResponse(state, next));
+}
+
+function claimOpportunityResponse(state, opportunity = {}) {
+  const row = opportunityListRow(state, opportunity);
+  return {
+    ok: true,
+    id: opportunity.id,
+    opportunityId: opportunity.id,
+    customerId: opportunity.customerId,
+    name: row.name || "",
+    phone: row.phone || "",
+    productId: row.productId || opportunity.productId || "",
+    productName: row.productName || opportunity.productName || "",
+    stage: opportunity.stage,
+    ownerId: opportunity.ownerId,
+    owner: opportunity.owner,
+    followPerson: opportunity.followPerson,
+    assignedAt: opportunity.assignedAt || latestAssignmentAt(opportunity),
+    ownershipStatus: opportunity.ownershipStatus,
+    row
+  };
 }
 
 function assignOpportunity(state, previous, target, viewer) {
@@ -3466,6 +3491,9 @@ function setStageTime(customer, stage, date = today()) {
 
 function normalizeFollowUp(item = {}, customer = {}) {
   return {
+    id: item.id || `${Date.now()}-${crypto.randomBytes(3).toString("hex")}`,
+    customerId: item.customerId || customer.customerId || customer.id || "",
+    opportunityId: item.opportunityId || customer.opportunityId || "",
     date: item.date || customer.lastFollow || customer.createdAt || today(),
     createdAt: item.createdAt || "",
     author: item.author || item.owner || customer.followPerson || customer.owner || "历史数据",
@@ -3474,6 +3502,107 @@ function normalizeFollowUp(item = {}, customer = {}) {
     source: item.source || "",
     isSystem: Boolean(item.isSystem)
   };
+}
+
+function followUpMonthKey(value = "") {
+  const parsed = Date.parse(value || "");
+  const date = Number.isFinite(parsed) ? new Date(parsed) : new Date();
+  return date.toISOString().slice(0, 7);
+}
+
+function followUpLogFile(value = "") {
+  return path.join(FOLLOWUP_DIR, `${followUpMonthKey(value)}.jsonl`);
+}
+
+function appendFollowUpLogEntry(entry = {}) {
+  if (!fs.existsSync(FOLLOWUP_DIR)) fs.mkdirSync(FOLLOWUP_DIR, { recursive: true });
+  const file = followUpLogFile(entry.createdAt || entry.date);
+  fs.appendFileSync(file, `${JSON.stringify(entry)}\n`, "utf8");
+  return file;
+}
+
+function readExternalFollowUpsForOpportunity(opportunityId) {
+  if (!fs.existsSync(FOLLOWUP_DIR)) return [];
+  const id = Number(opportunityId);
+  return fs.readdirSync(FOLLOWUP_DIR)
+    .filter((name) => name.endsWith(".jsonl"))
+    .flatMap((name) => fs.readFileSync(path.join(FOLLOWUP_DIR, name), "utf8")
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter((item) => item && Number(item.opportunityId) === id))
+    .map((item) => normalizeFollowUp(item, item))
+    .sort(sortByNewest);
+}
+
+function inlineFollowUps(opportunity = {}) {
+  return Array.isArray(opportunity.followUps)
+    ? opportunity.followUps.map((item) => normalizeFollowUp(item, opportunity))
+    : [];
+}
+
+function summaryFollowUp(opportunity = {}) {
+  if (!Number(opportunity.manualFollowCount || opportunity.followCount || 0)) return null;
+  const note = String(opportunity.lastNote || "").trim();
+  const at = opportunity.latestManualFollowAt || opportunity.lastFollow || opportunity.effectiveFollowUpAt || "";
+  if (!note && !at) return null;
+  return normalizeFollowUp({
+    id: `summary-${opportunity.id || "opportunity"}`,
+    customerId: opportunity.customerId,
+    opportunityId: opportunity.id,
+    date: String(opportunity.lastFollow || at).slice(0, 10),
+    createdAt: at,
+    author: opportunity.lastFollowAuthor || opportunity.followPerson || opportunity.owner,
+    note,
+    nextFollow: opportunity.nextFollow || "",
+    isSystem: false
+  }, opportunity);
+}
+
+function mergedFollowUpsForOpportunity(opportunity = {}, options = {}) {
+  const entries = inlineFollowUps(opportunity);
+  if (options.includeExternal !== false) entries.push(...readExternalFollowUpsForOpportunity(opportunity.id));
+  const seen = new Set();
+  const merged = entries
+    .filter((item) => {
+      const key = item.id || `${item.createdAt || item.date}-${item.author}-${item.note}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort(sortByNewest);
+  if (!merged.length) {
+    const summary = summaryFollowUp(opportunity);
+    if (summary) merged.push(summary);
+  }
+  return merged;
+}
+
+function appendManualFollowUp(state, opportunity = {}, follow = {}, viewer = {}) {
+  const normalized = normalizeFollowUp({
+    ...follow,
+    customerId: opportunity.customerId,
+    opportunityId: opportunity.id,
+    author: follow.author || viewer?.name || opportunity.followPerson || opportunity.owner,
+    isSystem: false
+  }, opportunity);
+  appendFollowUpLogEntry(normalized);
+  const oldManualCount = Number(opportunity.manualFollowCount || opportunity.followCount || inlineFollowUps(opportunity).filter((item) => isEffectiveFollowForRules(item, businessRules(state))).length || 0);
+  opportunity.manualFollowCount = oldManualCount + 1;
+  opportunity.followCount = opportunity.manualFollowCount;
+  opportunity.latestManualFollowAt = normalized.createdAt || normalized.date || new Date().toISOString();
+  opportunity.lastFollow = normalized.date || String(opportunity.latestManualFollowAt).slice(0, 10);
+  opportunity.lastFollowAuthor = normalized.author || viewer?.name || "";
+  opportunity.lastNote = normalized.note || "";
+  opportunity.nextFollow = String(normalized.nextFollow || "");
+  opportunity.effectiveFollowUpAt = normalized.createdAt || new Date().toISOString();
+  return normalized;
 }
 
 function normalizePhotos(value) {
@@ -3830,12 +3959,15 @@ function addDaysToIso(value, days) {
 }
 
 function latestEffectiveFollowTimestamp(record = {}, rules = DEFAULT_BUSINESS_RULES) {
-  const followUps = Array.isArray(record.followUps) ? record.followUps : [];
-  return followUps
+  const followUps = inlineFollowUps(record);
+  const inlineLatest = followUps
     .filter((item) => isEffectiveFollowForRules(item, rules))
     .map((item) => Date.parse(item.createdAt || item.date || ""))
     .filter(Number.isFinite)
     .sort((left, right) => right - left)[0] || NaN;
+  const summaryTime = Date.parse(manualSummaryTimestamp(record));
+  if (Number.isFinite(inlineLatest) && Number.isFinite(summaryTime)) return Math.max(inlineLatest, summaryTime);
+  return Number.isFinite(inlineLatest) ? inlineLatest : summaryTime;
 }
 
 function protectionDeadlineTime(record = {}, rules = DEFAULT_BUSINESS_RULES) {
@@ -3956,18 +4088,29 @@ function customerPublicPoolInfo(customer = {}, at = Date.now(), state = {}) {
 }
 
 function latestEffectiveManualFollowAt(customer = {}, rules = DEFAULT_BUSINESS_RULES) {
-  const followUps = Array.isArray(customer.followUps) ? customer.followUps : [];
-  return followUps
+  const followUps = inlineFollowUps(customer);
+  const inlineLatest = followUps
     .filter((item) => isEffectiveFollowForRules(item, rules))
     .map((item) => item.createdAt || item.date || "")
     .filter((value) => Number.isFinite(Date.parse(value)))
     .sort((left, right) => Date.parse(right) - Date.parse(left))[0] || "";
+  const summaryLatest = manualSummaryTimestamp(customer);
+  if (!inlineLatest) return summaryLatest;
+  if (!summaryLatest) return inlineLatest;
+  return Date.parse(summaryLatest) > Date.parse(inlineLatest) ? summaryLatest : inlineLatest;
 }
 
 function isManualEffectiveFollow(item = {}) {
   const note = String(item.note || "").trim();
   const syntheticNotes = new Set(["新增客户。", "名单文件导入。", "更新了客户信息。"]);
   return !item.isSystem && Boolean(note) && !syntheticNotes.has(note);
+}
+
+function manualSummaryTimestamp(record = {}) {
+  const count = Number(record.manualFollowCount || record.followCount || 0);
+  if (record.latestManualFollowAt) return record.latestManualFollowAt;
+  if (!count) return "";
+  return record.effectiveFollowUpAt || record.lastFollow || "";
 }
 
 function isEffectiveFollowForRules(item = {}, rules = DEFAULT_BUSINESS_RULES) {
@@ -4305,9 +4448,10 @@ function boardRowsForStage(board, stage) {
 
 function latestManualFollowRecord(record = {}) {
   if ((!Array.isArray(record.followUps) || !record.followUps.length) && Number(record.manualFollowCount || record.followCount || 0) > 0) {
+    const timestamp = manualSummaryTimestamp(record);
     return {
-      date: record.lastFollow || record.latestManualFollowAt || "",
-      createdAt: record.latestManualFollowAt || record.lastFollow || "",
+      date: record.lastFollow || timestamp,
+      createdAt: timestamp,
       note: record.lastNote || "",
       nextFollow: record.nextFollow || ""
     };
@@ -4324,7 +4468,7 @@ function latestManualFollowDate(record = {}) {
 
 function latestManualFollowTime(record = {}) {
   const latest = latestManualFollowRecord(record);
-  return latest?.createdAt || latest?.date || record.latestManualFollowAt || record.lastFollow || "";
+  return latest?.createdAt || latest?.date || manualSummaryTimestamp(record);
 }
 
 function hasManualFollow(record = {}) {
@@ -4367,8 +4511,8 @@ function filterBoardRows(rows = [], query = {}, stage = "") {
     if (keyword && !cleanText(`${row.name || ""} ${row.phone || ""}`).includes(keyword)) return false;
     if (channelSource && cleanText(normalizeChannelSource(row.channelSource)) !== channelSource) return false;
     if (createdBy && !cleanText(row.createdBy).includes(createdBy)) return false;
-    if (followPerson && !cleanText(row.followPerson || row.owner).includes(followPerson)) return false;
-    if (unit && cleanText(row.unit) !== unit) return false;
+    if (stage !== PUBLIC_POOL_STATUS && followPerson && !cleanText(row.followPerson || row.owner).includes(followPerson)) return false;
+    if (stage !== PUBLIC_POOL_STATUS && unit && cleanText(row.unit) !== unit) return false;
     if (city && cleanText(row.city) !== city) return false;
     if (followStatus === "unfollowed" && hasManualFollow(row)) return false;
     if (followStatus === "followed" && !hasManualFollow(row)) return false;
@@ -5043,7 +5187,11 @@ function latestAssignmentActionToday(state, item = {}, date = today()) {
 function hasManualFollowOnOrAfter(item = {}, actionAt = "") {
   const actionTime = Date.parse(actionAt);
   const actionDate = String(actionAt || "").slice(0, 10);
-  return (item.followUps || []).some((follow) => {
+  const summaryTimestamp = manualSummaryTimestamp(item);
+  const summaryTime = Date.parse(summaryTimestamp);
+  if (Number.isFinite(actionTime) && Number.isFinite(summaryTime) && summaryTime >= actionTime) return true;
+  if (!Number.isFinite(actionTime) && actionDate && String(summaryTimestamp).slice(0, 10) >= actionDate) return true;
+  return inlineFollowUps(item).some((follow) => {
     if (!isManualEffectiveFollow(follow)) return false;
     const followTime = Date.parse(follow.createdAt || "");
     if (Number.isFinite(actionTime) && Number.isFinite(followTime)) return followTime >= actionTime;
@@ -5102,13 +5250,20 @@ function buildFollowLeaderboard(state, viewer, scope, customers = []) {
   const counts = new Map(scopedUsers.map((user) => [Number(user.id), 0]));
   const nameToUser = new Map(scopedUsers.map((user) => [cleanText(user.name), user]));
   customers.forEach((item) => {
-    (item.followUps || []).forEach((follow) => {
+    let hasInlineToday = false;
+    inlineFollowUps(item).forEach((follow) => {
       if (!isManualEffectiveFollow(follow)) return;
       if (String(follow.createdAt || follow.date || "").slice(0, 10) !== date) return;
       const user = nameToUser.get(cleanText(follow.author));
       if (!user) return;
+      hasInlineToday = true;
       counts.set(Number(user.id), (counts.get(Number(user.id)) || 0) + 1);
     });
+    const latestDate = String(manualSummaryTimestamp(item)).slice(0, 10);
+    if (!hasInlineToday && latestDate === date) {
+      const user = nameToUser.get(cleanText(item.lastFollowAuthor || item.followPerson || item.owner));
+      if (user) counts.set(Number(user.id), (counts.get(Number(user.id)) || 0) + 1);
+    }
   });
   const rows = scopedUsers.map((user) => ({
     userId: user.id,

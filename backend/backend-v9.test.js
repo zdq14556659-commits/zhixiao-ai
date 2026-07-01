@@ -8,6 +8,7 @@ const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "zhixiao-v9-test-"));
 const port = 25000 + Math.floor(Math.random() * 1000);
 const baseUrl = `http://127.0.0.1:${port}/api`;
 const now = new Date().toISOString();
+const today = now.slice(0, 10);
 const seed = {
   version: "backend-v8",
   moneyUnit: "yuan",
@@ -26,12 +27,12 @@ const seed = {
     { id: 7, name: "周扬", account: "zhouyang", password: "123456", role: "销售", roleId: "role-sales", unitId: "unit-east-child", unit: "杭州一部", zone: "东部战区" }
   ],
   customers: [
-    { id: 101, name: "杭州工厂", phone: "13800001001", ownerId: 2, owner: "杭州销售", unitId: "unit-east-child", unit: "杭州一部", zone: "东部战区", lifecycleStatus: "active", createdAt: "2026-06-01" },
-    { id: 102, name: "成都工厂", phone: "13800001002", ownerId: 5, owner: "西区销售", unitId: "unit-west", unit: "成都一部", zone: "西部战区", lifecycleStatus: "active", createdAt: "2026-06-01" }
+    { id: 101, name: "杭州工厂", phone: "13800001001", ownerId: 2, owner: "杭州销售", unitId: "unit-east-child", unit: "杭州一部", zone: "东部战区", lifecycleStatus: "active", createdAt: today },
+    { id: 102, name: "成都工厂", phone: "13800001002", ownerId: 5, owner: "西区销售", unitId: "unit-west", unit: "成都一部", zone: "西部战区", lifecycleStatus: "active", createdAt: today }
   ],
   opportunities: [
-    { id: 201, customerId: 101, productId: "product-v1", productName: "V1", stage: "名单", ownerId: 2, owner: "杭州销售", unitId: "unit-east-child", unit: "杭州一部", zone: "东部战区", ownershipStatus: "locked", createdAt: "2026-06-01", followUps: [{ date: "2026-06-01", createdAt: now, author: "杭州销售", note: "新增客户", isSystem: true }] },
-    { id: 202, customerId: 102, productId: "product-v1", productName: "V1", stage: "名单", ownerId: 5, owner: "西区销售", unitId: "unit-west", unit: "成都一部", zone: "西部战区", ownershipStatus: "locked", createdAt: "2026-06-01", followUps: [{ date: "2026-06-01", createdAt: now, author: "西区销售", note: "新增客户", isSystem: true }] }
+    { id: 201, customerId: 101, productId: "product-v1", productName: "V1", stage: "名单", ownerId: 2, owner: "杭州销售", unitId: "unit-east-child", unit: "杭州一部", zone: "东部战区", ownershipStatus: "locked", createdAt: today, followUps: [{ date: today, createdAt: now, author: "杭州销售", note: "新增客户", isSystem: true }] },
+    { id: 202, customerId: 102, productId: "product-v1", productName: "V1", stage: "名单", ownerId: 5, owner: "西区销售", unitId: "unit-west", unit: "成都一部", zone: "西部战区", ownershipStatus: "locked", createdAt: today, followUps: [{ date: today, createdAt: now, author: "西区销售", note: "新增客户", isSystem: true }] }
   ],
   visits: [], activities: [], knowledge: [], resources: [], routes: [], targets: []
 };

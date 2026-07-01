@@ -19,6 +19,7 @@ const T = {
   other: "\u5176\u4ed6",
   v1: "V1"
 };
+const recentDate = new Date().toISOString().slice(0, 10);
 
 const seed = {
   version: "backend-v9",
@@ -41,7 +42,7 @@ const seed = {
     unitId: "unit-a",
     unit: T.unit,
     zone: T.eastZone,
-    createdAt: "2026-06-01",
+    createdAt: recentDate,
     contacts: [{ name: "Primary", phone: "13900000011", isPrimary: true }]
   }],
   opportunities: [{
@@ -57,7 +58,7 @@ const seed = {
     unit: T.unit,
     zone: T.eastZone,
     createdBy: "Admin",
-    createdAt: "2026-06-01",
+    createdAt: recentDate,
     ownershipStatus: "locked",
     followUps: []
   }],
@@ -152,11 +153,22 @@ async function run() {
   const immediateOpportunity = immediateState.data.opportunities.find((item) => Number(item.id) === 101);
   assert.ok(immediateOpportunity, "followed opportunity should be visible immediately");
   assert.equal(immediateOpportunity.nextFollow, nextFollow);
-  assert.ok(immediateOpportunity.followUps.some((item) => item.note === note));
+  assert.equal(immediateOpportunity.lastNote, note);
+  const immediateDetail = await request("/opportunities/101/detail", { token });
+  assert.equal(immediateDetail.status, 200, JSON.stringify(immediateDetail.data));
+  assert.ok(immediateDetail.data.followUps.some((item) => item.note === note));
 
   const disk = JSON.parse(fs.readFileSync(dataFile, "utf8"));
   const diskOpportunity = disk.opportunities.find((item) => Number(item.id) === 101);
-  assert.ok(diskOpportunity.followUps.some((item) => item.note === note && item.nextFollow === nextFollow));
+  assert.ok(!diskOpportunity.followUps.some((item) => item.note === note && item.nextFollow === nextFollow));
+  assert.equal(diskOpportunity.lastNote, note);
+  assert.equal(diskOpportunity.nextFollow, nextFollow);
+  const followLogDir = path.join(tempDir, "followups");
+  const followLogContent = fs.readdirSync(followLogDir)
+    .filter((name) => name.endsWith(".jsonl"))
+    .map((name) => fs.readFileSync(path.join(followLogDir, name), "utf8"))
+    .join("\n");
+  assert.ok(followLogContent.includes(note));
 
   await stopServer();
   startServer();
@@ -165,8 +177,11 @@ async function run() {
   const restartedState = await request("/state?lite=1", { token: tokenAfterRestart });
   assert.equal(restartedState.status, 200, JSON.stringify(restartedState.data));
   const restartedOpportunity = restartedState.data.opportunities.find((item) => Number(item.id) === 101);
-  assert.ok(restartedOpportunity.followUps.some((item) => item.note === note && item.nextFollow === nextFollow));
+  assert.equal(restartedOpportunity.lastNote, note);
   assert.equal(restartedOpportunity.nextFollow, nextFollow);
+  const restartedDetail = await request("/opportunities/101/detail", { token: tokenAfterRestart });
+  assert.equal(restartedDetail.status, 200, JSON.stringify(restartedDetail.data));
+  assert.ok(restartedDetail.data.followUps.some((item) => item.note === note && item.nextFollow === nextFollow));
 }
 
 run()

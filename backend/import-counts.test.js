@@ -23,6 +23,7 @@ const T = {
   pendingProduct: "\u5f85\u786e\u8ba4\u4ea7\u54c1",
   v1: "V1"
 };
+const today = new Date().toISOString().slice(0, 10);
 
 const seed = {
   version: "backend-v9",
@@ -46,7 +47,7 @@ const seed = {
     unitId: "unit-a",
     unit: T.unit,
     zone: T.eastZone,
-    createdAt: "2026-06-01",
+    createdAt: today,
     contacts: [{ name: "\u4e3b\u8054\u7cfb\u4eba", phone: "13900000000", isPrimary: true }]
   }],
   opportunities: [{
@@ -62,7 +63,7 @@ const seed = {
     unit: T.unit,
     zone: T.eastZone,
     createdBy: "Admin",
-    createdAt: "2026-06-01",
+    createdAt: today,
     ownershipStatus: "locked",
     followUps: []
   }],

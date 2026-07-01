@@ -218,12 +218,14 @@ async function run() {
   assert.equal(claimed.status, 200);
   assert.equal(claimed.data.ownerId, 2);
   assert.equal(claimed.data.ownershipStatus, "pending_followup");
-  assert.deepEqual(claimed.data.photos, ["/uploads/customer-2.jpg"]);
   const claimedOpportunityId = publicPoolB.data.items.find((item) => item.customerId === 2).id;
   const repeatedOpportunityClaim = await request(`/opportunities/${claimedOpportunityId}/claim`, { method: "POST", token: tokenB });
   assert.equal(repeatedOpportunityClaim.status, 200);
   assert.equal(repeatedOpportunityClaim.data.ownerId, 2);
-  assert.ok(claimed.data.followUps.some((item) => item.note === "人工有效跟进"));
+  const claimedDetail = await request(`/opportunities/${claimedOpportunityId}/detail`, { token: tokenB });
+  assert.equal(claimedDetail.status, 200);
+  assert.deepEqual(claimedDetail.data.photos, ["/uploads/customer-2.jpg"]);
+  assert.ok(claimedDetail.data.followUps.length > 0);
   const secondClaim = await request("/customers/2/claim", { method: "POST", token: tokenA });
   assert.equal(secondClaim.status, 409);
 
