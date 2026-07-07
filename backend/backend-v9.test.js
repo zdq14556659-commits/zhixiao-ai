@@ -104,6 +104,17 @@ async function run() {
   const supervisor = await login("supervisor");
   const region = await login("region");
 
+  const unitIdBoard = await request("/customer-board?paginated=1&unit=unit-east-child", { token: admin });
+  assert.equal(unitIdBoard.status, 200);
+  assert.ok(unitIdBoard.data.items.some((item) => item.customerId === 101));
+  assert.ok(!unitIdBoard.data.items.some((item) => item.customerId === 102));
+
+  const eastChildName = migrated.units.find((unit) => unit.id === "unit-east-child").name;
+  const unitNameBoard = await request(`/customer-board?paginated=1&unit=${encodeURIComponent(eastChildName)}`, { token: admin });
+  assert.equal(unitNameBoard.status, 200);
+  assert.ok(unitNameBoard.data.items.some((item) => item.customerId === 101));
+  assert.ok(!unitNameBoard.data.items.some((item) => item.customerId === 102));
+
   const supervisorBoard = await request("/customer-board", { token: supervisor });
   assert.equal(supervisorBoard.status, 200);
   assert.ok(supervisorBoard.data.items.some((item) => item.customerId === 101));
@@ -173,6 +184,11 @@ async function run() {
   assert.equal(publicNoAddressImport.data.pendingLocation, 1);
   const boardAfterNoAddressImport = await request("/customer-board", { token: sales });
   assert.ok(boardAfterNoAddressImport.data.publicPool.items.some((item) => item.name === "福州无地址公海工厂"));
+  const publicCreatedFilter = await request(`/customer-board?paginated=1&stage=${encodeURIComponent("公海")}&createdStart=${today}&createdEnd=${today}`, { token: admin });
+  assert.equal(publicCreatedFilter.status, 200);
+  assert.ok(publicCreatedFilter.data.items.some((item) => item.name === "绍兴公海导入工厂"));
+  assert.ok(publicCreatedFilter.data.items.some((item) => item.name === "福州无地址公海工厂"));
+  assert.ok(publicCreatedFilter.data.filterOptions.createdBy.includes("管理员"));
 
   const leadStatusImport = await request("/import/customers", { method: "POST", token: admin, body: {
     moneyUnit: "yuan",

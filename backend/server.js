@@ -3257,6 +3257,7 @@ function sanitizePublicPoolOpportunity(customer = {}, opportunity = {}, state = 
     productId: opportunity.productId,
     productName: opportunity.productName,
     stage: opportunity.stage,
+    createdAt: opportunity.createdAt || customer.createdAt || "",
     ownershipStatus: OWNERSHIP_PUBLIC,
     publicPoolAt: pool.at,
     publicPoolReason: pool.reason,
@@ -4494,6 +4495,20 @@ function dateMatchesOptionalRange(value, start, end) {
   return true;
 }
 
+function rowMatchesUnitFilter(row = {}, unitFilter = "") {
+  const target = cleanText(unitFilter);
+  if (!target) return true;
+  const unitId = cleanText(row.unitId);
+  const unitName = cleanText(row.unit);
+  const orgPath = cleanText(row.orgPath || row.unitPath || "");
+  if ([unitId, unitName, orgPath].some((value) => value && value === target)) return true;
+  const pathParts = String(row.orgPath || row.unitPath || "")
+    .split(/[/>｜|]+/)
+    .map((part) => cleanText(part))
+    .filter(Boolean);
+  return pathParts.includes(target);
+}
+
 function filterBoardRows(rows = [], query = {}, stage = "") {
   const keyword = cleanText(query.keyword);
   const channelSource = cleanText(query.channelSource);
@@ -4512,10 +4527,11 @@ function filterBoardRows(rows = [], query = {}, stage = "") {
     if (channelSource && cleanText(normalizeChannelSource(row.channelSource)) !== channelSource) return false;
     if (createdBy && !cleanText(row.createdBy).includes(createdBy)) return false;
     if (stage !== PUBLIC_POOL_STATUS && followPerson && !cleanText(row.followPerson || row.owner).includes(followPerson)) return false;
-    if (stage !== PUBLIC_POOL_STATUS && unit && cleanText(row.unit) !== unit) return false;
+    if (stage !== PUBLIC_POOL_STATUS && unit && !rowMatchesUnitFilter(row, unit)) return false;
     if (city && cleanText(row.city) !== city) return false;
     if (followStatus === "unfollowed" && hasManualFollow(row)) return false;
     if (followStatus === "followed" && !hasManualFollow(row)) return false;
+    if (!dateMatchesOptionalRange(row.createdAt, query.createdStart, query.createdEnd)) return false;
     if (!dateMatchesOptionalRange(stageDateForBoardRow(row, stage), query.stageStart, query.stageEnd)) return false;
     if (!dateMatchesOptionalRange(latestManualFollowDate(row), query.lastStart, query.lastEnd)) return false;
     if (!dateMatchesOptionalRange(row.nextFollow, query.nextStart, query.nextEnd)) return false;

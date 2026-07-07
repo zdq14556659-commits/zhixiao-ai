@@ -199,6 +199,20 @@ function renderUnitOptions(selectedId = "", options = {}) {
     .join("");
 }
 
+function customerUnitFilterOptions(rowUnits = []) {
+  const items = [];
+  selectableUnits().forEach((unit) => {
+    if (!unit.id) return;
+    items.push({ value: unit.id, label: unitLabel(unit) });
+  });
+  rowUnits.forEach((unitName) => {
+    const name = String(unitName || "").trim();
+    if (!name) return;
+    items.push({ value: name, label: name });
+  });
+  return items;
+}
+
 function recordOwner(record = {}) {
   return state.users.find((user) => user.id === record.ownerId) || state.users.find((user) => user.name === record.owner) || {};
 }
@@ -400,6 +414,18 @@ function customerStageTime(customer = {}, stage = currentStage) {
 function optionList(label, values) {
   const options = [...new Set(values.filter(Boolean))];
   return `<option value="">${label}</option>${options.map((value) => `<option>${escapeHtml(value)}</option>`).join("")}`;
+}
+
+function optionListItems(label, items = []) {
+  const seen = new Set();
+  const options = [];
+  items.forEach((item) => {
+    const value = String(item?.value ?? item ?? "").trim();
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    options.push(`<option value="${escapeHtml(value)}">${escapeHtml(item?.label || value)}</option>`);
+  });
+  return `<option value="">${label}</option>${options.join("")}`;
 }
 
 function datalistOptions(values) {
@@ -774,6 +800,8 @@ function customerBoardQuery() {
     unit: $("#unitFilter")?.value || "",
     city: $("#cityFilter")?.value || "",
     followStatus: $("#followStatusFilter")?.value || "",
+    createdStart: $("#createdTimeStart")?.value || "",
+    createdEnd: $("#createdTimeEnd")?.value || "",
     stageStart: $("#stageTimeStart")?.value || "",
     stageEnd: $("#stageTimeEnd")?.value || "",
     lastStart: $("#lastFollowStart")?.value || "",
@@ -1313,7 +1341,11 @@ function renderCustomers() {
 
   const ownerOptions = visibleFollowUsers();
   const filterOptions = serverBoard?.filterOptions || {};
-  const createdByOptions = filterOptions.createdBy || customers.map((item) => item.createdBy);
+  const createdByOptions = [
+    ...(filterOptions.createdBy || []),
+    ...visibleUsers().map((user) => user.name),
+    currentUser().name
+  ];
   const followPersonOptions = [
     ...(filterOptions.followPerson || []),
     ...ownerOptions.map((user) => user.name)
@@ -1325,9 +1357,9 @@ function renderCustomers() {
   $("#followPersonFilterOptions").innerHTML = datalistOptions(followPersonOptions);
   $("#createdByFilter").placeholder = "全部录入人";
   $("#followPersonFilter").placeholder = roleForUser(currentUser()).customerScope === "self" ? "当前仅本人" : "全部跟进人";
-  $("#unitFilter").innerHTML = optionList("全部单位", unitOptions);
   $("#cityFilter").innerHTML = optionList("全部城市", cityOptions);
   $("#channelFilter").value = currentFilters.channel;
+  $("#unitFilter").innerHTML = optionListItems("全部单位", customerUnitFilterOptions(unitOptions));
   $("#createdByFilter").value = currentFilters.createdBy;
   $("#followPersonFilter").value = currentFilters.followPerson;
   $("#unitFilter").value = currentFilters.unit;
@@ -1371,6 +1403,8 @@ function renderCustomers() {
   const unit = $("#unitFilter").value;
   const city = $("#cityFilter").value;
   const followStatus = $("#followStatusFilter")?.value || "";
+  const createdStart = $("#createdTimeStart")?.value || "";
+  const createdEnd = $("#createdTimeEnd")?.value || "";
   const stageStart = $("#stageTimeStart").value;
   const stageEnd = $("#stageTimeEnd").value;
   const lastStart = $("#lastFollowStart").value;
@@ -1412,6 +1446,7 @@ function renderCustomers() {
     if (city && item.city !== city) return false;
     if (followStatus === "unfollowed" && manualFollowUps(item).length) return false;
     if (followStatus === "followed" && !manualFollowUps(item).length) return false;
+    if (!inDateRange(String(item.createdAt || "").slice(0, 10), createdStart, createdEnd)) return false;
     if (!inDateRange(customerStageTime(item), stageStart, stageEnd)) return false;
     if (!inDateRange(latestManualFollowDate(item), lastStart, lastEnd)) return false;
     if (!inDateRange(item.nextFollow || "", nextStart, nextEnd)) return false;
@@ -3058,7 +3093,7 @@ function sanitizeCustomerFiltersForStage(stage = currentStage) {
 }
 
 function clearCustomerFilters() {
-  ["customerKeyword", "stageTimeStart", "stageTimeEnd", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
+  ["customerKeyword", "createdTimeStart", "createdTimeEnd", "stageTimeStart", "stageTimeEnd", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
     const node = $(`#${id}`);
     if (node) node.value = "";
   });
@@ -3205,7 +3240,7 @@ function wireEvents() {
     sanitizeCustomerFiltersForStage(currentStage);
     loadCustomerBoardPage().catch((error) => toast(error.message));
   });
-  ["customerKeyword", "channelFilter", "createdByFilter", "followPersonFilter", "unitFilter", "cityFilter", "followStatusFilter", "customerSort", "stageTimeStart", "stageTimeEnd", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
+  ["customerKeyword", "channelFilter", "createdByFilter", "followPersonFilter", "unitFilter", "cityFilter", "followStatusFilter", "customerSort", "createdTimeStart", "createdTimeEnd", "stageTimeStart", "stageTimeEnd", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
     const resetAndRender = () => {
       dashboardDrilldownIds = null;
       customerPage = 1;
