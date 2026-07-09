@@ -115,12 +115,12 @@ async function run() {
   assert.ok(unitNameBoard.data.items.some((item) => item.customerId === 101));
   assert.ok(!unitNameBoard.data.items.some((item) => item.customerId === 102));
 
-  const supervisorBoard = await request("/customer-board", { token: supervisor });
+  const supervisorBoard = await request("/customer-board?full=1", { token: supervisor });
   assert.equal(supervisorBoard.status, 200);
   assert.ok(supervisorBoard.data.items.some((item) => item.customerId === 101));
   assert.ok(!supervisorBoard.data.items.some((item) => item.customerId === 102));
 
-  const regionBoard = await request("/customer-board", { token: region });
+  const regionBoard = await request("/customer-board?full=1", { token: region });
   assert.equal(regionBoard.status, 200);
   assert.ok(regionBoard.data.items.some((item) => item.customerId === 101));
   assert.ok(!regionBoard.data.items.some((item) => item.customerId === 102));
@@ -202,7 +202,7 @@ async function run() {
   assert.equal(forbiddenDelete.status, 403);
   const deleteCustomer = await request("/customers/101", { method: "DELETE", token: admin });
   assert.equal(deleteCustomer.status, 200);
-  const boardAfterDelete = await request("/customer-board", { token: admin });
+  const boardAfterDelete = await request("/customer-board?full=1", { token: admin });
   assert.ok(!boardAfterDelete.data.items.some((item) => item.customerId === 101));
 
   await stopServer();

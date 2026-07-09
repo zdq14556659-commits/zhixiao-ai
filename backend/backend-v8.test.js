@@ -104,22 +104,22 @@ async function run() {
   const supervisor = await login("supervisor");
   const region = await login("region");
 
-  const adminBoard = await request("/customer-board", { token: admin });
+  const adminBoard = await request("/customer-board?full=1", { token: admin });
   assert.equal(adminBoard.status, 200);
   assert.equal(adminBoard.data.backendVersion, "backend-v9");
   assert.ok(adminBoard.data.items.some((item) => item.customerId === 101));
   assert.ok(adminBoard.data.items.some((item) => item.customerId === 102));
   assert.equal(adminBoard.data.publicPool.count, 1);
-  const salesBoard = await request("/customer-board", { token: salesA });
+  const salesBoard = await request("/customer-board?full=1", { token: salesA });
   assert.equal(salesBoard.status, 200);
   assert.deepEqual(salesBoard.data.items.map((item) => item.customerId), [101]);
   assert.equal(salesBoard.data.publicPool.count, 1);
   assert.equal(salesBoard.data.invalid.count, 1);
   assert.ok(salesBoard.data.invalid.items.some((item) => item.customerId === 104 && item.lifecycleStatus === "archived"));
-  const adminMiniState = await request("/state?client=mini", { token: admin });
+  const adminMiniState = await request("/state?client=mini&full=1", { token: admin });
   assert.ok(adminMiniState.data.opportunities.some((item) => item.customerId === 101));
   assert.ok(adminMiniState.data.opportunities.some((item) => item.customerId === 102));
-  const salesMiniState = await request("/state?client=mini", { token: salesA });
+  const salesMiniState = await request("/state?client=mini&full=1", { token: salesA });
   assert.deepEqual(salesMiniState.data.opportunities.map((item) => item.customerId), [101, 104]);
   assert.deepEqual(salesMiniState.data.customers.map((item) => item.id), [101]);
 
@@ -203,7 +203,7 @@ async function run() {
   assert.equal(newFactoryVisit.status, 201, JSON.stringify(newFactoryVisit.data));
   assert.ok(newFactoryVisit.data.customerId);
   assert.ok(newFactoryVisit.data.opportunityId);
-  const boardAfterVisit = await request("/customer-board", { token: salesA });
+  const boardAfterVisit = await request("/customer-board?full=1", { token: salesA });
   const newFactoryOpportunity = boardAfterVisit.data.items.find((item) => item.customerId === newFactoryVisit.data.customerId);
   assert.equal(newFactoryOpportunity.productName, "待确认产品");
   assert.equal(newFactoryOpportunity.stage, "线索");

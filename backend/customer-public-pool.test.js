@@ -178,8 +178,8 @@ async function run() {
   const tokenB = await login("sales-b");
   const tokenOps = await login("ops");
 
-  const stateA = await request("/state?client=mini", { token: tokenA });
-  const stateB = await request("/state?client=mini", { token: tokenB });
+  const stateA = await request("/state?client=mini&full=1", { token: tokenA });
+  const stateB = await request("/state?client=mini&full=1", { token: tokenB });
   assert.equal(stateA.status, 200);
   assert.equal(stateB.status, 200);
   assert.equal(stateA.data.customers.find((item) => item.id === 1).ownershipStatus, "locked");
@@ -235,9 +235,9 @@ async function run() {
   ]);
   assert.deepEqual(simultaneousClaims.map((item) => item.status).sort(), [200, 409]);
 
-  const afterClaimA = await request("/state?client=mini", { token: tokenA });
+  const afterClaimA = await request("/state?client=mini&full=1", { token: tokenA });
   assert.ok(!afterClaimA.data.customers.some((item) => item.id === 2));
-  const afterClaimB = await request("/state?client=mini", { token: tokenB });
+  const afterClaimB = await request("/state?client=mini&full=1", { token: tokenB });
   assert.ok(afterClaimB.data.visits.some((item) => item.id === 200 && item.ownerId === 2));
   const missingProductFollow = await request("/customers/2/follow", { method: "POST", token: tokenB, body: { note: "认领后的首次有效跟进", nextFollow: dateDaysAgo(-2) } });
   assert.equal(missingProductFollow.status, 400);

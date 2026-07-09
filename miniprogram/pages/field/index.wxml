@@ -59,16 +59,15 @@
   <form bindsubmit="submitVisit">
     <view class="card fresh-card">
       <view class="row form-title-row"><view class="section-title no-bottom">{{editingVisitId ? '编辑拜访' : '上传打卡'}}</view><button wx:if="{{editingVisitId}}" class="plain-btn mini-cancel" type="button" bindtap="cancelEdit">取消编辑</button></view>
-      <view class="form-item"><text class="label">工厂名称</text><input name="factory" value="{{form.factory}}" placeholder="杭州雅居全屋定制工厂" /></view>
-      <view class="form-item"><text class="label">客户电话</text><input name="phone" type="number" value="{{form.phone}}" placeholder="客户手机号" /></view>
-      <view class="form-item"><text class="label">数量*开料设备</text><input name="cuttingDevice" value="{{form.cuttingDevice}}" placeholder="2*电子锯" /></view>
-      <view class="form-item"><text class="label">数量*打孔设备</text><input name="drillingDevice" value="{{form.drillingDevice}}" placeholder="1*六面钻" /></view>
+      <view class="form-item"><text class="label">工厂名称</text><input name="factory" value="{{form.factory}}" data-field="factory" bindinput="onFormInput" placeholder="杭州雅居全屋定制工厂" /></view>
+      <view class="form-item"><text class="label">客户电话</text><input name="phone" type="number" value="{{form.phone}}" data-field="phone" bindinput="onFormInput" placeholder="客户手机号" /></view>
+      <view class="form-item"><text class="label">数量*开料设备</text><input name="cuttingDevice" value="{{form.cuttingDevice}}" data-field="cuttingDevice" bindinput="onFormInput" placeholder="2*电子锯" /></view>
+      <view class="form-item"><text class="label">数量*打孔设备</text><input name="drillingDevice" value="{{form.drillingDevice}}" data-field="drillingDevice" bindinput="onFormInput" placeholder="1*六面钻" /></view>
       <view class="form-item"><text class="label">当前使用软件</text><picker range="{{softwareOptions}}" value="{{softwareIndex}}" bindchange="onSoftware"><view class="picker-box">{{softwareOptions[softwareIndex]}}</view></picker><input name="software" value="{{softwareOptions[softwareIndex]}}" hidden /></view>
-      <view class="form-item"><text class="label">软件版本价格</text><input name="softwarePrice" value="{{form.softwarePrice}}" placeholder="基础版 / 每年30000元" /></view>
+      <view class="form-item"><text class="label">软件版本价格</text><input name="softwarePrice" value="{{form.softwarePrice}}" data-field="softwarePrice" bindinput="onFormInput" placeholder="基础版 / 每年30000元" /></view>
       <view class="form-item"><text class="label">市场状态</text><picker range="{{statuses}}" value="{{statusIndex}}" bindchange="onStatus"><view class="picker-box">{{statuses[statusIndex]}}</view></picker></view>
-      <view class="form-item"><text class="label">客户异议</text><input name="objections" value="{{form.objections}}" placeholder="价格、迁移、员工学习成本等" /></view>
-      <view class="form-item"><text class="label">拜访结果</text><textarea name="result" value="{{form.result}}" placeholder="本次见到谁、沟通了什么、下一步计划"></textarea></view>
-      <view class="form-item"><text class="label">未成交原因</text><input name="lossReason" value="{{form.lossReason}}" placeholder="预算不足 / 老板未决策 / 现系统未到期" /></view>
+      <view class="form-item"><text class="label">拜访结果</text><textarea name="result" value="{{form.result}}" data-field="result" bindinput="onFormInput" placeholder="本次见到谁、沟通了什么、下一步计划"></textarea></view>
+      <view class="form-item"><text class="label">未成交原因</text><input name="lossReason" value="{{form.lossReason}}" data-field="lossReason" bindinput="onFormInput" placeholder="预算不足 / 老板未决策 / 现系统未到期" /></view>
 
       <view class="form-item">
         <view class="row"><text class="label no-margin">现场图片</text><text class="muted">{{photos.length}}/6</text></view>
@@ -90,4 +89,5 @@
       <scroll-view wx:if="{{item.photos && item.photos.length}}" class="visit-photos" scroll-x><image wx:for="{{item.photos}}" wx:key="*this" src="{{item}}" mode="aspectFill" catchtap="previewPhoto" data-src="{{item}}"></image></scroll-view>
     </view>
   </view>
+  <canvas class="watermark-canvas" canvas-id="fieldWatermarkCanvas" style="width:{{watermarkCanvas.width}}px;height:{{watermarkCanvas.height}}px;"></canvas>
 </view>

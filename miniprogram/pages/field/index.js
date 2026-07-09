@@ -27,6 +27,7 @@ Page({
     softwareIndex: 0,
     routeSelectedIds: [],
     todayRoute: null,
+    watermarkCanvas: { width: 900, height: 1200 },
     form: {}
   },
 
@@ -224,8 +225,108 @@ Page({
   onStatus(event) { this.setData({ statusIndex: Number(event.detail.value) }); },
   onSoftware(event) { this.setData({ softwareIndex: Number(event.detail.value) }); },
 
+  onFormInput(event) {
+    const field = event.currentTarget.dataset.field;
+    if (!field) return;
+    this.setData({ [`form.${field}`]: event.detail.value });
+  },
+
   choosePhotos() {
-    wx.chooseMedia({ count: 6 - this.data.photos.length, mediaType: ["image"], sourceType: ["album", "camera"], success: (res) => this.setData({ photos: [...this.data.photos, ...res.tempFiles.map((item) => item.tempFilePath)].slice(0, 6) }) });
+    const count = 6 - this.data.photos.length;
+    if (count <= 0) return;
+    if (!String(this.data.form.factory || "").trim()) {
+      wx.showToast({ title: "请先填写工厂名称", icon: "none" });
+      return;
+    }
+    if (!this.data.locationReady || !this.data.currentAddress) {
+      wx.showToast({ title: "请先选择工厂位置", icon: "none" });
+      return;
+    }
+    wx.chooseMedia({
+      count,
+      mediaType: ["image"],
+      sourceType: ["camera"],
+      camera: "back",
+      success: async (res) => {
+        wx.showLoading({ title: "生成水印中" });
+        try {
+          const stampedPhotos = [];
+          for (const item of (res.tempFiles || [])) {
+            stampedPhotos.push(await this.addPhotoWatermark(item.tempFilePath));
+          }
+          this.setData({ photos: [...this.data.photos, ...stampedPhotos].slice(0, 6) });
+        } catch (error) {
+          wx.showModal({ title: "拍照失败", content: "现场照片水印生成失败，请重新拍照", showCancel: false });
+        } finally {
+          wx.hideLoading();
+        }
+      }
+    });
+  },
+
+  addPhotoWatermark(filePath) {
+    return new Promise((resolve, reject) => {
+      wx.getImageInfo({
+        src: filePath,
+        success: (info) => {
+          const maxWidth = 1200;
+          const ratio = info.width > maxWidth ? maxWidth / info.width : 1;
+          const width = Math.max(1, Math.round(info.width * ratio));
+          const height = Math.max(1, Math.round(info.height * ratio));
+          this.setData({ watermarkCanvas: { width, height } }, () => {
+            const ctx = wx.createCanvasContext("fieldWatermarkCanvas", this);
+            const fontSize = Math.max(22, Math.round(width * 0.026));
+            const lineHeight = Math.round(fontSize * 1.35);
+            const padding = Math.round(fontSize * 0.75);
+            const lines = this.buildWatermarkLines(width);
+            const boxHeight = padding * 2 + lineHeight * lines.length;
+            ctx.drawImage(filePath, 0, 0, width, height);
+            ctx.setFillStyle("rgba(0, 0, 0, 0.58)");
+            ctx.fillRect(0, height - boxHeight, width, boxHeight);
+            ctx.setFillStyle("#ffffff");
+            ctx.setFontSize(fontSize);
+            lines.forEach((line, index) => {
+              ctx.fillText(line, padding, height - boxHeight + padding + lineHeight * (index + 0.85));
+            });
+            ctx.draw(false, () => {
+              setTimeout(() => {
+                wx.canvasToTempFilePath({
+                  canvasId: "fieldWatermarkCanvas",
+                  destWidth: width,
+                  destHeight: height,
+                  fileType: "jpg",
+                  quality: 0.9,
+                  success: (res) => resolve(res.tempFilePath),
+                  fail: reject
+                }, this);
+              }, 120);
+            });
+          });
+        },
+        fail: reject
+      });
+    });
+  },
+
+  buildWatermarkLines(width) {
+    const user = this.data.currentUser || app.getCurrentUser() || {};
+    const maxChars = Math.max(18, Math.floor(width / 30));
+    const clip = (value) => {
+      const text = String(value || "");
+      return text.length > maxChars ? `${text.slice(0, maxChars - 1)}...` : text;
+    };
+    return [
+      `销售：${clip(user.name || "未记录")}`,
+      `工厂：${clip(this.data.form.factory || "未填写")}`,
+      `时间：${this.formatDateTime(new Date())}`,
+      `地址：${clip(this.data.currentAddress || this.data.currentCity || "未选择位置")}`,
+      `经纬度：${Number(this.data.latitude).toFixed(6)}, ${Number(this.data.longitude).toFixed(6)}`
+    ];
+  },
+
+  formatDateTime(date) {
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
   },
 
   previewPhoto(event) {
@@ -275,7 +376,7 @@ Page({
       locationReady: Boolean(visit.latitude && visit.longitude),
       selectedPoint: this.data.points.find((item) => Number(item.customerId) === Number(visit.customerId)) || null,
       softwareIndex,
-      form: { factory: visit.factory || "", phone: visit.phone || "", cuttingDevice: visit.cuttingDevice || "", drillingDevice: visit.drillingDevice || "", software: visit.software || "", softwarePrice: visit.softwarePrice || "", lossReason: visit.lossReason || "", objections: visit.objections || "", result: visit.result || "" }
+      form: { factory: visit.factory || "", phone: visit.phone || "", cuttingDevice: visit.cuttingDevice || "", drillingDevice: visit.drillingDevice || "", software: visit.software || "", softwarePrice: visit.softwarePrice || "", lossReason: visit.lossReason || "", result: visit.result || "" }
     });
     wx.pageScrollTo({ scrollTop: 980, duration: 220 });
   },
@@ -305,7 +406,6 @@ Page({
         software: this.data.softwareOptions[this.data.softwareIndex] || "未知",
         softwarePrice: form.softwarePrice || "待补充",
         lossReason: form.lossReason || "",
-        objections: form.objections || "",
         result: form.result || "已完成现场拜访",
         line: this.buildDeviceLine(form),
         status: this.data.statuses[this.data.statusIndex],

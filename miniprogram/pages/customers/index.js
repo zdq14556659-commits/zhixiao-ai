@@ -71,7 +71,8 @@ Page({
     rollbackItem: null,
     rollbackReasons: ["误推进", "客户未达到阶段标准", "资料录入错误", "其他"],
     rollbackReasonIndex: 0,
-    rollbackNote: ""
+    rollbackNote: "",
+    serverPaged: true
   },
 
   onLoad(options) {
@@ -113,30 +114,32 @@ Page({
     const privateCustomers = Array.isArray(this.privateOpportunityItems)
       ? this.privateOpportunityItems
       : app.scopeOpportunityRows();
-    const customers = this.data.currentStage === "无效"
+    const customers = this.currentBoardItems || (this.data.currentStage === "无效"
       ? (this.invalidItems || [])
       : this.data.currentStage === "公海" ? (this.publicPoolItems || [])
-      : this.data.currentStage === "已购" ? (this.purchasedItems || []) : privateCustomers;
+      : this.data.currentStage === "已购" ? (this.purchasedItems || []) : privateCustomers);
     this.customerItems = customers;
     const channelSources = ["全部", ...app.globalData.channelSources];
     const canFilterOwner = role.customerScope !== "self" && !["公海", "已购", "无效"].includes(this.data.currentStage);
-    const owners = canFilterOwner ? ["全部", ...app.visibleFollowUsers().map((user) => user.name)] : ["全部"];
+    const ownerOptions = this.boardFilterOptions?.followPerson || this.boardFilterOptions?.followPersons || app.visibleFollowUsers().map((user) => user.name);
+    const owners = canFilterOwner ? ["全部", ...ownerOptions] : ["全部"];
     const assignOwners = app.visibleFollowUsers();
-    const regions = ["全部", ...Array.from(new Set(customers.map((item) => item.region).filter(Boolean)))];
-    const cities = ["全部", ...Array.from(new Set(customers.map((item) => item.city).filter(Boolean)))];
+    const regions = ["全部", ...(this.boardFilterOptions?.units || Array.from(new Set(customers.map((item) => item.region || item.unit).filter(Boolean))))];
+    const cities = ["全部", ...(this.boardFilterOptions?.cities || Array.from(new Set(customers.map((item) => item.city).filter(Boolean))))];
     const channelIndex = Math.min(this.data.channelIndex, channelSources.length - 1);
     const ownerIndex = Math.min(this.data.ownerIndex, owners.length - 1);
     const regionIndex = Math.min(this.data.regionIndex, regions.length - 1);
     const cityIndex = Math.min(this.data.cityIndex, cities.length - 1);
+    const stageCounts = this.stageCounts || {};
     const stageTabs = [...state.stages, "公海", "已购", "无效"].map((stage) => ({
       name: stage,
-      count: stage === "无效"
+      count: Number(stageCounts[stage] ?? (stage === "无效"
         ? this.invalidCount || 0
         : stage === "公海"
           ? this.publicPoolCount || 0
           : stage === "已购"
-            ? (this.purchasedItems || []).length
-            : privateCustomers.filter((customer) => customer.stage === stage && customer.outcomeStatus !== "purchased_existing").length
+            ? this.purchasedCount || 0
+            : privateCustomers.filter((customer) => customer.stage === stage && customer.outcomeStatus !== "purchased_existing").length))
     }));
     const currentStageTotal = stageTabs.find((item) => item.name === this.data.currentStage)?.count || 0;
     this.setData({
@@ -163,38 +166,31 @@ Page({
   },
 
   loadCustomerBoard() {
-    this.setData({ customerBoardLoading: true, customerBoardError: "", publicPoolLoading: true, publicPoolLoaded: false, publicPoolError: "", publicPoolFilteredOut: false });
-    return Promise.all([
-      app.requestApi("/customer-board"),
-      app.requestApi("/public-pool").catch((error) => ({ error }))
-    ])
-      .then(([result, publicPoolResult]) => {
+    this.setData({ customerBoardLoading: true, customerBoardError: "", publicPoolLoading: this.data.currentStage === "公海", publicPoolLoaded: false, publicPoolError: "", publicPoolFilteredOut: false });
+    return app.requestApi(`/customer-board?${this.customerBoardQuery()}`)
+      .then((result) => {
         if (result.backendVersion !== "backend-v9") throw new Error("后端版本尚未更新，请等待部署完成后重试");
-        const publicPoolFromBoard = result.publicPool || {};
-        const invalidFromBoard = result.invalid || {};
-        const purchasedFromBoard = result.purchased || {};
-        const publicPoolLoadFailed = Boolean(publicPoolResult?.error);
-        const publicPoolItems = publicPoolLoadFailed
-          ? (Array.isArray(publicPoolFromBoard.items) ? publicPoolFromBoard.items : [])
-          : (Array.isArray(publicPoolResult.items) ? publicPoolResult.items : []);
-        const publicPoolCount = publicPoolLoadFailed
-          ? Number(publicPoolFromBoard.count ?? publicPoolItems.length)
-          : Number(publicPoolResult.count ?? publicPoolItems.length);
-        this.privateOpportunityItems = Array.isArray(result.items) ? result.items : [];
-        this.purchasedItems = Array.isArray(purchasedFromBoard.items) ? purchasedFromBoard.items : [];
-        this.publicPoolItems = publicPoolItems;
-        this.publicPoolCount = publicPoolCount;
-        this.invalidItems = Array.isArray(invalidFromBoard.items) ? invalidFromBoard.items : [];
-        this.invalidCount = Number(invalidFromBoard.count ?? this.invalidItems.length);
+        this.currentBoardItems = Array.isArray(result.items) ? result.items : [];
+        this.privateOpportunityItems = this.currentBoardItems;
+        this.purchasedItems = this.data.currentStage === "已购" ? this.currentBoardItems : [];
+        this.publicPoolItems = this.data.currentStage === "公海" ? this.currentBoardItems : [];
+        this.invalidItems = this.data.currentStage === "无效" ? this.currentBoardItems : [];
+        this.stageCounts = result.stageCounts || {};
+        this.boardFilterOptions = result.filterOptions || {};
+        this.boardTotal = Number(result.total || 0);
+        this.boardTotalPages = Number(result.totalPages || 1);
+        this.publicPoolCount = Number(this.stageCounts["公海"] ?? result.publicPool?.count ?? 0);
+        this.invalidCount = Number(this.stageCounts["无效"] ?? this.stageCounts.invalid ?? result.invalid?.count ?? 0);
+        this.purchasedCount = Number(this.stageCounts["已购"] ?? result.purchased?.count ?? 0);
         this.setData({
           customerBoardLoading: false,
           customerBoardError: "",
           publicPoolLoading: false,
           publicPoolLoaded: true,
           publicPoolTotal: this.publicPoolCount,
-          publicPoolError: publicPoolLoadFailed && this.data.currentStage === "公海" && !this.publicPoolItems.length
-            ? (publicPoolResult.error.message || "公海加载失败，请重新加载")
-            : ""
+          publicPoolError: "",
+          page: Number(result.page || this.data.page || 1),
+          totalPages: Number(result.totalPages || 1)
         }, () => this.loadData());
       })
       .catch((error) => {
@@ -219,6 +215,38 @@ Page({
     return this.loadCustomerBoard();
   },
 
+  customerBoardQuery() {
+    const params = [];
+    const setParam = (key, value) => {
+      if (value === undefined || value === null || value === "") return;
+      params.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`);
+    };
+    setParam("paginated", "1");
+    setParam("stage", this.data.currentStage);
+    setParam("page", this.data.page || 1);
+    setParam("pageSize", this.data.pageSize || 10);
+    const keyword = String(this.data.keyword || "").trim();
+    const channel = this.data.channelSources[this.data.channelIndex];
+    const owner = this.data.owners[this.data.ownerIndex];
+    const unit = this.data.regions[this.data.regionIndex];
+    const city = this.data.cities[this.data.cityIndex];
+    const status = this.data.followStatuses[this.data.followStatusIndex];
+    if (keyword) setParam("keyword", keyword);
+    if (channel && channel !== "全部") setParam("channelSource", channel);
+    if (this.data.canFilterOwner && owner && owner !== "全部") setParam("followPerson", owner);
+    if (unit && unit !== "全部") setParam("unit", unit);
+    if (city && city !== "全部") setParam("city", city);
+    if (status === "未设置") setParam("followStatus", "unfollowed");
+    if (this.dashboardCustomerIds?.length) setParam("ids", this.dashboardCustomerIds.join(","));
+    if (this.data.stageStartDate) setParam("stageStart", this.data.stageStartDate);
+    if (this.data.stageEndDate) setParam("stageEnd", this.data.stageEndDate);
+    if (this.data.lastStartDate) setParam("lastStart", this.data.lastStartDate);
+    if (this.data.lastEndDate) setParam("lastEnd", this.data.lastEndDate);
+    if (this.data.nextStartDate) setParam("nextStart", this.data.nextStartDate);
+    if (this.data.nextEndDate) setParam("nextEnd", this.data.nextEndDate);
+    return params.join("&");
+  },
+
   retryPublicPool() {
     this.loadPublicPool();
   },
@@ -228,7 +256,7 @@ Page({
     this.dashboardCustomerIds = [];
     const next = { currentStage, stageTimeLabel: this.stageTimeConfig(currentStage).label, page: 1, ...this.emptyFilters() };
     this.setData(next, () => {
-      this.loadData();
+      this.loadCustomerBoard();
     });
   },
 
@@ -258,58 +286,47 @@ Page({
   },
 
   onOwner(event) {
-    this.setData({ ownerIndex: Number(event.detail.value) });
-    this.applyFilters();
+    this.setData({ ownerIndex: Number(event.detail.value), page: 1 }, () => this.loadCustomerBoard());
   },
 
   onChannel(event) {
-    this.setData({ channelIndex: Number(event.detail.value) });
-    this.applyFilters();
+    this.setData({ channelIndex: Number(event.detail.value), page: 1 }, () => this.loadCustomerBoard());
   },
 
   onRegion(event) {
-    this.setData({ regionIndex: Number(event.detail.value) });
-    this.applyFilters();
+    this.setData({ regionIndex: Number(event.detail.value), page: 1 }, () => this.loadCustomerBoard());
   },
 
   onCity(event) {
-    this.setData({ cityIndex: Number(event.detail.value) });
-    this.applyFilters();
+    this.setData({ cityIndex: Number(event.detail.value), page: 1 }, () => this.loadCustomerBoard());
   },
 
   onStageStartDate(event) {
-    this.setData({ stageStartDate: event.detail.value });
-    this.applyFilters();
+    this.setData({ stageStartDate: event.detail.value, page: 1 }, () => this.loadCustomerBoard());
   },
 
   onStageEndDate(event) {
-    this.setData({ stageEndDate: event.detail.value });
-    this.applyFilters();
+    this.setData({ stageEndDate: event.detail.value, page: 1 }, () => this.loadCustomerBoard());
   },
 
   onLastStartDate(event) {
-    this.setData({ lastStartDate: event.detail.value });
-    this.applyFilters();
+    this.setData({ lastStartDate: event.detail.value, page: 1 }, () => this.loadCustomerBoard());
   },
 
   onLastEndDate(event) {
-    this.setData({ lastEndDate: event.detail.value });
-    this.applyFilters();
+    this.setData({ lastEndDate: event.detail.value, page: 1 }, () => this.loadCustomerBoard());
   },
 
   onNextStartDate(event) {
-    this.setData({ nextStartDate: event.detail.value });
-    this.applyFilters();
+    this.setData({ nextStartDate: event.detail.value, page: 1 }, () => this.loadCustomerBoard());
   },
 
   onNextEndDate(event) {
-    this.setData({ nextEndDate: event.detail.value });
-    this.applyFilters();
+    this.setData({ nextEndDate: event.detail.value, page: 1 }, () => this.loadCustomerBoard());
   },
 
   onFollowStatus(event) {
-    this.setData({ followStatusIndex: Number(event.detail.value) });
-    this.applyFilters();
+    this.setData({ followStatusIndex: Number(event.detail.value), page: 1 }, () => this.loadCustomerBoard());
   },
 
   stageTimeConfig(stage) {
@@ -370,45 +387,14 @@ Page({
     return true;
   },
 
-  applyFilters() {
+  applyFilters(event) {
+    if (event && event.type) {
+      this.setData({ page: 1 }, () => this.loadCustomerBoard());
+      return;
+    }
     const currentUser = app.getCurrentUser();
-    const role = app.getRole(currentUser);
     const sourceCustomers = Array.isArray(this.customerItems) ? this.customerItems : [];
-    const keyword = this.data.keyword.trim().toLowerCase();
-    const channel = this.data.channelSources[this.data.channelIndex];
-    const owner = this.data.owners[this.data.ownerIndex];
-    const region = this.data.regions[this.data.regionIndex];
-    const city = this.data.cities[this.data.cityIndex];
-    const status = this.data.followStatuses[this.data.followStatusIndex];
-    const filtered = sourceCustomers.filter((item) => {
-      const itemChannel = app.normalizeChannelSource(item.channelSource);
-      const primarySoftware = item.competitorProfiles?.find((profile) => profile.isPrimary)?.brand || item.software || "";
-      const source = `${item.name} ${item.phone} ${primarySoftware} ${item.productName || ""} ${item.lastNote || ""}`.toLowerCase();
-      const isInvalid = item.lifecycleStatus === "archived";
-      const isPublicPool = !isInvalid && item.ownershipStatus === "public_pool";
-      if (this.data.currentStage === "无效") {
-        if (!isInvalid) return false;
-      } else if (this.data.currentStage === "公海") {
-        if (isInvalid || !isPublicPool) return false;
-      } else if (this.data.currentStage === "已购") {
-        if (item.outcomeStatus !== "purchased_existing") return false;
-      } else if (isInvalid || isPublicPool || item.outcomeStatus === "purchased_existing" || item.stage !== this.data.currentStage) {
-        return false;
-      }
-      if (this.dashboardCustomerIds?.length && !this.dashboardCustomerIds.includes(Number(item.id)) && !this.dashboardCustomerIds.includes(Number(item.customerId))) return false;
-      if (keyword && !source.includes(keyword)) return false;
-      if (channel !== "全部" && itemChannel !== channel) return false;
-      if (this.data.canFilterOwner && owner !== "全部" && item.owner !== owner) return false;
-      if (region !== "全部" && item.region !== region) return false;
-      if (city !== "全部" && item.city !== city) return false;
-      if (!this.inDateRange(this.customerStageTime(item), this.data.stageStartDate, this.data.stageEndDate)) return false;
-      if (!this.inDateRange(String(item.lastFollow || "").slice(0, 10), this.data.lastStartDate, this.data.lastEndDate)) return false;
-      if (!this.inDateRange(String(item.nextFollow || "").slice(0, 10), this.data.nextStartDate, this.data.nextEndDate)) return false;
-      if (status === "今日待跟进" && item.nextFollow !== app.globalData.today) return false;
-      if (status === "已逾期" && (!item.nextFollow || item.nextFollow >= app.globalData.today)) return false;
-      if (status === "未设置" && item.nextFollow) return false;
-      return true;
-    }).map((item) => {
+    const rows = sourceCustomers.map((item) => {
       const primarySoftware = item.competitorProfiles?.find((profile) => profile.isPrimary)?.brand || item.software || "";
       return {
         ...item,
@@ -433,16 +419,16 @@ Page({
         primarySoftware: primarySoftware || "软件待补充"
       };
     });
-    const totalPages = Math.max(Math.ceil(filtered.length / this.data.pageSize), 1);
-    const page = Math.min(this.data.page, totalPages);
-    const start = (page - 1) * this.data.pageSize;
-    const pagedRows = filtered.slice(start, start + this.data.pageSize).map((item) => this.displayRow(item));
+    const total = Number.isFinite(Number(this.boardTotal)) ? Number(this.boardTotal) : rows.length;
+    const totalPages = Number.isFinite(Number(this.boardTotalPages)) ? Math.max(Number(this.boardTotalPages), 1) : Math.max(Math.ceil(total / this.data.pageSize), 1);
+    const page = Math.min(Math.max(Number(this.data.page || 1), 1), totalPages);
+    const pagedRows = rows.map((item) => this.displayRow(item));
     const hasActiveFilters = this.hasActiveFilters();
-    const filteredOut = this.data.currentStageTotal > 0 && filtered.length === 0;
-    this.filteredItems = filtered;
+    const filteredOut = this.data.currentStageTotal > 0 && total === 0;
+    this.filteredItems = rows;
     this.setData({
       filtered: [],
-      filteredCount: filtered.length,
+      filteredCount: total,
       page,
       totalPages,
       paged: pagedRows,
@@ -474,7 +460,7 @@ Page({
 
   resetFilters() {
     this.dashboardCustomerIds = [];
-    this.setData({ ...this.emptyFilters(), page: 1 }, () => this.applyFilters());
+    this.setData({ ...this.emptyFilters(), page: 1 }, () => this.loadCustomerBoard());
   },
 
   findVisibleItem(id) {
@@ -486,21 +472,18 @@ Page({
 
   prevPage() {
     if (this.data.page <= 1) return;
-    this.setData({ page: this.data.page - 1 });
-    this.applyFilters();
+    this.setData({ page: this.data.page - 1 }, () => this.loadCustomerBoard());
   },
 
   nextPage() {
     if (this.data.page >= this.data.totalPages) return;
-    this.setData({ page: this.data.page + 1 });
-    this.applyFilters();
+    this.setData({ page: this.data.page + 1 }, () => this.loadCustomerBoard());
   },
 
   onPageSize(event) {
     const pageSizeIndex = Number(event.detail.value);
     const pageSize = this.data.pageSizes[pageSizeIndex] || 10;
-    this.setData({ pageSizeIndex, pageSize, pageSizeInput: String(pageSize), page: 1 });
-    this.applyFilters();
+    this.setData({ pageSizeIndex, pageSize, pageSizeInput: String(pageSize), page: 1 }, () => this.loadCustomerBoard());
   },
 
   onPageSizeInput(event) {
@@ -510,8 +493,7 @@ Page({
   applyPageSizeInput() {
     const size = Math.min(Math.max(Math.round(Number(this.data.pageSizeInput || 10)), 10), 500);
     const pageSizeIndex = this.data.pageSizes.indexOf(size);
-    this.setData({ pageSize: size, pageSizeInput: String(size), pageSizeIndex: pageSizeIndex >= 0 ? pageSizeIndex : -1, page: 1 });
-    this.applyFilters();
+    this.setData({ pageSize: size, pageSizeInput: String(size), pageSizeIndex: pageSizeIndex >= 0 ? pageSizeIndex : -1, page: 1 }, () => this.loadCustomerBoard());
   },
 
   onJumpPageInput(event) {
@@ -520,8 +502,7 @@ Page({
 
   jumpPage() {
     const page = Math.min(Math.max(Math.round(Number(this.data.jumpPageInput || 1)), 1), this.data.totalPages || 1);
-    this.setData({ page, jumpPageInput: String(page) });
-    this.applyFilters();
+    this.setData({ page, jumpPageInput: String(page) }, () => this.loadCustomerBoard());
   },
 
   goAdd() {

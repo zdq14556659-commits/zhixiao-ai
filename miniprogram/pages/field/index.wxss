@@ -52,3 +52,4 @@
 .visit-photos { margin-top: 12rpx; white-space: nowrap; }
 .visit-photos image { display: inline-block; width: 124rpx; height: 124rpx; margin-right: 10rpx; border-radius: 9rpx; }
 .empty { padding: 24rpx 0; color: #7a8798; text-align: center; }
+.watermark-canvas { position: fixed; left: -9999px; top: -9999px; opacity: 0; pointer-events: none; }

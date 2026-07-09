@@ -109,7 +109,7 @@ async function run() {
   assert.equal(pool.data.items[0].phone, "认领后可见");
   assert.equal(pool.data.items[0].city, "宁波市");
   assert.equal(pool.data.items[0].productName, "待确认产品");
-  const customerBoard = await request("/customer-board", { token: sales });
+  const customerBoard = await request("/customer-board?full=1", { token: sales });
   assert.equal(customerBoard.status, 200);
   assert.equal(customerBoard.data.backendVersion, "backend-v9");
   assert.ok(customerBoard.data.items.some((item) => item.productName === "V1" && item.stage === "成交"));
