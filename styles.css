@@ -548,6 +548,10 @@ button:disabled {
   margin-top: 8px;
 }
 
+.customer-photos a {
+  display: inline-flex;
+}
+
 .customer-photos img {
   width: 44px;
   height: 44px;

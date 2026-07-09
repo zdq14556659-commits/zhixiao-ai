@@ -569,7 +569,11 @@ async function routeApi(req, res, url) {
     const query = Object.fromEntries(url.searchParams.entries());
     const rawItems = visiblePublicPoolOpportunities(authState, authUser);
     if (query.full !== "1") {
-      const items = rawItems.map((opportunity) => opportunityListRow(authState, opportunity, { maskPhone: !canViewFullPublicPoolInfo(authState, authUser) }));
+      const visitPhotoMap = buildVisitPhotoMap(authState);
+      const items = rawItems.map((opportunity) => opportunityListRow(authState, opportunity, {
+        maskPhone: !canViewFullPublicPoolInfo(authState, authUser),
+        visitPhotoMap
+      }));
       return sendJson(res, 200, paginatePublicPoolItems(items, query));
     }
     const items = rawItems.map((opportunity) => {
@@ -2935,7 +2939,7 @@ function opportunityView(state, opportunity, options = {}) {
     unit: displayUnitName(state, opportunity, customer),
     software: displaySoftwareName(primaryCompetitorName(customer) || customer.software),
     competitorProfiles: customer.competitorProfiles || [],
-    photos: customer.photos || [],
+    photos: customerPhotosForDisplay(state, customer, 12),
     location: customer.location || {},
     lifecycleStatus: customer.lifecycleStatus || LIFECYCLE_ACTIVE,
     ownershipStatus,
@@ -2979,6 +2983,7 @@ function opportunityListRow(state, opportunity = {}, options = {}) {
   const maskPhone = Boolean(options.maskPhone);
   const archived = Boolean(options.archived);
   const phone = primaryContact.phone || customer.phone || "";
+  const photos = maskPhone ? [] : customerPhotosForDisplay(state, customer, 6, options.visitPhotoMap);
   return {
     id: opportunity.id,
     opportunityId: opportunity.id,
@@ -3044,8 +3049,8 @@ function opportunityListRow(state, opportunity = {}, options = {}) {
     lastNote: latestManual?.note || "",
     manualFollowCount: manualFollows.length,
     followCount: manualFollows.length,
-    photoCount: Array.isArray(customer.photos) ? customer.photos.length : 0,
-    photos: [],
+    photoCount: photos.length,
+    photos,
     hasDetail: false
   };
 }
@@ -3620,6 +3625,39 @@ function normalizePhotos(value) {
 
 function mergePhotos(...groups) {
   return normalizePhotos(groups.flatMap((group) => Array.isArray(group) ? group : []));
+}
+
+function visitPhotosForCustomer(state = {}, customerId, limit = 8) {
+  if (!customerId) return [];
+  const photos = (state.visits || [])
+    .filter((visit) => Number(visit.customerId) === Number(customerId))
+    .sort(sortByNewest)
+    .flatMap((visit) => Array.isArray(visit.photos) ? visit.photos : []);
+  return normalizePhotos(photos).slice(0, limit);
+}
+
+function buildVisitPhotoMap(state = {}, limit = 12) {
+  const map = new Map();
+  (state.visits || [])
+    .slice()
+    .sort(sortByNewest)
+    .forEach((visit) => {
+      const customerId = Number(visit.customerId);
+      if (!customerId) return;
+      const photos = normalizePhotos(visit.photos || []);
+      if (!photos.length) return;
+      const current = map.get(customerId) || [];
+      if (current.length >= limit) return;
+      map.set(customerId, normalizePhotos(current.concat(photos)).slice(0, limit));
+    });
+  return map;
+}
+
+function customerPhotosForDisplay(state = {}, customer = {}, limit = 8, visitPhotoMap = null) {
+  const visitPhotos = visitPhotoMap instanceof Map
+    ? visitPhotoMap.get(Number(customer.id)) || []
+    : visitPhotosForCustomer(state, customer.id, limit);
+  return mergePhotos(customer.photos, visitPhotos).slice(0, limit);
 }
 
 function normalizeVisit(visit = {}, context = {}) {
@@ -4382,7 +4420,8 @@ function buildCustomerBoard(state, viewer, query = {}) {
   } else {
     rawRows = rawActive.filter((item) => item.stage === stage);
   }
-  const rows = rawRows.map((item) => opportunityListRow(state, item, rowOptions));
+  const visitPhotoMap = buildVisitPhotoMap(state);
+  const rows = rawRows.map((item) => opportunityListRow(state, item, { ...rowOptions, visitPhotoMap }));
   const filterOptions = customerBoardFilterOptions(rows);
   const filteredRows = filterBoardRows(rows, query, stage);
   const sortedRows = sortBoardRows(filteredRows, query, stage);

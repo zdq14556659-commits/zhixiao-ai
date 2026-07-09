@@ -1478,12 +1478,19 @@ function renderCustomers() {
   $("#customerNextPage").disabled = customerPage >= totalPages;
 }
 
+function photoStripHtml(photos = [], label = "客户图片", limit = 4, linked = false) {
+  const urls = (Array.isArray(photos) ? photos : []).map((url) => String(url || "").trim()).filter(Boolean);
+  if (!urls.length) return "";
+  const items = urls.slice(0, limit).map((url) => {
+    const img = `<img src="${escapeHtml(url)}" data-photo="${escapeHtml(url)}" alt="${escapeHtml(label)}" />`;
+    return linked ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${img}</a>` : img;
+  }).join("");
+  return `<div class="customer-photos">${items}${urls.length > limit ? `<span>+${urls.length - limit}</span>` : ""}</div>`;
+}
+
 function customerRow(item) {
   const dueClass = item.nextFollow && item.nextFollow < today ? "overdue" : item.nextFollow === today ? "today" : "";
-  const photos = Array.isArray(item.photos) ? item.photos : [];
-  const photoHtml = photos.length
-    ? `<div class="customer-photos">${photos.slice(0, 4).map((url) => `<img src="${escapeHtml(url)}" data-photo="${escapeHtml(url)}" alt="${escapeHtml(item.name || "客户图片")}" />`).join("")}${photos.length > 4 ? `<span>+${photos.length - 4}</span>` : ""}</div>`
-    : "";
+  const photoHtml = photoStripHtml(item.photos, item.name || "客户图片");
   const isInvalid = isInvalidCustomer(item);
   const isPublicPool = isPublicPoolCustomer(item);
   const shouldMaskPublicPool = isPublicPool && !canViewFullPoolInfo();
@@ -1887,18 +1894,38 @@ function openCustomerDialog(customer = null) {
   $("#customerDialog").showModal();
 }
 
-function openFollowHistory(customer) {
+async function openFollowHistory(customer) {
   if (!customer) return;
   const history = manualFollowUps(customer).slice().reverse();
+  let visits = [];
+  if (customer.customerId) {
+    try {
+      visits = await api(`/customers/${customer.customerId}/visits`);
+    } catch (error) {
+      visits = [];
+    }
+  }
+  const visitRows = (Array.isArray(visits) ? visits : []).filter((visit) => {
+    return String(visit.result || visit.note || visit.lossReason || "").trim()
+      || (Array.isArray(visit.photos) && visit.photos.length);
+  });
   $("#followHistoryTitle").textContent = `${customer.name} · 跟进历史`;
-  $("#followHistorySummary").textContent = `共 ${history.length} 条记录`;
-  $("#followHistoryList").innerHTML = history.length
-    ? history.map((item) => `
+  $("#followHistorySummary").textContent = `共 ${history.length} 条跟进记录${visitRows.length ? ` · ${visitRows.length} 次地推拜访` : ""}`;
+  const historyHtml = history.map((item) => `
         <article class="follow-history-item">
           <div class="follow-history-meta"><b>${escapeHtml(formatFollowTime(item))}</b><span>${escapeHtml(item.author || "历史数据")}</span></div>
           <p>${escapeHtml(item.note || "未填写跟进内容")}</p>
           <small>下次跟进：${escapeHtml(item.nextFollow || "未设置")}</small>
-        </article>`).join("")
+        </article>`).join("");
+  const visitHtml = visitRows.map((visit) => `
+        <article class="follow-history-item">
+          <div class="follow-history-meta"><b>${escapeHtml(visit.date || "未记录时间")}</b><span>${escapeHtml(visit.owner || "地推拜访")}</span></div>
+          <p>${escapeHtml(visit.result || visit.note || visit.lossReason || "已完成现场拜访")}</p>
+          <small>${escapeHtml(visit.address || "")}${visit.software ? ` · ${escapeHtml(visit.software)}` : ""}</small>
+          ${photoStripHtml(visit.photos, `${customer.name || "客户"}现场图片`, 8, true)}
+        </article>`).join("");
+  $("#followHistoryList").innerHTML = (historyHtml || visitHtml)
+    ? `${historyHtml}${visitHtml}`
     : '<div class="empty">暂无跟进历史</div>';
   $("#followHistoryDialog").showModal();
 }
@@ -2627,6 +2654,7 @@ async function openCustomerFromMap(id) {
         <div class="follow-history-meta"><b>${escapeHtml(visit.date || "未记录时间")}</b><small>${escapeHtml(visit.owner || "未记录拜访人")}</small></div>
         <p>${escapeHtml(visit.result || visit.note || visit.lossReason || "已完成现场拜访")}</p>
         <small>${escapeHtml(visit.address || "")} · ${escapeHtml(visit.software || "软件待补充")}</small>
+        ${photoStripHtml(visit.photos, `${customer.name || "工厂"}现场图片`, 8, true)}
       </article>`).join("") : '<div class="empty">暂无拜访轨迹</div>'}`;
     $("#followHistoryDialog").showModal();
   } catch (error) {
@@ -3325,7 +3353,7 @@ function wireEvents() {
     const id = Number(button.dataset.id);
     try {
       if (button.dataset.action === "history") {
-        openFollowHistory(await fetchOpportunityDetail(id));
+        await openFollowHistory(await fetchOpportunityDetail(id));
         return;
       }
       if (button.dataset.action === "follow") openCustomerDialog(await fetchOpportunityDetail(id));
