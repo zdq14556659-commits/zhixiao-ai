@@ -170,7 +170,7 @@ async function run() {
   } });
   assert.equal(publicStatusImport.status, 201, JSON.stringify(publicStatusImport.data));
   assert.equal(publicStatusImport.data.imported, 1);
-  const boardAfterPublicImport = await request("/customer-board", { token: sales });
+  const boardAfterPublicImport = await request("/customer-board?full=1", { token: sales });
   assert.ok(boardAfterPublicImport.data.publicPool.items.some((item) => item.name === "绍兴公海导入工厂"));
   assert.equal(boardAfterPublicImport.data.publicPool.items.find((item) => item.name === "绍兴公海导入工厂").stage, "名单");
 
@@ -182,7 +182,7 @@ async function run() {
   assert.equal(publicNoAddressImport.data.imported, 1);
   assert.equal(publicNoAddressImport.data.failed, 0);
   assert.equal(publicNoAddressImport.data.pendingLocation, 1);
-  const boardAfterNoAddressImport = await request("/customer-board", { token: sales });
+  const boardAfterNoAddressImport = await request("/customer-board?full=1", { token: sales });
   assert.ok(boardAfterNoAddressImport.data.publicPool.items.some((item) => item.name === "福州无地址公海工厂"));
   const publicCreatedFilter = await request(`/customer-board?paginated=1&stage=${encodeURIComponent("公海")}&createdStart=${today}&createdEnd=${today}`, { token: admin });
   assert.equal(publicCreatedFilter.status, 200);

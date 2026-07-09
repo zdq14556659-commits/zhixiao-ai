@@ -282,7 +282,7 @@ async function routeApi(req, res, url) {
     return sendJson(res, 200, {
       token: makeToken(user),
       user: publicUser(user),
-      state: wantsMiniState ? toMiniState(state, user) : { backendVersion: BACKEND_VERSION, moneyUnit: MONEY_UNIT }
+      state: wantsMiniState ? toMiniMetaState(state, user) : { backendVersion: BACKEND_VERSION, moneyUnit: MONEY_UNIT }
     });
   }
 
@@ -568,7 +568,7 @@ async function routeApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/public-pool") {
     const query = Object.fromEntries(url.searchParams.entries());
     const rawItems = visiblePublicPoolOpportunities(authState, authUser);
-    if (isPaginatedQuery(query)) {
+    if (query.full !== "1") {
       const items = rawItems.map((opportunity) => opportunityListRow(authState, opportunity, { maskPhone: !canViewFullPublicPoolInfo(authState, authUser) }));
       return sendJson(res, 200, paginatePublicPoolItems(items, query));
     }
@@ -580,7 +580,13 @@ async function routeApi(req, res, url) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/customer-board") {
-    return sendJson(res, 200, buildCustomerBoard(authState, authUser, Object.fromEntries(url.searchParams.entries())));
+    const query = Object.fromEntries(url.searchParams.entries());
+    if (!isPaginatedQuery(query) && query.full !== "1") {
+      query.paginated = "1";
+      query.page = "1";
+      query.pageSize = "20";
+    }
+    return sendJson(res, 200, buildCustomerBoard(authState, authUser, query));
   }
 
   const opportunityDetail = url.pathname.match(/^\/api\/opportunities\/(\d+)\/detail$/);
@@ -1010,6 +1016,7 @@ async function routeApi(req, res, url) {
       ? url.searchParams.get("includePublicPool") === "1"
       : url.searchParams.get("includePublicPool") !== "0";
     const state = authState;
+    if (client === "mini" && url.searchParams.get("full") !== "1") return sendJson(res, 200, toMiniMetaState(state, authUser));
     if (metadata && client !== "mini") return sendJson(res, 200, publicMetaState(state, authUser));
     return sendJson(res, 200, client === "mini" ? toMiniState(state, authUser) : publicState(state, authUser, { includePublicPool }));
   }
@@ -4638,6 +4645,21 @@ function paginatePublicPoolItems(items = [], query = {}) {
 function publicUser(user = {}) {
   const { password, initialPassword, passwordHash, passwordSalt, ...safe } = user;
   return safe;
+}
+
+function toMiniMetaState(state, viewer = null) {
+  const next = publicMetaState(state, viewer);
+  return {
+    ...next,
+    currentUserId: viewer?.id || next.currentUserId || 0,
+    backendVersion: BACKEND_VERSION,
+    moneyUnit: MONEY_UNIT,
+    customers: [],
+    opportunities: [],
+    visits: [],
+    activities: [],
+    routes: []
+  };
 }
 
 function toMiniState(state, viewer = null) {
