@@ -1077,7 +1077,8 @@ function canImportPublicPool() {
 }
 
 function canViewAllocationAudit() {
-  return canAssignCustomers() || canImportPublicPool();
+  const roleName = roleForUser(currentUser()).name || currentUser().role || "";
+  return ["运营", "总负责人"].includes(roleName);
 }
 
 function canViewFullPoolInfo() {
@@ -1388,7 +1389,7 @@ function renderCustomers() {
   $("#customerProductSelect").innerHTML = productOptions;
   $("#newOpportunityProductSelect").innerHTML = productOptions;
   $("#batchAssignBtn").classList.toggle("hidden", currentStage === INVALID_STAGE || currentStage === PURCHASED_STAGE || !canAssignCustomers());
-  $("#allocationAuditBtn")?.classList.toggle("hidden", !canViewAllocationAudit());
+  $("#allocationAuditBtn")?.classList.toggle("hidden", currentStage !== PUBLIC_POOL_STAGE || !canViewAllocationAudit());
   $("#addCustomerBtn").classList.toggle("hidden", isReadonlyStage());
   $("#batchImportBtn").classList.toggle("hidden", currentStage === INVALID_STAGE || currentStage === PURCHASED_STAGE || (currentStage === PUBLIC_POOL_STAGE && !canImportPublicPool()));
   $("#batchImportBtn").textContent = currentStage === PUBLIC_POOL_STAGE ? "导入公海" : "批量导入";
@@ -2380,12 +2381,32 @@ function dateOffsetText(baseDate, offsetDays) {
   return date.toISOString().slice(0, 10);
 }
 
-function allocationActionLabel(type = "") {
-  return ({ created: "管理导入/新增", assigned: "分配", claimed_public_pool: "公海认领", offboard_transfer: "离职交接" })[type] || "分配";
+function allocationAuditParams(page = allocationAuditPage, includePaging = true) {
+  const formData = new FormData($("#allocationAuditForm"));
+  const params = new URLSearchParams();
+  if (includePaging) {
+    params.set("page", String(page));
+    params.set("pageSize", "100");
+  }
+  ["start", "end", "ownerId", "allocatorId", "unitId"].forEach((key) => {
+    const value = String(formData.get(key) || "").trim();
+    if (value) params.set(key, value);
+  });
+  return params;
 }
 
-function allocationOutcomeLabel(outcome = "") {
-  return ({ active_owned: "跟进人名下", returned_public_pool: "已回公海", reassigned: "已再次分配", invalid: "已无效", purchased: "已购", deal: "已成交" })[outcome] || "处理中";
+function allocationAuditStatusClass(status = "") {
+  return ({ 线索: "lead", 商机: "opportunity", 成交: "deal", 公海: "pool", 已购: "purchased", 无效: "invalid" })[status] || "list";
+}
+
+function allocationAuditHistoryHtml(history = []) {
+  if (!history.length) return '<span class="allocation-audit-no-follow">暂无人工跟进</span>';
+  return `<div class="allocation-audit-history">${history.map((item) => `
+    <article>
+      <small>${escapeHtml(formatFollowTime({ createdAt: item.createdAt, date: item.date }))} · ${escapeHtml(item.author || "历史数据")}</small>
+      <p>${escapeHtml(item.note || "")}</p>
+      ${item.nextFollow ? `<small>下次跟进：${escapeHtml(item.nextFollow)}</small>` : ""}
+    </article>`).join("")}</div>`;
 }
 
 function renderAllocationAudit() {
@@ -2393,25 +2414,24 @@ function renderAllocationAudit() {
   if (!data) return;
   const totals = data.totals || {};
   $("#allocationAuditStats").innerHTML = [
-    ["分配/认领", totals.allocated || 0],
-    ["已人工跟进", totals.followed || 0],
-    ["未人工跟进", totals.unfollowed || 0],
-    ["已回公海", totals.returned_public_pool || 0],
-    ["已再次分配", totals.reassigned || 0]
-  ].map(([label, value]) => `<article><span>${label}</span><b>${value}</b></article>`).join("");
-  $("#allocationAuditOwners").innerHTML = (data.byOwner || []).length
-    ? data.byOwner.map((item) => `<span>${escapeHtml(item.owner)}：分配${item.allocated}，已跟进${item.followed}，回公海${item.returnedToPool}</span>`).join("")
-    : '<span>当前条件下没有分配记录</span>';
+    ["运营导入", totals.total || 0, "total"],
+    ["已跟进", totals.followed || 0, "followed"],
+    ["线索", totals.lead || 0, "lead"],
+    ["商机", totals.opportunity || 0, "opportunity"],
+    ["成交", totals.deal || 0, "deal"]
+  ].map(([label, value, tone]) => `<article class="allocation-audit-stat-${tone}"><span>${label}</span><b>${value}</b></article>`).join("");
   $("#allocationAuditRows").innerHTML = (data.items || []).length ? data.items.map((item) => `
     <tr>
-      <td>${escapeHtml(formatFollowTime({ createdAt: item.actionAt }))}</td>
-      <td><b>${escapeHtml(item.customerName)}</b><br><small>${escapeHtml(item.productName || "待确认产品")}</small></td>
-      <td>${escapeHtml(item.owner)}<br><small>${escapeHtml(item.unit || "待分配")}</small></td>
-      <td>${escapeHtml(item.operator || "未记录")}</td>
-      <td>${escapeHtml(allocationActionLabel(item.actionType))}</td>
-      <td>${item.followed ? "已跟进" : "未跟进"}</td>
-      <td>${escapeHtml(allocationOutcomeLabel(item.outcome))}</td>
-    </tr>`).join("") : '<tr><td colspan="7" class="empty">当前条件下没有分配记录</td></tr>';
+      <td>${escapeHtml(formatFollowTime({ createdAt: item.importedAt }))}</td>
+      <td><b>${escapeHtml(item.customerName)}</b><br><small>${escapeHtml(item.phone || "电话未记录")}</small></td>
+      <td>${escapeHtml(item.productName || "待确认产品")}</td>
+      <td>${escapeHtml(item.allocatorDisplay || "未记录")}</td>
+      <td>${escapeHtml(item.owner || "未分配")}</td>
+      <td>${escapeHtml(item.unit || "待分配")}</td>
+      <td><span class="allocation-audit-status allocation-audit-status-${allocationAuditStatusClass(item.currentStatus)}">${escapeHtml(item.currentStatus || "名单")}</span></td>
+      <td>${Number(item.followCount || 0)}</td>
+      <td>${allocationAuditHistoryHtml(item.followHistory || [])}</td>
+    </tr>`).join("") : '<tr><td colspan="9" class="empty">当前条件下没有运营导入的公海资源</td></tr>';
   $("#allocationAuditPageSummary").textContent = `共 ${data.total || 0} 条 · 第 ${data.page || 1} / ${data.totalPages || 1} 页`;
   $("#allocationAuditPrev").disabled = Number(data.page || 1) <= 1;
   $("#allocationAuditNext").disabled = Number(data.page || 1) >= Number(data.totalPages || 1);
@@ -2421,15 +2441,10 @@ async function loadAllocationAudit(page = allocationAuditPage) {
   const form = $("#allocationAuditForm");
   const queryButton = $("#allocationAuditQuery");
   const requestId = ++allocationAuditRequestId;
-  const formData = new FormData(form);
-  const params = new URLSearchParams({ page: String(page), pageSize: "100" });
-  ["start", "end", "ownerId", "operatorId", "unitId"].forEach((key) => {
-    const value = String(formData.get(key) || "").trim();
-    if (value) params.set(key, value);
-  });
+  const params = allocationAuditParams(page);
   queryButton.disabled = true;
   queryButton.textContent = "计算中...";
-  $("#allocationAuditRows").innerHTML = '<tr><td colspan="7" class="empty">正在核对分配记录...</td></tr>';
+  $("#allocationAuditRows").innerHTML = '<tr><td colspan="9" class="empty">正在追踪资源去向...</td></tr>';
   try {
     const data = await api(`/reports/allocation-audit?${params.toString()}`);
     if (requestId !== allocationAuditRequestId) return;
@@ -2439,7 +2454,7 @@ async function loadAllocationAudit(page = allocationAuditPage) {
   } catch (error) {
     if (requestId !== allocationAuditRequestId) return;
     allocationAuditData = null;
-    $("#allocationAuditRows").innerHTML = `<tr><td colspan="7" class="empty">${escapeHtml(error.message || "对账数据加载失败")}</td></tr>`;
+    $("#allocationAuditRows").innerHTML = `<tr><td colspan="9" class="empty">${escapeHtml(error.message || "对账数据加载失败")}</td></tr>`;
     toast(error.message || "对账数据加载失败");
   } finally {
     if (requestId === allocationAuditRequestId) {
@@ -2449,20 +2464,66 @@ async function loadAllocationAudit(page = allocationAuditPage) {
   }
 }
 
+async function exportAllocationAudit() {
+  const button = $("#allocationAuditExport");
+  const params = allocationAuditParams(allocationAuditPage, false);
+  const active = session();
+  button.disabled = true;
+  button.textContent = "导出中...";
+  try {
+    const response = await fetch(`${API_BASE}/reports/allocation-audit/export?${params.toString()}`, {
+      headers: active?.token ? { Authorization: `Bearer ${active.token}` } : {}
+    });
+    if (response.status === 401) {
+      sessionStorage.removeItem(AUTH_KEY);
+      localStorage.removeItem(AUTH_KEY);
+      requireLogin();
+    }
+    if (!response.ok) {
+      let message = `导出失败 ${response.status}`;
+      try {
+        message = (await response.json()).error || message;
+      } catch (_) {}
+      throw new Error(message);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("content-disposition") || "";
+    const encodedName = (disposition.match(/filename\*=UTF-8''([^;]+)/i) || [])[1];
+    const form = $("#allocationAuditForm");
+    let filename = `资源分配对账_${form.elements.start.value || "全部"}_${form.elements.end.value || "全部"}.xlsx`;
+    if (encodedName) {
+      try { filename = decodeURIComponent(encodedName); } catch (_) {}
+    }
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    toast(`已导出 ${allocationAuditData?.total || 0} 条资源`);
+  } catch (error) {
+    toast(error.message || "资源分配对账导出失败");
+  } finally {
+    button.disabled = false;
+    button.textContent = "导出 Excel";
+  }
+}
+
 function openAllocationAuditDialog() {
-  if (!canViewAllocationAudit()) return toast("当前账号无资源分配对账权限");
+  if (currentStage !== PUBLIC_POOL_STAGE || !canViewAllocationAudit()) return toast("仅运营和总负责人可在公海查看资源分配对账");
   const form = $("#allocationAuditForm");
   if (!form.elements.start.value) form.elements.start.value = dateOffsetText(today, -7);
   if (!form.elements.end.value) form.elements.end.value = today;
   const followUsers = visibleFollowUsers();
   const operators = visibleUsers();
   $("#allocationAuditOwner").innerHTML = '<option value="">全部跟进人</option>' + followUsers.map((user) => `<option value="${user.id}">${escapeHtml(user.name)} · ${escapeHtml(user.unit || "待分配")}</option>`).join("");
-  $("#allocationAuditOperator").innerHTML = '<option value="">全部操作人</option>' + operators.map((user) => `<option value="${user.id}">${escapeHtml(user.name)} · ${escapeHtml(user.role || "员工")}</option>`).join("");
+  $("#allocationAuditAllocator").innerHTML = '<option value="">全部分配人</option>' + operators.map((user) => `<option value="${user.id}">${escapeHtml(user.name)} · ${escapeHtml(user.role || "员工")}</option>`).join("");
   $("#allocationAuditUnit").innerHTML = '<option value="">全部单位</option>' + selectableUnits().map((unit) => `<option value="${escapeHtml(unit.id)}">${escapeHtml(unitLabel(unit))}</option>`).join("");
   allocationAuditPage = 1;
   allocationAuditData = null;
   $("#allocationAuditStats").innerHTML = "";
-  $("#allocationAuditOwners").innerHTML = "";
   const dialog = $("#allocationAuditDialog");
   if (!dialog.open) dialog.showModal();
   loadAllocationAudit(1);
@@ -3466,6 +3527,7 @@ function wireEvents() {
     allocationAuditPage = 1;
     loadAllocationAudit(1);
   });
+  $("#allocationAuditExport")?.addEventListener("click", exportAllocationAudit);
   $("#allocationAuditPrev")?.addEventListener("click", () => loadAllocationAudit(Math.max(1, allocationAuditPage - 1)));
   $("#allocationAuditNext")?.addEventListener("click", () => loadAllocationAudit(allocationAuditPage + 1));
   $("#batchChannelBtn")?.addEventListener("click", openBatchChannelDialog);

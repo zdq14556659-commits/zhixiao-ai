@@ -342,8 +342,17 @@ async function routeApi(req, res, url) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/reports/allocation-audit") {
-    if (!canViewAllocationAudit(authState, authUser)) return sendJson(res, 403, { error: "无资源分配对账权限" });
+    if (!canViewAllocationAudit(authState, authUser)) return sendJson(res, 403, { error: "无资源分配对账查看权限" });
     return sendJson(res, 200, buildAllocationAudit(authState, authUser, Object.fromEntries(url.searchParams.entries())));
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/reports/allocation-audit/export") {
+    if (!canViewAllocationAudit(authState, authUser)) return sendJson(res, 403, { error: "无资源分配对账导出权限" });
+    const query = Object.fromEntries(url.searchParams.entries());
+    const report = buildAllocationAudit(authState, authUser, query, { paginate: false });
+    const workbook = await buildAllocationAuditWorkbook(report);
+    const filename = `资源分配对账_${report.start || "全部"}_${report.end || "全部"}.xlsx`;
+    return sendBuffer(res, workbook, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename);
   }
 
   if (req.method === "GET" && url.pathname === "/api/targets") {
@@ -5329,116 +5338,227 @@ function isAssignedTodayUnfollowed(state, item = {}) {
   return !hasManualFollowOnOrAfter(item, assignment.createdAt);
 }
 
-const ALLOCATION_AUDIT_TYPES = new Set(["created", "assigned", "claimed_public_pool", "offboard_transfer"]);
+const ALLOCATION_AUDIT_OWNER_TYPES = new Set(["created", "assigned", "claimed_public_pool", "offboard_transfer"]);
 
 function canViewAllocationAudit(state, viewer) {
-  return Boolean(viewer) && (canAssignCustomers(state, viewer) || canImportPublicPool(state, viewer));
+  if (!viewer) return false;
+  const roleName = findRole(state.roles, viewer.roleId, viewer.role).name || viewer.role || "";
+  return ["运营", "总负责人"].includes(roleName);
 }
 
-function allocationEventCounts(state, opportunity = {}, event = {}) {
-  if (!ALLOCATION_AUDIT_TYPES.has(event.type || "")) return false;
-  const targetId = Number(event.toOwnerId || 0);
-  if (!targetId) return false;
-  if (event.type === "created") return assignmentActionCounts(state, opportunity, event);
-  return true;
+function sortedOwnershipHistory(opportunity = {}) {
+  return (Array.isArray(opportunity.ownershipHistory) ? opportunity.ownershipHistory : [])
+    .slice()
+    .sort((left, right) => Date.parse(left.createdAt || 0) - Date.parse(right.createdAt || 0));
 }
 
-function manualFollowBetween(state, opportunity = {}, startAt = "", endAt = "") {
-  const startTime = Date.parse(startAt || "");
-  const endTime = Date.parse(endAt || "");
-  return opportunityManualFollows(state, opportunity).some((follow) => {
-    const followTime = Date.parse(follow.createdAt || follow.date || "");
-    if (!Number.isFinite(followTime)) return false;
-    if (Number.isFinite(startTime) && followTime < startTime) return false;
-    if (Number.isFinite(endTime) && followTime >= endTime) return false;
-    return true;
+function allocationAuditImportEvent(opportunity = {}) {
+  return sortedOwnershipHistory(opportunity).find((event) => event.type === "created") || null;
+}
+
+function isOperationsPublicPoolImport(opportunity = {}) {
+  const event = allocationAuditImportEvent(opportunity);
+  if (!event) return opportunity.publicPoolReason === "operations_import";
+  const reason = String(event.reason || "");
+  const importedToPool = !Number(event.toOwnerId || 0) && cleanText(event.toOwner) === cleanText("公海");
+  return reason.includes("运营导入公海") || importedToPool;
+}
+
+function allocationAuditImportAt(opportunity = {}, customer = {}) {
+  return allocationAuditImportEvent(opportunity)?.createdAt || opportunity.createdAt || customer.createdAt || "";
+}
+
+function allocationAuditOwnerEvent(opportunity = {}) {
+  const history = sortedOwnershipHistory(opportunity).filter((event) => ALLOCATION_AUDIT_OWNER_TYPES.has(event.type || ""));
+  const currentOwnerId = Number(opportunity.ownerId || 0);
+  const currentOwnerName = cleanText(opportunity.owner || opportunity.followPerson || "");
+  const matchingCurrentOwner = history.filter((event) => {
+    if (currentOwnerId && Number(event.toOwnerId || 0) === currentOwnerId) return true;
+    return currentOwnerName && cleanText(event.toOwner) === currentOwnerName;
   });
+  return matchingCurrentOwner[matchingCurrentOwner.length - 1] || history[history.length - 1] || null;
 }
 
-function allocationOutcome(state, opportunity = {}, laterAllocation = null) {
-  if (laterAllocation) return "reassigned";
-  const customer = findCustomer(state.customers || [], opportunity.customerId) || {};
-  if (customer.lifecycleStatus === LIFECYCLE_ARCHIVED) return "invalid";
-  if (isPurchasedOpportunity(opportunity)) return "purchased";
-  if (opportunity.stage === STAGES[3]) return "deal";
-  if (isOpportunityPublicPool(opportunity, Date.now(), state)) return "returned_public_pool";
-  return "active_owned";
+function readAllocationAuditFollowUps(opportunityIds = new Set()) {
+  const grouped = new Map();
+  if (!opportunityIds.size || !fs.existsSync(FOLLOWUP_DIR)) return grouped;
+  fs.readdirSync(FOLLOWUP_DIR)
+    .filter((name) => name.endsWith(".jsonl"))
+    .forEach((name) => {
+      fs.readFileSync(path.join(FOLLOWUP_DIR, name), "utf8")
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .forEach((line) => {
+          try {
+            const raw = JSON.parse(line);
+            const opportunityId = Number(raw.opportunityId || 0);
+            if (!opportunityIds.has(opportunityId)) return;
+            const entries = grouped.get(opportunityId) || [];
+            entries.push(normalizeFollowUp(raw, raw));
+            grouped.set(opportunityId, entries);
+          } catch (_) {}
+        });
+    });
+  return grouped;
 }
 
-function buildAllocationAudit(state, viewer, query = {}) {
+function allocationAuditFollowHistory(state, opportunity = {}, externalFollows = []) {
+  const rules = businessRules(state);
+  const seen = new Set();
+  const follows = [...inlineFollowUps(opportunity), ...externalFollows]
+    .filter((item) => !item.isSystem && isEffectiveFollowForRules(item, rules))
+    .filter((item) => {
+      const key = [item.createdAt || item.date || "", item.author || "", item.note || "", item.nextFollow || ""].join("|");
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort(sortByNewest);
+  if (!follows.length) {
+    const summary = summaryFollowUp(opportunity);
+    if (summary && !summary.isSystem && isEffectiveFollowForRules(summary, rules)) follows.push(summary);
+  }
+  return follows.map((item) => ({
+    date: item.date || String(item.createdAt || "").slice(0, 10),
+    createdAt: item.createdAt || "",
+    author: item.author || "历史数据",
+    note: item.note || "",
+    nextFollow: item.nextFollow || ""
+  }));
+}
+
+function allocationAuditCurrentStatus(state, opportunity = {}, customer = {}) {
+  if (customer.lifecycleStatus === LIFECYCLE_ARCHIVED) return "无效";
+  if (isPurchasedOpportunity(opportunity)) return PURCHASED_STATUS;
+  if (opportunity.stage === STAGES[3]) return STAGES[3];
+  if (isOpportunityPublicPool(opportunity, Date.now(), state)) return PUBLIC_POOL_STATUS;
+  return STAGES.includes(opportunity.stage) ? opportunity.stage : STAGES[0];
+}
+
+function buildAllocationAudit(state, viewer, query = {}, options = {}) {
   const start = normalizeDateText(query.start || query.startDate || addDays(today(), -30));
   const end = normalizeDateText(query.end || query.endDate || today());
   const ownerId = Number(query.ownerId || 0);
-  const operatorId = Number(query.operatorId || 0);
+  const allocatorId = Number(query.allocatorId || query.operatorId || 0);
   const unitId = String(query.unitId || "").trim();
   const pageSize = Math.min(500, Math.max(20, Math.floor(Number(query.pageSize || 100))));
   const requestedPage = Math.max(1, Math.floor(Number(query.page || 1)));
-  const scopedUsers = visibleUsers(state, viewer);
-  const scopedUserIds = new Set(scopedUsers.map((user) => Number(user.id)).filter(Boolean));
   const usersById = new Map((state.users || []).map((user) => [Number(user.id), user]));
-  const rows = [];
-
-  (state.opportunities || []).forEach((opportunity) => {
+  const candidates = (state.opportunities || []).filter((opportunity) => {
+    if (!isOperationsPublicPoolImport(opportunity)) return false;
     const customer = findCustomer(state.customers || [], opportunity.customerId) || {};
-    const allocations = (opportunity.ownershipHistory || [])
-      .filter((event) => allocationEventCounts(state, opportunity, event))
-      .slice()
-      .sort((left, right) => Date.parse(left.createdAt || 0) - Date.parse(right.createdAt || 0));
-    allocations.forEach((event, eventIndex) => {
-      const eventDate = String(event.createdAt || "").slice(0, 10);
-      const targetId = Number(event.toOwnerId || 0);
-      const targetUser = usersById.get(targetId) || {};
-      if (!eventDate || !scopedUserIds.has(targetId)) return;
-      if (!dateMatchesOptionalRange(eventDate, start, end)) return;
-      if (ownerId && targetId !== ownerId) return;
-      if (operatorId && Number(event.operatorId || 0) !== operatorId) return;
-      if (unitId && String(targetUser.unitId || opportunity.unitId || "") !== unitId) return;
-      const laterAllocation = allocations[eventIndex + 1] || null;
-      const followed = manualFollowBetween(state, opportunity, event.createdAt, laterAllocation?.createdAt || "");
-      const outcome = allocationOutcome(state, opportunity, laterAllocation);
-      rows.push({
-        id: event.id || `${opportunity.id}-${eventIndex}`,
-        opportunityId: opportunity.id,
-        customerId: opportunity.customerId,
-        customerName: customer.name || opportunity.name || "未命名客户",
-        productName: opportunity.productName || "待确认产品",
-        stage: opportunity.stage || STAGES[0],
-        ownerId: targetId,
-        owner: targetUser.name || event.toOwner || opportunity.owner || "未记录",
-        unitId: targetUser.unitId || opportunity.unitId || "",
-        unit: targetUser.unit || opportunity.unit || "待分配",
-        operatorId: Number(event.operatorId || 0) || "",
-        operator: event.operator || "未记录",
-        actionType: event.type || "assigned",
-        actionAt: event.createdAt || "",
-        reason: event.reason || "",
-        followed,
-        outcome
-      });
-    });
+    return dateMatchesOptionalRange(allocationAuditImportAt(opportunity, customer), start, end);
+  });
+  const externalFollows = readAllocationAuditFollowUps(new Set(candidates.map((item) => Number(item.id)).filter(Boolean)));
+  const rows = candidates.map((opportunity) => {
+    const customer = findCustomer(state.customers || [], opportunity.customerId) || {};
+    const currentStatus = allocationAuditCurrentStatus(state, opportunity, customer);
+    const isPublicPool = currentStatus === PUBLIC_POOL_STATUS;
+    const currentOwnerId = isPublicPool ? 0 : Number(opportunity.ownerId || 0);
+    const currentOwnerUser = usersById.get(currentOwnerId) || {};
+    const ownerEvent = allocationAuditOwnerEvent(opportunity) || {};
+    const followHistory = allocationAuditFollowHistory(state, opportunity, externalFollows.get(Number(opportunity.id)) || []);
+    const allocator = ownerEvent.operator || opportunity.createdBy || "未记录";
+    return {
+      id: opportunity.id,
+      opportunityId: opportunity.id,
+      customerId: opportunity.customerId,
+      importedAt: allocationAuditImportAt(opportunity, customer),
+      customerName: customer.name || opportunity.name || "未命名客户",
+      phone: primaryContactForCustomer(customer).phone || customer.phone || "",
+      productName: opportunity.productName || "待确认产品",
+      allocatorId: Number(ownerEvent.operatorId || 0) || "",
+      allocator,
+      allocatorDisplay: ownerEvent.type === "claimed_public_pool" ? `${allocator}（自主认领）` : allocator,
+      ownerId: currentOwnerId || "",
+      owner: isPublicPool ? PUBLIC_POOL_STATUS : currentOwnerUser.name || opportunity.followPerson || opportunity.owner || "未分配",
+      unitId: isPublicPool ? "" : currentOwnerUser.unitId || opportunity.unitId || "",
+      unit: isPublicPool ? PUBLIC_POOL_STATUS : currentOwnerUser.unit || opportunity.unit || "待分配",
+      currentStatus,
+      followCount: followHistory.length,
+      followed: followHistory.length > 0,
+      followHistory
+    };
+  }).filter((row) => {
+    if (ownerId && Number(row.ownerId || 0) !== ownerId) return false;
+    if (allocatorId && Number(row.allocatorId || 0) !== allocatorId) return false;
+    if (unitId && String(row.unitId || "") !== unitId) return false;
+    return true;
   });
 
-  rows.sort((left, right) => Date.parse(right.actionAt || 0) - Date.parse(left.actionAt || 0));
+  rows.sort((left, right) => Date.parse(right.importedAt || 0) - Date.parse(left.importedAt || 0));
   const totals = rows.reduce((result, row) => {
-    result.allocated += 1;
-    result[row.followed ? "followed" : "unfollowed"] += 1;
-    result[row.outcome] = (result[row.outcome] || 0) + 1;
+    result.total += 1;
+    if (row.followed) result.followed += 1;
+    if (row.currentStatus === "线索") result.lead += 1;
+    if (row.currentStatus === "商机") result.opportunity += 1;
+    if (row.currentStatus === "成交") result.deal += 1;
     return result;
-  }, { allocated: 0, followed: 0, unfollowed: 0, active_owned: 0, returned_public_pool: 0, reassigned: 0, invalid: 0, purchased: 0, deal: 0 });
-  const byOwnerMap = new Map();
-  rows.forEach((row) => {
-    const item = byOwnerMap.get(row.ownerId) || { ownerId: row.ownerId, owner: row.owner, unit: row.unit, allocated: 0, followed: 0, unfollowed: 0, returnedToPool: 0 };
-    item.allocated += 1;
-    item[row.followed ? "followed" : "unfollowed"] += 1;
-    if (row.outcome === "returned_public_pool") item.returnedToPool += 1;
-    byOwnerMap.set(row.ownerId, item);
-  });
-  const byOwner = [...byOwnerMap.values()].sort((left, right) => right.allocated - left.allocated || left.owner.localeCompare(right.owner, "zh-CN"));
+  }, { total: 0, followed: 0, lead: 0, opportunity: 0, deal: 0 });
   const total = rows.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const page = Math.min(requestedPage, totalPages);
-  const items = rows.slice((page - 1) * pageSize, page * pageSize);
-  return { start, end, totals, byOwner, items, total, page, pageSize, totalPages, computedAt: new Date().toISOString() };
+  const items = options.paginate === false ? rows : rows.slice((page - 1) * pageSize, page * pageSize);
+  return { start, end, totals, items, total, page, pageSize, totalPages, computedAt: new Date().toISOString() };
+}
+
+function allocationAuditHistoryText(history = []) {
+  return history.map((item, index) => {
+    const at = item.createdAt || item.date || "时间未记录";
+    const next = item.nextFollow ? `；下次跟进：${item.nextFollow}` : "";
+    return `${index + 1}. ${at}｜${item.author || "历史数据"}｜${item.note || ""}${next}`;
+  }).join("\n");
+}
+
+function xlsxColumnName(index) {
+  let value = Number(index) + 1;
+  let name = "";
+  while (value > 0) {
+    value -= 1;
+    name = String.fromCharCode(65 + (value % 26)) + name;
+    value = Math.floor(value / 26);
+  }
+  return name;
+}
+
+function xlsxInlineCell(value, column, row, style = 0) {
+  const text = String(value ?? "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
+    .slice(0, 32760);
+  return `<c r="${column}${row}" t="inlineStr" s="${style}"><is><t xml:space="preserve">${escapeXml(text)}</t></is></c>`;
+}
+
+async function buildAllocationAuditWorkbook(report = {}) {
+  const JSZip = resolveOptionalJsZip();
+  if (!JSZip) throw new Error("服务器缺少 Excel 导出组件");
+  const headers = ["首次导入时间", "客户名称", "客户电话", "意向产品", "分配人", "当前跟进人", "单位", "当前状态", "跟进次数", "历史跟进记录"];
+  const values = (report.items || []).map((item) => [
+    item.importedAt,
+    item.customerName,
+    item.phone,
+    item.productName,
+    item.allocatorDisplay,
+    item.owner,
+    item.unit,
+    item.currentStatus,
+    item.followCount,
+    allocationAuditHistoryText(item.followHistory)
+  ]);
+  const sheetRows = [headers, ...values].map((rowValues, rowIndex) => {
+    const rowNumber = rowIndex + 1;
+    const style = rowIndex === 0 ? 1 : 2;
+    const cells = rowValues.map((value, columnIndex) => xlsxInlineCell(value, xlsxColumnName(columnIndex), rowNumber, style)).join("");
+    return `<row r="${rowNumber}">${cells}</row>`;
+  }).join("");
+  const lastRow = Math.max(1, values.length + 1);
+  const zip = new JSZip();
+  zip.file("[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`);
+  zip.file("_rels/.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`);
+  zip.file("xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="资源分配对账" sheetId="1" r:id="rId1"/></sheets></workbook>`);
+  zip.file("xl/_rels/workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`);
+  zip.file("xl/styles.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Microsoft YaHei"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Microsoft YaHei"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF2563EB"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border/><border><left style="thin"><color rgb="FFD9E2EC"/></left><right style="thin"><color rgb="FFD9E2EC"/></right><top style="thin"><color rgb="FFD9E2EC"/></top><bottom style="thin"><color rgb="FFD9E2EC"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`);
+  zip.file("xl/worksheets/sheet1.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/><cols><col min="1" max="1" width="21" customWidth="1"/><col min="2" max="2" width="22" customWidth="1"/><col min="3" max="3" width="16" customWidth="1"/><col min="4" max="4" width="18" customWidth="1"/><col min="5" max="7" width="18" customWidth="1"/><col min="8" max="9" width="12" customWidth="1"/><col min="10" max="10" width="70" customWidth="1"/></cols><sheetData>${sheetRows}</sheetData><autoFilter ref="A1:J${lastRow}"/><pageMargins left="0.3" right="0.3" top="0.5" bottom="0.5" header="0.2" footer="0.2"/></worksheet>`);
+  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }
 
 function actionOwnerSummary(items = []) {

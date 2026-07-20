@@ -515,24 +515,24 @@
         <div class="dialog-heading-row">
           <div>
             <h2>资源分配对账</h2>
-            <p class="muted">仅在打开本窗口时计算，用于核对分配、认领、跟进和回公海结果。</p>
+            <p class="muted">按首次导入时间追踪运营导入公海的全部资源，每条资源只统计一次。</p>
           </div>
           <button value="cancel" type="submit">关闭</button>
         </div>
         <div class="allocation-audit-filters">
-          <label>开始日期<input name="start" type="date" /></label>
-          <label>结束日期<input name="end" type="date" /></label>
+          <label>导入开始日期<input name="start" type="date" /></label>
+          <label>导入结束日期<input name="end" type="date" /></label>
           <label>跟进人<select name="ownerId" id="allocationAuditOwner"><option value="">全部跟进人</option></select></label>
-          <label>操作人<select name="operatorId" id="allocationAuditOperator"><option value="">全部操作人</option></select></label>
+          <label>分配人<select name="allocatorId" id="allocationAuditAllocator"><option value="">全部分配人</option></select></label>
           <label>单位<select name="unitId" id="allocationAuditUnit"><option value="">全部单位</option></select></label>
           <button class="primary" id="allocationAuditQuery" type="button">查询</button>
+          <button id="allocationAuditExport" type="button">导出 Excel</button>
         </div>
         <div class="allocation-audit-stats" id="allocationAuditStats"></div>
-        <div class="allocation-audit-owners" id="allocationAuditOwners"></div>
         <div class="table-wrap allocation-audit-table-wrap">
           <table>
-            <thead><tr><th>分配时间</th><th>客户</th><th>跟进人</th><th>操作人</th><th>方式</th><th>人工跟进</th><th>当前结果</th></tr></thead>
-            <tbody id="allocationAuditRows"><tr><td colspan="7" class="empty">点击“查询”加载对账数据</td></tr></tbody>
+            <thead><tr><th>首次导入时间</th><th>客户</th><th>意向产品</th><th>分配人</th><th>当前跟进人</th><th>单位</th><th>当前状态</th><th>跟进次数</th><th>历史跟进记录</th></tr></thead>
+            <tbody id="allocationAuditRows"><tr><td colspan="9" class="empty">点击“查询”加载对账数据</td></tr></tbody>
           </table>
         </div>
         <div class="customer-pager allocation-audit-pager">
