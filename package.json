@@ -18,7 +18,9 @@
     "test:import-counts": "node backend/import-counts.test.js",
     "test:follow-persistence": "node backend/follow-persistence.test.js",
     "test:dashboard-actions": "node backend/dashboard-assigned-unfollowed.test.js",
-    "test": "npm run test:password && npm run test:customers && npm run test:v6 && npm run test:v7 && npm run test:v8 && npm run test:v9 && npm run test:channels && npm run test:import-counts && npm run test:follow-persistence && npm run test:dashboard-actions"
+    "test:metadata-state": "node backend/metadata-state.test.js",
+    "test:allocation-audit": "node backend/allocation-audit.test.js",
+    "test": "npm run test:password && npm run test:customers && npm run test:v6 && npm run test:v7 && npm run test:v8 && npm run test:v9 && npm run test:channels && npm run test:import-counts && npm run test:follow-persistence && npm run test:dashboard-actions && npm run test:metadata-state && npm run test:allocation-audit"
   },
   "dependencies": {
     "jszip": "^3.10.1",

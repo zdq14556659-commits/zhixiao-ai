@@ -168,6 +168,7 @@
               <button id="batchImportBtn">批量导入</button>
               <button id="batchAssignBtn" disabled>批量分配</button>
               <button id="batchChannelBtn" disabled>批量改渠道</button>
+              <button id="allocationAuditBtn" type="button">资源分配对账</button>
             </div>
             <div class="table-wrap">
               <table>
@@ -504,7 +505,41 @@
         <input id="assignUserSearch" class="assign-user-search" type="search" placeholder="搜索跟进人 / 单位 / 账号" />
         <div class="assign-candidate-list" id="assignCandidateList"></div>
         <p class="muted" id="assignPlanHint">请选择至少一名跟进人。</p>
+        <div class="assign-failure-list" id="assignFailureList" hidden></div>
         <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">确认分配</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="allocationAuditDialog" class="allocation-audit-dialog">
+      <form method="dialog" class="dialog-form allocation-audit-form" id="allocationAuditForm">
+        <div class="dialog-heading-row">
+          <div>
+            <h2>资源分配对账</h2>
+            <p class="muted">仅在打开本窗口时计算，用于核对分配、认领、跟进和回公海结果。</p>
+          </div>
+          <button value="cancel" type="submit">关闭</button>
+        </div>
+        <div class="allocation-audit-filters">
+          <label>开始日期<input name="start" type="date" /></label>
+          <label>结束日期<input name="end" type="date" /></label>
+          <label>跟进人<select name="ownerId" id="allocationAuditOwner"><option value="">全部跟进人</option></select></label>
+          <label>操作人<select name="operatorId" id="allocationAuditOperator"><option value="">全部操作人</option></select></label>
+          <label>单位<select name="unitId" id="allocationAuditUnit"><option value="">全部单位</option></select></label>
+          <button class="primary" id="allocationAuditQuery" type="button">查询</button>
+        </div>
+        <div class="allocation-audit-stats" id="allocationAuditStats"></div>
+        <div class="allocation-audit-owners" id="allocationAuditOwners"></div>
+        <div class="table-wrap allocation-audit-table-wrap">
+          <table>
+            <thead><tr><th>分配时间</th><th>客户</th><th>跟进人</th><th>操作人</th><th>方式</th><th>人工跟进</th><th>当前结果</th></tr></thead>
+            <tbody id="allocationAuditRows"><tr><td colspan="7" class="empty">点击“查询”加载对账数据</td></tr></tbody>
+          </table>
+        </div>
+        <div class="customer-pager allocation-audit-pager">
+          <span id="allocationAuditPageSummary">第 1 / 1 页</span>
+          <button id="allocationAuditPrev" type="button">上一页</button>
+          <button id="allocationAuditNext" type="button">下一页</button>
+        </div>
       </form>
     </dialog>
 

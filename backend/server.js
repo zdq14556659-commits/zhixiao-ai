@@ -341,6 +341,11 @@ async function routeApi(req, res, url) {
     return sendJson(res, 200, buildDashboardCached(authState, authUser, Object.fromEntries(url.searchParams.entries())));
   }
 
+  if (req.method === "GET" && url.pathname === "/api/reports/allocation-audit") {
+    if (!canViewAllocationAudit(authState, authUser)) return sendJson(res, 403, { error: "无资源分配对账权限" });
+    return sendJson(res, 200, buildAllocationAudit(authState, authUser, Object.fromEntries(url.searchParams.entries())));
+  }
+
   if (req.method === "GET" && url.pathname === "/api/targets") {
     const month = normalizeMonth(url.searchParams.get("month"));
     return sendJson(res, 200, buildTargetManagement(authState, authUser, month));
@@ -912,28 +917,50 @@ async function routeApi(req, res, url) {
       if (!target) return sendJson(res, 400, { error: "请选择当前权限内的跟进人" });
       assignmentPlan.push({ target, count: ids.length });
     }
-    const assigned = [];
+    const plannedItems = [];
     const failed = [];
-    const summary = [];
     let cursor = 0;
     assignmentPlan.forEach(({ target, count }) => {
-      let success = 0;
       ids.slice(cursor, cursor + count).forEach((id) => {
         const index = state.opportunities.findIndex((item) => Number(item.id) === id);
-        if (index < 0) return failed.push({ id, reason: "销售机会不存在" });
+        if (index < 0) {
+          failed.push({ id, name: "", reason: "销售机会不存在", code: "OPPORTUNITY_NOT_FOUND" });
+          return;
+        }
         const previous = state.opportunities[index];
-        if (!canManageOpportunityAssignment(state, viewer, previous)) return failed.push({ id, reason: "超出管理范围" });
-        const next = assignOpportunity(state, previous, target, viewer);
-        state.opportunities[index] = next;
-        syncCustomerCompatibility(state, next.customerId);
-        assigned.push(opportunityView(state, next));
-        success += 1;
+        const customer = findCustomer(state.customers || [], previous.customerId);
+        if (!canManageOpportunityAssignment(state, viewer, previous)) {
+          failed.push({ id, customerId: previous.customerId, name: customer?.name || "", reason: "超出当前账号的管理范围", code: "ASSIGNMENT_SCOPE_DENIED" });
+          return;
+        }
+        plannedItems.push({ id, index, previous, target });
       });
       cursor += count;
-      summary.push({ ownerId: target.id, owner: target.name, requested: count, assigned: success });
     });
-    if (assigned.length) writeState(state);
-    return sendJson(res, 200, { assigned: assigned.length, failed, summary, opportunities: assigned });
+    if (failed.length) {
+      return sendJson(res, 409, {
+        error: `有${failed.length}个客户不满足分配条件，本次未执行任何分配`,
+        code: "ASSIGNMENT_PREFLIGHT_FAILED",
+        assigned: 0,
+        failed,
+        summary: []
+      });
+    }
+
+    const assigned = [];
+    const summaryMap = new Map();
+    plannedItems.forEach(({ index, previous, target }) => {
+      const next = assignOpportunity(state, previous, target, viewer);
+      state.opportunities[index] = next;
+      syncCustomerCompatibility(state, next.customerId);
+      assigned.push(opportunityView(state, next));
+      const summary = summaryMap.get(target.id) || { ownerId: target.id, owner: target.name, requested: 0, assigned: 0 };
+      summary.requested += 1;
+      summary.assigned += 1;
+      summaryMap.set(target.id, summary);
+    });
+    writeState(state);
+    return sendJson(res, 200, { assigned: assigned.length, failed: [], summary: [...summaryMap.values()], opportunities: assigned });
   }
 
   if (req.method === "GET" && url.pathname === "/api/map/points") {
@@ -1291,7 +1318,7 @@ async function routeApi(req, res, url) {
     const customer = state.customers[index];
     if (!canAssignCustomers(state, viewer)) return sendJson(res, 403, { error: "无客户分配权限" });
     if (!canViewRecord(state, viewer, customer)) return sendJson(res, 403, { error: "不可分配不可见客户" });
-    if (!isCustomerAssignable(customer)) return sendJson(res, 400, { error: "当前客户暂不满足分配条件" });
+    if (!isCustomerAssignable(state, customer)) return sendJson(res, 400, { error: "当前客户暂不满足分配条件" });
     const target = findAssignableSalesUser(state, viewer, body.ownerId, body.owner || body.followPerson);
     if (!target) return sendJson(res, 400, { error: "请选择当前权限内的跟进人" });
     const { next, previousStage } = buildAssignedCustomer(state, viewer, customer, target, body);
@@ -1326,7 +1353,7 @@ async function routeApi(req, res, url) {
         failed.push({ id, name: customer.name, reason: "无权查看" });
         return;
       }
-      if (!isCustomerAssignable(customer)) {
+      if (!isCustomerAssignable(state, customer)) {
         failed.push({ id, name: customer.name, reason: "不满足分配条件" });
         return;
       }
@@ -3224,6 +3251,18 @@ function visiblePublicPoolOpportunities(state, viewer) {
   );
 }
 
+function countPublicPoolOpportunities(state = {}) {
+  const now = Date.now();
+  let count = 0;
+  for (const opportunity of state.opportunities || []) {
+    if (!isOpportunityPublicPool(opportunity, now, state)) continue;
+    const customer = findCustomer(state.customers || [], opportunity.customerId);
+    if (customer?.lifecycleStatus === LIFECYCLE_ARCHIVED) continue;
+    count += 1;
+  }
+  return count;
+}
+
 function isArchivedOpportunity(state, opportunity = {}) {
   const customer = findCustomer(state.customers || [], opportunity.customerId);
   return customer?.lifecycleStatus === LIFECYCLE_ARCHIVED;
@@ -4209,7 +4248,7 @@ function claimCustomerAtIndex(res, state, viewer, index) {
     return sendJson(res, 403, { error: "主管及以上请使用客户分配功能" });
   }
   const previous = state.customers[index];
-  if (!isCustomerClaimable(previous)) {
+  if (!isCustomerClaimable(previous, state)) {
     return sendJson(res, 409, { error: "该客户已被认领或不在公海", code: "DUPLICATE_CUSTOMER" });
   }
   const now = new Date().toISOString();
@@ -4223,7 +4262,7 @@ function claimCustomerAtIndex(res, state, viewer, index) {
     zone: viewer.zone || "",
     region: viewer.zone || previous.region,
     ownershipStatus: OWNERSHIP_PENDING,
-    claimUntil: addDaysToIso(now, CUSTOMER_CLAIM_DAYS),
+    claimUntil: addDaysToIso(now, businessRules(state).publicPoolClaimProtectionDays),
     effectiveFollowUpAt: "",
     publicPoolAt: "",
     publicPoolReason: "",
@@ -4333,26 +4372,32 @@ function publicState(state, viewer = null, options = {}) {
 }
 
 function publicMetaState(state, viewer = null) {
-  const scoped = scopeStateForUser(state, viewer);
   const {
     securityLogs,
     geocodeJobs,
+    users,
     customers,
     opportunities,
     visits,
     activities,
     routes,
+    targets,
     ...safeState
-  } = scoped;
-  const publicPoolCount = viewer ? visiblePublicPoolOpportunities(state, viewer).length : 0;
+  } = state;
+  const scopedUsers = viewer ? visibleUsers(state, viewer) : (users || []);
+  const scopedTargets = viewer
+    ? (targets || []).filter((target) => canViewTarget(state, viewer, target))
+    : (targets || []);
+  const publicPoolCount = viewer ? countPublicPoolOpportunities(state) : 0;
   return {
     ...safeState,
-    users: (scoped.users || []).map(publicUser),
+    users: scopedUsers.map(publicUser),
     customers: [],
     opportunities: [],
     visits: [],
     activities: [],
     routes: [],
+    targets: scopedTargets,
     publicPool: { count: publicPoolCount, loaded: false }
   };
 }
@@ -5284,6 +5329,118 @@ function isAssignedTodayUnfollowed(state, item = {}) {
   return !hasManualFollowOnOrAfter(item, assignment.createdAt);
 }
 
+const ALLOCATION_AUDIT_TYPES = new Set(["created", "assigned", "claimed_public_pool", "offboard_transfer"]);
+
+function canViewAllocationAudit(state, viewer) {
+  return Boolean(viewer) && (canAssignCustomers(state, viewer) || canImportPublicPool(state, viewer));
+}
+
+function allocationEventCounts(state, opportunity = {}, event = {}) {
+  if (!ALLOCATION_AUDIT_TYPES.has(event.type || "")) return false;
+  const targetId = Number(event.toOwnerId || 0);
+  if (!targetId) return false;
+  if (event.type === "created") return assignmentActionCounts(state, opportunity, event);
+  return true;
+}
+
+function manualFollowBetween(state, opportunity = {}, startAt = "", endAt = "") {
+  const startTime = Date.parse(startAt || "");
+  const endTime = Date.parse(endAt || "");
+  return opportunityManualFollows(state, opportunity).some((follow) => {
+    const followTime = Date.parse(follow.createdAt || follow.date || "");
+    if (!Number.isFinite(followTime)) return false;
+    if (Number.isFinite(startTime) && followTime < startTime) return false;
+    if (Number.isFinite(endTime) && followTime >= endTime) return false;
+    return true;
+  });
+}
+
+function allocationOutcome(state, opportunity = {}, laterAllocation = null) {
+  if (laterAllocation) return "reassigned";
+  const customer = findCustomer(state.customers || [], opportunity.customerId) || {};
+  if (customer.lifecycleStatus === LIFECYCLE_ARCHIVED) return "invalid";
+  if (isPurchasedOpportunity(opportunity)) return "purchased";
+  if (opportunity.stage === STAGES[3]) return "deal";
+  if (isOpportunityPublicPool(opportunity, Date.now(), state)) return "returned_public_pool";
+  return "active_owned";
+}
+
+function buildAllocationAudit(state, viewer, query = {}) {
+  const start = normalizeDateText(query.start || query.startDate || addDays(today(), -30));
+  const end = normalizeDateText(query.end || query.endDate || today());
+  const ownerId = Number(query.ownerId || 0);
+  const operatorId = Number(query.operatorId || 0);
+  const unitId = String(query.unitId || "").trim();
+  const pageSize = Math.min(500, Math.max(20, Math.floor(Number(query.pageSize || 100))));
+  const requestedPage = Math.max(1, Math.floor(Number(query.page || 1)));
+  const scopedUsers = visibleUsers(state, viewer);
+  const scopedUserIds = new Set(scopedUsers.map((user) => Number(user.id)).filter(Boolean));
+  const usersById = new Map((state.users || []).map((user) => [Number(user.id), user]));
+  const rows = [];
+
+  (state.opportunities || []).forEach((opportunity) => {
+    const customer = findCustomer(state.customers || [], opportunity.customerId) || {};
+    const allocations = (opportunity.ownershipHistory || [])
+      .filter((event) => allocationEventCounts(state, opportunity, event))
+      .slice()
+      .sort((left, right) => Date.parse(left.createdAt || 0) - Date.parse(right.createdAt || 0));
+    allocations.forEach((event, eventIndex) => {
+      const eventDate = String(event.createdAt || "").slice(0, 10);
+      const targetId = Number(event.toOwnerId || 0);
+      const targetUser = usersById.get(targetId) || {};
+      if (!eventDate || !scopedUserIds.has(targetId)) return;
+      if (!dateMatchesOptionalRange(eventDate, start, end)) return;
+      if (ownerId && targetId !== ownerId) return;
+      if (operatorId && Number(event.operatorId || 0) !== operatorId) return;
+      if (unitId && String(targetUser.unitId || opportunity.unitId || "") !== unitId) return;
+      const laterAllocation = allocations[eventIndex + 1] || null;
+      const followed = manualFollowBetween(state, opportunity, event.createdAt, laterAllocation?.createdAt || "");
+      const outcome = allocationOutcome(state, opportunity, laterAllocation);
+      rows.push({
+        id: event.id || `${opportunity.id}-${eventIndex}`,
+        opportunityId: opportunity.id,
+        customerId: opportunity.customerId,
+        customerName: customer.name || opportunity.name || "未命名客户",
+        productName: opportunity.productName || "待确认产品",
+        stage: opportunity.stage || STAGES[0],
+        ownerId: targetId,
+        owner: targetUser.name || event.toOwner || opportunity.owner || "未记录",
+        unitId: targetUser.unitId || opportunity.unitId || "",
+        unit: targetUser.unit || opportunity.unit || "待分配",
+        operatorId: Number(event.operatorId || 0) || "",
+        operator: event.operator || "未记录",
+        actionType: event.type || "assigned",
+        actionAt: event.createdAt || "",
+        reason: event.reason || "",
+        followed,
+        outcome
+      });
+    });
+  });
+
+  rows.sort((left, right) => Date.parse(right.actionAt || 0) - Date.parse(left.actionAt || 0));
+  const totals = rows.reduce((result, row) => {
+    result.allocated += 1;
+    result[row.followed ? "followed" : "unfollowed"] += 1;
+    result[row.outcome] = (result[row.outcome] || 0) + 1;
+    return result;
+  }, { allocated: 0, followed: 0, unfollowed: 0, active_owned: 0, returned_public_pool: 0, reassigned: 0, invalid: 0, purchased: 0, deal: 0 });
+  const byOwnerMap = new Map();
+  rows.forEach((row) => {
+    const item = byOwnerMap.get(row.ownerId) || { ownerId: row.ownerId, owner: row.owner, unit: row.unit, allocated: 0, followed: 0, unfollowed: 0, returnedToPool: 0 };
+    item.allocated += 1;
+    item[row.followed ? "followed" : "unfollowed"] += 1;
+    if (row.outcome === "returned_public_pool") item.returnedToPool += 1;
+    byOwnerMap.set(row.ownerId, item);
+  });
+  const byOwner = [...byOwnerMap.values()].sort((left, right) => right.allocated - left.allocated || left.owner.localeCompare(right.owner, "zh-CN"));
+  const total = rows.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(requestedPage, totalPages);
+  const items = rows.slice((page - 1) * pageSize, page * pageSize);
+  return { start, end, totals, byOwner, items, total, page, pageSize, totalPages, computedAt: new Date().toISOString() };
+}
+
 function actionOwnerSummary(items = []) {
   const groups = items.reduce((map, item) => {
     const owner = item.followPerson || item.owner || "未分配";
@@ -5537,7 +5694,7 @@ function buildAssignedCustomer(state, viewer, customer, target, body = {}) {
   return { next, previousStage };
 }
 
-function isCustomerAssignable(customer = {}) {
+function isCustomerAssignable(state = {}, customer = {}) {
   if (isCustomerPublicPool(customer, Date.now(), state)) return customer.stage !== "成交";
   if (customer.stage === "名单") return true;
   if (!["线索", "商机"].includes(customer.stage)) return false;

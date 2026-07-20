@@ -1095,6 +1095,25 @@ dialog::backdrop { background: rgba(31, 45, 61, 0.38); }
 .assign-candidate-check b { font-size: 13px; }
 .assign-candidate-check small { margin-top: 2px; color: var(--muted); font-size: 11px; }
 .assign-candidate-row input[type="number"] { min-width: 0; width: 100%; padding: 7px 8px; }
+.assign-failure-list { max-height: 150px; overflow-y: auto; border: 1px solid #f0b9b9; border-radius: 6px; background: #fff7f7; }
+.assign-failure-list article { padding: 8px 10px; border-bottom: 1px solid #f5d6d6; color: #a13c3c; font-size: 13px; }
+.assign-failure-list article:last-child { border-bottom: 0; }
+
+.allocation-audit-dialog { width: min(1080px, calc(100vw - 32px)); }
+.allocation-audit-form { max-height: min(820px, calc(100vh - 40px)); overflow: hidden; }
+.allocation-audit-filters { display: grid; grid-template-columns: repeat(5, minmax(130px, 1fr)) auto; gap: 10px; align-items: end; }
+.allocation-audit-filters label { margin: 0; }
+.allocation-audit-filters button { min-height: 38px; }
+.allocation-audit-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.allocation-audit-stats article { padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: #f8fafc; }
+.allocation-audit-stats span { display: block; color: var(--muted); font-size: 12px; }
+.allocation-audit-stats b { display: block; margin-top: 3px; font-size: 20px; }
+.allocation-audit-owners { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.allocation-audit-owners span { flex: 0 0 auto; padding: 6px 9px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font-size: 12px; background: #fff; }
+.allocation-audit-table-wrap { max-height: 380px; overflow: auto; border: 1px solid var(--line); }
+.allocation-audit-table-wrap table { min-width: 900px; }
+.allocation-audit-table-wrap td, .allocation-audit-table-wrap th { padding: 9px 10px; }
+.allocation-audit-pager { padding-top: 0; }
 
 .success-dialog {
   width: min(400px, calc(100vw - 32px));
@@ -1200,6 +1219,8 @@ button:disabled {
   .import-result-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .import-result-actions { align-items: stretch; flex-direction: column; }
   .import-result-actions .template-link { width: 100%; margin-right: 0; }
+  .allocation-audit-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .allocation-audit-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .field-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .contact-row, .competitor-row { grid-template-columns: 1fr 1fr; }
   .competitor-details[open] { grid-template-columns: 1fr; }

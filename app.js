@@ -82,6 +82,9 @@ let collapsedUserUnitIds = new Set();
 let knownUserUnitIds = new Set();
 let claimingOpportunityIds = new Set();
 let fieldRequestId = 0;
+let allocationAuditData = null;
+let allocationAuditPage = 1;
+let allocationAuditRequestId = 0;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -1073,6 +1076,10 @@ function canImportPublicPool() {
   return canAdmin() || hasPermission(currentUser(), "publicPoolImport");
 }
 
+function canViewAllocationAudit() {
+  return canAssignCustomers() || canImportPublicPool();
+}
+
 function canViewFullPoolInfo() {
   const user = currentUser();
   const role = roleForUser(user);
@@ -1381,6 +1388,7 @@ function renderCustomers() {
   $("#customerProductSelect").innerHTML = productOptions;
   $("#newOpportunityProductSelect").innerHTML = productOptions;
   $("#batchAssignBtn").classList.toggle("hidden", currentStage === INVALID_STAGE || currentStage === PURCHASED_STAGE || !canAssignCustomers());
+  $("#allocationAuditBtn")?.classList.toggle("hidden", !canViewAllocationAudit());
   $("#addCustomerBtn").classList.toggle("hidden", isReadonlyStage());
   $("#batchImportBtn").classList.toggle("hidden", currentStage === INVALID_STAGE || currentStage === PURCHASED_STAGE || (currentStage === PUBLIC_POOL_STAGE && !canImportPublicPool()));
   $("#batchImportBtn").textContent = currentStage === PUBLIC_POOL_STAGE ? "导入公海" : "批量导入";
@@ -1598,8 +1606,25 @@ function openBatchAssignDialog() {
   if (!ids.length) return toast("请先勾选客户");
   $("#assignSummary").textContent = `已选择 ${ids.length} 个客户`;
   $("#assignUserSearch").value = "";
+  $("#assignFailureList").hidden = true;
+  $("#assignFailureList").innerHTML = "";
   renderAssignCandidates();
   $("#assignDialog").showModal();
+}
+
+function showAssignmentFailures(error = {}) {
+  const failures = Array.isArray(error.data?.failed) ? error.data.failed : [];
+  const container = $("#assignFailureList");
+  if (!container) return;
+  if (!failures.length) {
+    container.hidden = true;
+    container.innerHTML = "";
+    return;
+  }
+  container.hidden = false;
+  container.innerHTML = failures.map((item) => `
+    <article><b>${escapeHtml(item.name || `机会 #${item.id || "-"}`)}</b>：${escapeHtml(item.reason || "不满足分配条件")}</article>
+  `).join("");
 }
 
 function renderAssignCandidates() {
@@ -2328,15 +2353,119 @@ async function batchAssignCustomers(event) {
   if (!assignments.length) return toast("请选择员工并填写分配数量");
   const total = assignments.reduce((sum, item) => sum + item.count, 0);
   if (total !== ids.length) return toast(`分配数量合计需等于已选客户数，当前相差${ids.length - total}`);
-  const result = await api("/opportunities/assign", {
-    method: "POST",
-    body: { ids, assignments }
+  const form = event.currentTarget;
+  showAssignmentFailures({});
+  setFormSubmitting(form, true, "分配中...");
+  try {
+    const result = await api("/opportunities/assign", {
+      method: "POST",
+      body: { ids, assignments }
+    });
+    selectedCustomerIds.clear();
+    $("#assignDialog").close();
+    await refreshCustomersAfterMutation();
+    toast(`已分配${result.assigned || ids.length}个客户`);
+  } catch (error) {
+    showAssignmentFailures(error);
+    toast(error.message || "分配失败，本次未执行任何分配");
+  } finally {
+    setFormSubmitting(form, false, "分配中...");
+  }
+}
+
+function dateOffsetText(baseDate, offsetDays) {
+  const [year, month, day] = String(baseDate || today).split("-").map(Number);
+  const date = new Date(Date.UTC(year, Math.max(0, month - 1), day || 1));
+  date.setUTCDate(date.getUTCDate() + Number(offsetDays || 0));
+  return date.toISOString().slice(0, 10);
+}
+
+function allocationActionLabel(type = "") {
+  return ({ created: "管理导入/新增", assigned: "分配", claimed_public_pool: "公海认领", offboard_transfer: "离职交接" })[type] || "分配";
+}
+
+function allocationOutcomeLabel(outcome = "") {
+  return ({ active_owned: "跟进人名下", returned_public_pool: "已回公海", reassigned: "已再次分配", invalid: "已无效", purchased: "已购", deal: "已成交" })[outcome] || "处理中";
+}
+
+function renderAllocationAudit() {
+  const data = allocationAuditData;
+  if (!data) return;
+  const totals = data.totals || {};
+  $("#allocationAuditStats").innerHTML = [
+    ["分配/认领", totals.allocated || 0],
+    ["已人工跟进", totals.followed || 0],
+    ["未人工跟进", totals.unfollowed || 0],
+    ["已回公海", totals.returned_public_pool || 0],
+    ["已再次分配", totals.reassigned || 0]
+  ].map(([label, value]) => `<article><span>${label}</span><b>${value}</b></article>`).join("");
+  $("#allocationAuditOwners").innerHTML = (data.byOwner || []).length
+    ? data.byOwner.map((item) => `<span>${escapeHtml(item.owner)}：分配${item.allocated}，已跟进${item.followed}，回公海${item.returnedToPool}</span>`).join("")
+    : '<span>当前条件下没有分配记录</span>';
+  $("#allocationAuditRows").innerHTML = (data.items || []).length ? data.items.map((item) => `
+    <tr>
+      <td>${escapeHtml(formatFollowTime({ createdAt: item.actionAt }))}</td>
+      <td><b>${escapeHtml(item.customerName)}</b><br><small>${escapeHtml(item.productName || "待确认产品")}</small></td>
+      <td>${escapeHtml(item.owner)}<br><small>${escapeHtml(item.unit || "待分配")}</small></td>
+      <td>${escapeHtml(item.operator || "未记录")}</td>
+      <td>${escapeHtml(allocationActionLabel(item.actionType))}</td>
+      <td>${item.followed ? "已跟进" : "未跟进"}</td>
+      <td>${escapeHtml(allocationOutcomeLabel(item.outcome))}</td>
+    </tr>`).join("") : '<tr><td colspan="7" class="empty">当前条件下没有分配记录</td></tr>';
+  $("#allocationAuditPageSummary").textContent = `共 ${data.total || 0} 条 · 第 ${data.page || 1} / ${data.totalPages || 1} 页`;
+  $("#allocationAuditPrev").disabled = Number(data.page || 1) <= 1;
+  $("#allocationAuditNext").disabled = Number(data.page || 1) >= Number(data.totalPages || 1);
+}
+
+async function loadAllocationAudit(page = allocationAuditPage) {
+  const form = $("#allocationAuditForm");
+  const queryButton = $("#allocationAuditQuery");
+  const requestId = ++allocationAuditRequestId;
+  const formData = new FormData(form);
+  const params = new URLSearchParams({ page: String(page), pageSize: "100" });
+  ["start", "end", "ownerId", "operatorId", "unitId"].forEach((key) => {
+    const value = String(formData.get(key) || "").trim();
+    if (value) params.set(key, value);
   });
-  selectedCustomerIds.clear();
-  $("#assignDialog").close();
-  await refreshCustomersAfterMutation();
-  const failedCount = Array.isArray(result.failed) ? result.failed.length : 0;
-  toast(failedCount ? `已分配${result.assigned || 0}个，${failedCount}个未满足条件` : `已分配${result.assigned || ids.length}个客户`);
+  queryButton.disabled = true;
+  queryButton.textContent = "计算中...";
+  $("#allocationAuditRows").innerHTML = '<tr><td colspan="7" class="empty">正在核对分配记录...</td></tr>';
+  try {
+    const data = await api(`/reports/allocation-audit?${params.toString()}`);
+    if (requestId !== allocationAuditRequestId) return;
+    allocationAuditData = data;
+    allocationAuditPage = Number(data.page || page || 1);
+    renderAllocationAudit();
+  } catch (error) {
+    if (requestId !== allocationAuditRequestId) return;
+    allocationAuditData = null;
+    $("#allocationAuditRows").innerHTML = `<tr><td colspan="7" class="empty">${escapeHtml(error.message || "对账数据加载失败")}</td></tr>`;
+    toast(error.message || "对账数据加载失败");
+  } finally {
+    if (requestId === allocationAuditRequestId) {
+      queryButton.disabled = false;
+      queryButton.textContent = "查询";
+    }
+  }
+}
+
+function openAllocationAuditDialog() {
+  if (!canViewAllocationAudit()) return toast("当前账号无资源分配对账权限");
+  const form = $("#allocationAuditForm");
+  if (!form.elements.start.value) form.elements.start.value = dateOffsetText(today, -7);
+  if (!form.elements.end.value) form.elements.end.value = today;
+  const followUsers = visibleFollowUsers();
+  const operators = visibleUsers();
+  $("#allocationAuditOwner").innerHTML = '<option value="">全部跟进人</option>' + followUsers.map((user) => `<option value="${user.id}">${escapeHtml(user.name)} · ${escapeHtml(user.unit || "待分配")}</option>`).join("");
+  $("#allocationAuditOperator").innerHTML = '<option value="">全部操作人</option>' + operators.map((user) => `<option value="${user.id}">${escapeHtml(user.name)} · ${escapeHtml(user.role || "员工")}</option>`).join("");
+  $("#allocationAuditUnit").innerHTML = '<option value="">全部单位</option>' + selectableUnits().map((unit) => `<option value="${escapeHtml(unit.id)}">${escapeHtml(unitLabel(unit))}</option>`).join("");
+  allocationAuditPage = 1;
+  allocationAuditData = null;
+  $("#allocationAuditStats").innerHTML = "";
+  $("#allocationAuditOwners").innerHTML = "";
+  const dialog = $("#allocationAuditDialog");
+  if (!dialog.open) dialog.showModal();
+  loadAllocationAudit(1);
 }
 
 async function batchImport(event) {
@@ -3332,6 +3461,13 @@ function wireEvents() {
   $("#addCustomerBtn").addEventListener("click", () => openCustomerDialog());
   $("#batchImportBtn").addEventListener("click", () => $("#batchDialog").showModal());
   $("#batchAssignBtn").addEventListener("click", openBatchAssignDialog);
+  $("#allocationAuditBtn")?.addEventListener("click", openAllocationAuditDialog);
+  $("#allocationAuditQuery")?.addEventListener("click", () => {
+    allocationAuditPage = 1;
+    loadAllocationAudit(1);
+  });
+  $("#allocationAuditPrev")?.addEventListener("click", () => loadAllocationAudit(Math.max(1, allocationAuditPage - 1)));
+  $("#allocationAuditNext")?.addEventListener("click", () => loadAllocationAudit(allocationAuditPage + 1));
   $("#batchChannelBtn")?.addEventListener("click", openBatchChannelDialog);
   $("#assignForm").addEventListener("change", updateAssignPlanHint);
   $("#assignForm").addEventListener("input", updateAssignPlanHint);
