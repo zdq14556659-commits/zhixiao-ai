@@ -43,9 +43,21 @@ let geocodeQueueRunning = false;
 let stateCache = null;
 let stateIndexes = emptyStateIndexes();
 let stateWriteTimer = null;
+let stateWritePromise = null;
 let stateDirty = false;
 let stateDiskSignature = "";
 let stateWriteFailureCount = 0;
+let stateRevision = 0;
+let persistedStateRevision = 0;
+let lastStatePersistAt = "";
+let lastStatePersistDurationMs = 0;
+let lastStatePersistBytes = 0;
+let lastStatePersistReason = "";
+let lastStateBackupAt = 0;
+let externalFollowUpIndex = null;
+let externalFollowUpIndexEntryCount = 0;
+let externalFollowUpIndexBuiltAt = "";
+let lastEventLoopLagMs = 0;
 const ADMIN_ROLES = ["总负责人", "运营", "管理员"];
 const DEFAULT_PERMISSIONS = ["dashboard", "customers", "field", "assistant"];
 const PUBLIC_POOL_IMPORT_PERMISSION = "publicPoolImport";
@@ -86,6 +98,18 @@ const DEFAULT_STATE_WRITE_DELAY_MS = DATA_DIR.toLowerCase().startsWith(os.tmpdir
 const STATE_WRITE_DELAY_MS = Math.max(
   0,
   Number(process.env.STATE_WRITE_DELAY_MS ?? DEFAULT_STATE_WRITE_DELAY_MS)
+);
+const STATE_BACKUP_INTERVAL_MS = Math.max(
+  60000,
+  Number(process.env.STATE_BACKUP_INTERVAL_MS || 5 * 60 * 1000)
+);
+const EVENT_LOOP_LAG_INTERVAL_MS = Math.max(
+  1000,
+  Number(process.env.EVENT_LOOP_LAG_INTERVAL_MS || 5000)
+);
+const EVENT_LOOP_LAG_WARN_MS = Math.max(
+  100,
+  Number(process.env.EVENT_LOOP_LAG_WARN_MS || 500)
 );
 const DASHBOARD_CACHE_TTL_MS = Math.max(
   0,
@@ -162,6 +186,12 @@ try {
   throw error;
 }
 
+try {
+  buildExternalFollowUpIndex();
+} catch (error) {
+  console.error("[follow-index] startup build failed", error);
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     res.isHeadRequest = req.method === "HEAD";
@@ -195,6 +225,7 @@ server.listen(PORT, "0.0.0.0", () => {
 module.exports = server;
 
 const SLOW_API_MS = Number(process.env.SLOW_API_MS || 2000);
+const DETAIL_API_WARN_MS = Number(process.env.DETAIL_API_WARN_MS || 500);
 const SLOW_API_PATHS = new Set([
   "/api/state",
   "/api/customer-board",
@@ -228,25 +259,80 @@ function attachSlowRequestLogger(req, res, url) {
   });
 }
 
-process.once("SIGINT", () => {
-  flushStateBeforeExit();
-  process.exit(0);
-});
+let eventLoopSampleAt = Date.now();
+const eventLoopMonitor = setInterval(() => {
+  const now = Date.now();
+  lastEventLoopLagMs = Math.max(0, now - eventLoopSampleAt - EVENT_LOOP_LAG_INTERVAL_MS);
+  eventLoopSampleAt = now;
+  if (lastEventLoopLagMs >= EVENT_LOOP_LAG_WARN_MS) {
+    const memory = process.memoryUsage();
+    console.warn(`[runtime] event-loop-lag=${lastEventLoopLagMs}ms rss=${Math.round(memory.rss / 1024 / 1024)}MB heap=${Math.round(memory.heapUsed / 1024 / 1024)}MB stateDirty=${stateDirty} persisting=${Boolean(stateWritePromise)}`);
+  }
+}, EVENT_LOOP_LAG_INTERVAL_MS);
+if (typeof eventLoopMonitor.unref === "function") eventLoopMonitor.unref();
 
-process.once("SIGTERM", () => {
-  flushStateBeforeExit();
-  process.exit(0);
-});
+let shutdownStarted = false;
+async function shutdownSafely() {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  try {
+    if (server.listening) {
+      await new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          if (typeof server.closeAllConnections === "function") server.closeAllConnections();
+          resolve();
+        }, 5000);
+        server.close(() => {
+          clearTimeout(timeout);
+          resolve();
+        });
+      });
+    }
+    await flushStateBeforeExit();
+  } catch (error) {
+    console.error("[db] shutdown flush failed", error);
+    process.exitCode = 1;
+  } finally {
+    process.exit();
+  }
+}
+
+process.once("SIGINT", shutdownSafely);
+process.once("SIGTERM", shutdownSafely);
 
 process.once("beforeExit", () => {
-  flushStateBeforeExit();
+  if (stateDirty && !stateWritePromise) persistStateNow("before-exit", { retryOnFailure: false });
 });
 
 async function routeApi(req, res, url) {
   if (req.method === "OPTIONS") return sendNoContent(res);
 
   if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/api/health") {
-    return sendJson(res, 200, { ok: true, service: "zhixiao-ai-backend", backendVersion: BACKEND_VERSION, moneyUnit: MONEY_UNIT });
+    return sendJson(res, 200, {
+      ok: true,
+      service: "zhixiao-ai-backend",
+      backendVersion: BACKEND_VERSION,
+      moneyUnit: MONEY_UNIT,
+      runtime: {
+        eventLoopLagMs: lastEventLoopLagMs,
+        rssMb: Math.round(process.memoryUsage().rss / 1024 / 1024)
+      },
+      persistence: {
+        dirty: stateDirty,
+        persisting: Boolean(stateWritePromise),
+        revision: stateRevision,
+        persistedRevision: persistedStateRevision,
+        lastPersistAt: lastStatePersistAt,
+        lastPersistDurationMs: lastStatePersistDurationMs,
+        lastPersistMb: Number((lastStatePersistBytes / 1024 / 1024).toFixed(1)),
+        lastPersistReason: lastStatePersistReason
+      },
+      followUpIndex: {
+        opportunities: externalFollowUpIndex?.size || 0,
+        entries: externalFollowUpIndexEntryCount,
+        builtAt: externalFollowUpIndexBuiltAt
+      }
+    });
   }
 
   if (req.method === "POST" && url.pathname === "/api/auth/login") {
@@ -333,7 +419,7 @@ async function routeApi(req, res, url) {
       targetName: authUser.name,
       sourceIp: getRequestIp(req)
     });
-    writeState(state, { immediate: true, reason: "change-password" });
+    await writeState(state, { immediate: true, reason: "change-password" });
     return sendJson(res, 200, { ok: true, message: "密码修改成功，请重新登录" });
   }
 
@@ -609,7 +695,10 @@ async function routeApi(req, res, url) {
 
   const opportunityDetail = url.pathname.match(/^\/api\/opportunities\/(\d+)\/detail$/);
   if (req.method === "GET" && opportunityDetail) {
-    const opportunity = (authState.opportunities || []).find((item) => Number(item.id) === Number(opportunityDetail[1]));
+    const detailStartedAt = Date.now();
+    const opportunityId = Number(opportunityDetail[1]);
+    const opportunity = stateIndexes.opportunitiesById.get(opportunityId)
+      || (authState.opportunities || []).find((item) => Number(item.id) === opportunityId);
     if (!opportunity) return sendJson(res, 404, { error: "销售机会不存在" });
     const isPublic = isOpportunityPublicPool(opportunity, Date.now(), authState);
     const isArchived = isArchivedOpportunity(authState, opportunity);
@@ -622,7 +711,12 @@ async function routeApi(req, res, url) {
     if (isArchived && !visibleArchivedOpportunities(authState, authUser).some((item) => Number(item.id) === Number(opportunity.id))) {
       return sendJson(res, 403, { error: "无权查看该销售机会" });
     }
-    return sendJson(res, 200, opportunityView(authState, opportunity, { includeExternalFollowUps: true }));
+    const view = opportunityView(authState, opportunity, { includeExternalFollowUps: true });
+    const detailDuration = Date.now() - detailStartedAt;
+    if (detailDuration >= DETAIL_API_WARN_MS) {
+      console.warn(`[detail-api] opportunity=${opportunity.id} duration=${detailDuration}ms follows=${view.followUps?.length || 0}`);
+    }
+    return sendJson(res, 200, view);
   }
 
   const customerOpportunityCreate = url.pathname.match(/^\/api\/customers\/(\d+)\/opportunities$/);
@@ -1698,7 +1792,7 @@ async function routeApi(req, res, url) {
       targetName: target.name,
       sourceIp: getRequestIp(req)
     });
-    writeState(state, { immediate: true, reason: "reset-password" });
+    await writeState(state, { immediate: true, reason: "reset-password" });
     return sendJson(res, 200, { ok: true, user: publicUser(state.users[index]) });
   }
 
@@ -3579,27 +3673,65 @@ function appendFollowUpLogEntry(entry = {}) {
   if (!fs.existsSync(FOLLOWUP_DIR)) fs.mkdirSync(FOLLOWUP_DIR, { recursive: true });
   const file = followUpLogFile(entry.createdAt || entry.date);
   fs.appendFileSync(file, `${JSON.stringify(entry)}\n`, "utf8");
+  addExternalFollowUpToIndex(entry);
   return file;
 }
 
-function readExternalFollowUpsForOpportunity(opportunityId) {
-  if (!fs.existsSync(FOLLOWUP_DIR)) return [];
-  const id = Number(opportunityId);
-  return fs.readdirSync(FOLLOWUP_DIR)
-    .filter((name) => name.endsWith(".jsonl"))
-    .flatMap((name) => fs.readFileSync(path.join(FOLLOWUP_DIR, name), "utf8")
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map((line) => {
+function addExternalFollowUpToMap(index, entry = {}) {
+  const opportunityId = Number(entry.opportunityId);
+  if (!Number.isFinite(opportunityId)) return false;
+  const normalized = normalizeFollowUp(entry, entry);
+  const entries = index.get(opportunityId) || [];
+  entries.push(normalized);
+  index.set(opportunityId, entries);
+  return true;
+}
+
+function addExternalFollowUpToIndex(entry = {}) {
+  if (!(externalFollowUpIndex instanceof Map)) return;
+  if (addExternalFollowUpToMap(externalFollowUpIndex, entry)) {
+    externalFollowUpIndexEntryCount += 1;
+  }
+}
+
+function buildExternalFollowUpIndex() {
+  const startedAt = Date.now();
+  const index = new Map();
+  let entryCount = 0;
+  if (fs.existsSync(FOLLOWUP_DIR)) {
+    fs.readdirSync(FOLLOWUP_DIR)
+      .filter((name) => name.endsWith(".jsonl"))
+      .sort()
+      .forEach((name) => {
+        const file = path.join(FOLLOWUP_DIR, name);
+        let lines = [];
         try {
-          return JSON.parse(line);
-        } catch {
-          return null;
+          lines = fs.readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean);
+        } catch (error) {
+          console.error(`[follow-index] skipped unreadable file=${name}`, error);
+          return;
         }
-      })
-      .filter((item) => item && Number(item.opportunityId) === id))
-    .map((item) => normalizeFollowUp(item, item))
-    .sort(sortByNewest);
+        lines.forEach((line) => {
+          try {
+            const entry = JSON.parse(line);
+            if (addExternalFollowUpToMap(index, entry)) entryCount += 1;
+          } catch {
+            console.warn(`[follow-index] skipped malformed entry file=${name}`);
+          }
+        });
+      });
+  }
+  index.forEach((entries) => entries.sort(sortByNewest));
+  externalFollowUpIndex = index;
+  externalFollowUpIndexEntryCount = entryCount;
+  externalFollowUpIndexBuiltAt = new Date().toISOString();
+  console.log(`[follow-index] built opportunities=${index.size} entries=${entryCount} duration=${Date.now() - startedAt}ms`);
+  return index;
+}
+
+function readExternalFollowUpsForOpportunity(opportunityId) {
+  if (!(externalFollowUpIndex instanceof Map)) buildExternalFollowUpIndex();
+  return [...(externalFollowUpIndex.get(Number(opportunityId)) || [])].sort(sortByNewest);
 }
 
 function inlineFollowUps(opportunity = {}) {
@@ -5381,24 +5513,12 @@ function allocationAuditOwnerEvent(opportunity = {}) {
 
 function readAllocationAuditFollowUps(opportunityIds = new Set()) {
   const grouped = new Map();
-  if (!opportunityIds.size || !fs.existsSync(FOLLOWUP_DIR)) return grouped;
-  fs.readdirSync(FOLLOWUP_DIR)
-    .filter((name) => name.endsWith(".jsonl"))
-    .forEach((name) => {
-      fs.readFileSync(path.join(FOLLOWUP_DIR, name), "utf8")
-        .split(/\r?\n/)
-        .filter(Boolean)
-        .forEach((line) => {
-          try {
-            const raw = JSON.parse(line);
-            const opportunityId = Number(raw.opportunityId || 0);
-            if (!opportunityIds.has(opportunityId)) return;
-            const entries = grouped.get(opportunityId) || [];
-            entries.push(normalizeFollowUp(raw, raw));
-            grouped.set(opportunityId, entries);
-          } catch (_) {}
-        });
-    });
+  if (!opportunityIds.size) return grouped;
+  if (!(externalFollowUpIndex instanceof Map)) buildExternalFollowUpIndex();
+  opportunityIds.forEach((opportunityId) => {
+    const entries = externalFollowUpIndex.get(Number(opportunityId));
+    if (entries?.length) grouped.set(Number(opportunityId), [...entries]);
+  });
   return grouped;
 }
 
@@ -5873,6 +5993,9 @@ function readState() {
   const migrated = migrateState(raw);
   stateCache = migrated;
   rebuildStateIndexes(stateCache);
+  stateRevision += 1;
+  persistedStateRevision = stateRevision;
+  stateDirty = false;
   if (shouldPersistMigratedState(raw)) {
     persistStateNow("migration", { backupBeforeWrite: false, refreshBackupAfterWrite: true });
   } else {
@@ -5892,42 +6015,129 @@ function writeState(state, options = {}) {
   stateCache = state || stateCache;
   rebuildStateIndexes(stateCache);
   stateDirty = true;
-  if (options.immediate || STATE_WRITE_DELAY_MS <= 0) {
+  stateRevision += 1;
+  if (STATE_WRITE_DELAY_MS <= 0) {
     persistStateNow(options.reason || "write-through");
-    return;
+    return Promise.resolve(DATA_FILE);
+  }
+  if (options.immediate) {
+    return flushStateRevision(stateRevision, options.reason || "write-through");
   }
   scheduleStateWrite(options.reason || "queued-write");
+  return Promise.resolve("");
 }
 
 function scheduleStateWrite(reason = "queued-write") {
   if (stateWriteTimer) clearTimeout(stateWriteTimer);
   stateWriteTimer = setTimeout(() => {
     stateWriteTimer = null;
-    persistStateSafely(reason, { retryOnFailure: true });
+    void persistStateQueued(reason, { retryOnFailure: true });
   }, STATE_WRITE_DELAY_MS);
   if (typeof stateWriteTimer.unref === "function") stateWriteTimer.unref();
 }
 
-function persistStateSafely(reason = "safe-flush", options = {}) {
+async function flushStateRevision(targetRevision, reason = "write-through") {
+  while (persistedStateRevision < targetRevision) {
+    const filePath = await persistStateQueued(reason, { retryOnFailure: true, throwOnFailure: true });
+    if (!filePath) throw new Error(`Failed to persist state revision ${targetRevision}`);
+  }
+  return DATA_FILE;
+}
+
+function scheduleStateWriteRetry(reason) {
+  const retryDelay = Math.min(30000, Math.max(STATE_WRITE_DELAY_MS, 1000) * Math.min(stateWriteFailureCount + 1, 10));
+  if (stateWriteTimer) clearTimeout(stateWriteTimer);
+  stateWriteTimer = setTimeout(() => {
+    stateWriteTimer = null;
+    void persistStateQueued(`${reason}-retry`, { retryOnFailure: true });
+  }, retryDelay);
+  if (typeof stateWriteTimer.unref === "function") stateWriteTimer.unref();
+}
+
+function backupWriteIsDue(options = {}) {
+  if (options.backupBeforeWrite === false || !isBackupableDataFile(DATA_FILE)) return false;
+  if (options.forceBackup) return true;
+  if (!fs.existsSync(BACKUP_FILE)) return true;
+  if (!lastStateBackupAt) {
+    try {
+      lastStateBackupAt = fs.statSync(BACKUP_FILE).mtimeMs;
+    } catch {
+      return true;
+    }
+  }
+  return Date.now() - lastStateBackupAt >= STATE_BACKUP_INTERVAL_MS;
+}
+
+function recordStatePersist(reason, revision, bytes, startedAt) {
+  persistedStateRevision = Math.max(persistedStateRevision, revision);
+  lastStatePersistAt = new Date().toISOString();
+  lastStatePersistDurationMs = Date.now() - startedAt;
+  lastStatePersistBytes = bytes;
+  lastStatePersistReason = reason;
+  if (stateRevision === revision) stateDirty = false;
+  stateWriteFailureCount = 0;
+  console.log(`[db] persisted reason=${reason} revision=${revision} duration=${lastStatePersistDurationMs}ms size=${Math.round(bytes / 1024 / 1024)}MB dirty=${stateDirty}`);
+}
+
+async function persistSerializedState(serialized, revision, options = {}) {
+  await fs.promises.mkdir(DATA_DIR, { recursive: true });
+  const shouldBackup = backupWriteIsDue(options);
+  if (shouldBackup) {
+    await fs.promises.copyFile(DATA_FILE, BACKUP_FILE);
+    lastStateBackupAt = Date.now();
+  }
+  const tempFile = `${DATA_FILE}.${process.pid}.${Date.now()}.${revision}.tmp`;
   try {
-    const filePath = persistStateNow(reason, options);
-    stateWriteFailureCount = 0;
-    return filePath;
+    await fs.promises.writeFile(tempFile, serialized, "utf8");
+    await fs.promises.rename(tempFile, DATA_FILE);
+    if (options.refreshBackupAfterWrite) {
+      await fs.promises.copyFile(DATA_FILE, BACKUP_FILE);
+      lastStateBackupAt = Date.now();
+    }
+    stateDiskSignature = fileSignature(DATA_FILE);
+    return DATA_FILE;
+  } finally {
+    await fs.promises.rm(tempFile, { force: true }).catch(() => {});
+  }
+}
+
+function persistStateQueued(reason = "queued-write", options = {}) {
+  if (stateWritePromise) return stateWritePromise;
+  if (!stateCache || !stateDirty) return Promise.resolve(DATA_FILE);
+  if (stateWriteTimer) {
+    clearTimeout(stateWriteTimer);
+    stateWriteTimer = null;
+  }
+  const startedAt = Date.now();
+  const revision = stateRevision;
+  let serialized;
+  try {
+    serialized = JSON.stringify(stateCache);
   } catch (error) {
     stateWriteFailureCount += 1;
-    console.error(`[db] persist failed (${reason}, attempt ${stateWriteFailureCount})`, error);
-    stateDirty = true;
-    if (options.retryOnFailure !== false) {
-      const retryDelay = Math.min(30000, Math.max(STATE_WRITE_DELAY_MS, 1000) * Math.min(stateWriteFailureCount + 1, 10));
-      if (stateWriteTimer) clearTimeout(stateWriteTimer);
-      stateWriteTimer = setTimeout(() => {
-        stateWriteTimer = null;
-        persistStateSafely(`${reason}-retry`, { retryOnFailure: true });
-      }, retryDelay);
-      if (typeof stateWriteTimer.unref === "function") stateWriteTimer.unref();
-    }
-    return "";
+    console.error(`[db] serialize failed (${reason}, attempt ${stateWriteFailureCount})`, error);
+    if (options.retryOnFailure !== false) scheduleStateWriteRetry(reason);
+    return options.throwOnFailure ? Promise.reject(error) : Promise.resolve("");
   }
+  const bytes = Buffer.byteLength(serialized);
+  stateWritePromise = (async () => {
+    try {
+      const filePath = await persistSerializedState(serialized, revision, options);
+      recordStatePersist(reason, revision, bytes, startedAt);
+      return filePath;
+    } catch (error) {
+      stateWriteFailureCount += 1;
+      stateDirty = true;
+      console.error(`[db] persist failed (${reason}, attempt ${stateWriteFailureCount})`, error);
+      if (options.retryOnFailure !== false) scheduleStateWriteRetry(reason);
+      if (options.throwOnFailure) throw error;
+      return "";
+    } finally {
+      stateWritePromise = null;
+      if (stateDirty && !stateWriteTimer && options.retryOnFailure !== false) scheduleStateWrite("changes-during-write");
+    }
+  })();
+  return stateWritePromise;
 }
 
 function persistStateNow(reason = "manual-flush", options = {}) {
@@ -5937,22 +6147,40 @@ function persistStateNow(reason = "manual-flush", options = {}) {
     stateWriteTimer = null;
   }
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (options.backupBeforeWrite !== false && isBackupableDataFile(DATA_FILE)) fs.copyFileSync(DATA_FILE, BACKUP_FILE);
+  if (backupWriteIsDue(options)) {
+    fs.copyFileSync(DATA_FILE, BACKUP_FILE);
+    lastStateBackupAt = Date.now();
+  }
   const tempFile = `${DATA_FILE}.${process.pid}.${Date.now()}.tmp`;
+  const startedAt = Date.now();
+  const revision = stateRevision;
+  const serialized = JSON.stringify(stateCache);
   try {
-    fs.writeFileSync(tempFile, JSON.stringify(stateCache), "utf8");
+    fs.writeFileSync(tempFile, serialized, "utf8");
     fs.renameSync(tempFile, DATA_FILE);
-    if (options.refreshBackupAfterWrite) fs.copyFileSync(DATA_FILE, BACKUP_FILE);
+    if (options.refreshBackupAfterWrite) {
+      fs.copyFileSync(DATA_FILE, BACKUP_FILE);
+      lastStateBackupAt = Date.now();
+    }
     stateDiskSignature = fileSignature(DATA_FILE);
-    stateDirty = false;
+    recordStatePersist(reason, revision, Buffer.byteLength(serialized), startedAt);
     return DATA_FILE;
   } finally {
     if (fs.existsSync(tempFile)) fs.rmSync(tempFile, { force: true });
   }
 }
 
-function flushStateBeforeExit() {
-  if (stateDirty || stateWriteTimer) persistStateSafely("shutdown", { retryOnFailure: false });
+async function flushStateBeforeExit() {
+  if (stateWriteTimer) {
+    clearTimeout(stateWriteTimer);
+    stateWriteTimer = null;
+  }
+  if (stateWritePromise) {
+    try {
+      await stateWritePromise;
+    } catch {}
+  }
+  if (stateDirty) persistStateNow("shutdown", { retryOnFailure: false });
 }
 
 function emptyStateIndexes() {

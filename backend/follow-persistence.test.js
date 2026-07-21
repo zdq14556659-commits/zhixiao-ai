@@ -7,8 +7,11 @@ const { spawn } = require("child_process");
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "zhixiao-follow-persistence-test-"));
 const uploadDir = path.join(tempDir, "uploads");
 const dataFile = path.join(tempDir, "db.json");
+const backupFile = path.join(tempDir, "db.backup.json");
 const port = 29000 + Math.floor(Math.random() * 1000);
 const baseUrl = `http://127.0.0.1:${port}/api`;
+const loadSizeArg = process.argv.find((value) => value.startsWith("--load-mb="));
+const loadSizeMb = Math.max(0, Number(loadSizeArg?.split("=")[1] || 0));
 
 const T = {
   admin: "\u7ba1\u7406\u5458",
@@ -67,7 +70,7 @@ const seed = {
   visits: [],
   activities: [],
   knowledge: [],
-  resources: [],
+  resources: loadSizeMb ? [{ id: "load-fixture", content: "x".repeat(loadSizeMb * 1024 * 1024) }] : [],
   routes: [],
   targets: []
 };
@@ -88,7 +91,8 @@ function startServer() {
       DATA_DIR: tempDir,
       UPLOAD_DIR: uploadDir,
       AUTH_TOKEN_SECRET: "follow-persistence-test-secret",
-      STATE_WRITE_DELAY_MS: "0"
+      STATE_WRITE_DELAY_MS: "25",
+      STATE_BACKUP_INTERVAL_MS: "600000"
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -132,9 +136,29 @@ async function login(account, password = "123456") {
   return response.data.token;
 }
 
+async function waitForPersistedState(expectedNote) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      const disk = JSON.parse(fs.readFileSync(dataFile, "utf8"));
+      const opportunity = disk.opportunities.find((item) => Number(item.id) === 101);
+      const health = await request("/health");
+      const persistence = health.data.persistence || {};
+      if (opportunity?.lastNote === expectedNote
+        && persistence.dirty === false
+        && Number(persistence.persistedRevision) === Number(persistence.revision)) {
+        return disk;
+      }
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`state did not persist: ${expectedNote}\n${output}`);
+}
+
 async function run() {
   startServer();
   await waitForServer();
+  assert.ok(fs.existsSync(backupFile), "startup migration should create a verified backup");
+  const backupMtimeBeforeFollow = fs.statSync(backupFile).mtimeMs;
   const token = await login("sales");
   const note = "manual follow persists";
   const nextFollow = "2026-06-29";
@@ -158,7 +182,8 @@ async function run() {
   assert.equal(immediateDetail.status, 200, JSON.stringify(immediateDetail.data));
   assert.ok(immediateDetail.data.followUps.some((item) => item.note === note));
 
-  const disk = JSON.parse(fs.readFileSync(dataFile, "utf8"));
+  const disk = await waitForPersistedState(note);
+  assert.equal(fs.statSync(backupFile).mtimeMs, backupMtimeBeforeFollow, "queued writes should respect the backup interval");
   const diskOpportunity = disk.opportunities.find((item) => Number(item.id) === 101);
   assert.ok(!diskOpportunity.followUps.some((item) => item.note === note && item.nextFollow === nextFollow));
   assert.equal(diskOpportunity.lastNote, note);
@@ -169,6 +194,20 @@ async function run() {
     .map((name) => fs.readFileSync(path.join(followLogDir, name), "utf8"))
     .join("\n");
   assert.ok(followLogContent.includes(note));
+  const followLogFile = fs.readdirSync(followLogDir).find((name) => name.endsWith(".jsonl"));
+  assert.ok(followLogFile, "follow-up log file should exist");
+  const indexedFile = path.join(followLogDir, followLogFile);
+  const hiddenFile = `${indexedFile}.indexed`;
+  fs.renameSync(indexedFile, hiddenFile);
+  const indexedDetail = await request("/opportunities/101/detail", { token });
+  assert.equal(indexedDetail.status, 200, JSON.stringify(indexedDetail.data));
+  assert.ok(indexedDetail.data.followUps.some((item) => item.note === note), "detail should use the startup follow-up index");
+  fs.renameSync(hiddenFile, indexedFile);
+  assert.equal(
+    fs.readdirSync(tempDir).filter((name) => name.endsWith(".tmp")).length,
+    0,
+    "atomic persistence should not leave temporary files"
+  );
 
   await stopServer();
   startServer();
