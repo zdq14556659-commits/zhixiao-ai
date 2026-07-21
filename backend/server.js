@@ -669,12 +669,17 @@ async function routeApi(req, res, url) {
     const query = Object.fromEntries(url.searchParams.entries());
     const rawItems = visiblePublicPoolOpportunities(authState, authUser);
     if (query.full !== "1") {
-      const visitPhotoMap = buildVisitPhotoMap(authState);
-      const items = rawItems.map((opportunity) => opportunityListRow(authState, opportunity, {
-        maskPhone: !canViewFullPublicPoolInfo(authState, authUser),
-        visitPhotoMap
-      }));
-      return sendJson(res, 200, paginatePublicPoolItems(items, query));
+      const maskPhone = !canViewFullPublicPoolInfo(authState, authUser);
+      const rows = rawItems.map((opportunity) => opportunityListRow(authState, opportunity, { maskPhone, includePhotos: false }));
+      const result = paginatePublicPoolItems(rows, query);
+      const customerIds = new Set(result.items.map((item) => Number(item.customerId)).filter(Boolean));
+      const visitPhotoMap = buildVisitPhotoMap(authState, 12, customerIds);
+      result.items = result.items.map((item) => {
+        const customer = findCustomer(authState.customers || [], item.customerId) || {};
+        const photos = maskPhone ? [] : customerPhotosForDisplay(authState, customer, 6, visitPhotoMap);
+        return { ...item, photoCount: photos.length, photos };
+      });
+      return sendJson(res, 200, result);
     }
     const items = rawItems.map((opportunity) => {
       const customer = findCustomer(authState.customers, opportunity.customerId);
@@ -760,7 +765,7 @@ async function routeApi(req, res, url) {
     lockOpportunityOwnership(opportunity, viewer, "创建销售机会时提交有效跟进");
     state.opportunities.unshift(opportunity);
     state.activities.push({ date: today(), owner: opportunity.owner, type: opportunity.stage, customerId: customer.id, opportunityId: opportunity.id });
-    syncCustomerCompatibility(state, customer.id);
+    syncCustomerCompatibility(state, customer.id, opportunity);
     writeState(state);
     return sendJson(res, 201, opportunityView(state, opportunity));
   }
@@ -770,7 +775,7 @@ async function routeApi(req, res, url) {
     const body = await readBody(req);
     const state = readState();
     const viewer = getAuthUser(req, state);
-    const index = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunityUpdate[1]));
+    const index = findOpportunityIndex(state, opportunityUpdate[1]);
     if (index < 0) return sendJson(res, 404, { error: "销售机会不存在" });
     const previous = state.opportunities[index];
     if (isOpportunityPublicPool(previous, Date.now(), state)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
@@ -788,7 +793,7 @@ async function routeApi(req, res, url) {
     if (validationError) return sendJson(res, 400, { error: validationError });
     const next = normalizeOpportunity({ ...previous, ...body, id: previous.id, customerId: previous.customerId }, state);
     state.opportunities[index] = next;
-    syncCustomerCompatibility(state, next.customerId);
+    syncCustomerCompatibility(state, next.customerId, next);
     writeState(state);
     return sendJson(res, 200, opportunityView(state, next));
   }
@@ -798,7 +803,7 @@ async function routeApi(req, res, url) {
     const body = await readBody(req);
     const state = readState();
     const viewer = getAuthUser(req, state);
-    const index = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunityAdvance[1]));
+    const index = findOpportunityIndex(state, opportunityAdvance[1]);
     if (index < 0) return sendJson(res, 404, { error: "销售机会不存在" });
     const previous = state.opportunities[index];
     if (isOpportunityPublicPool(previous, Date.now(), state)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
@@ -821,7 +826,7 @@ async function routeApi(req, res, url) {
     if (String(body.note || "").trim()) lockOpportunityOwnership(next, viewer, "推进时提交有效跟进");
     state.opportunities[index] = next;
     state.activities.push({ date: today(), owner: next.owner, type: nextStage, customerId: next.customerId, opportunityId: next.id });
-    syncCustomerCompatibility(state, next.customerId);
+    syncCustomerCompatibility(state, next.customerId, next);
     writeState(state);
     return sendJson(res, 200, opportunityView(state, next));
   }
@@ -831,7 +836,7 @@ async function routeApi(req, res, url) {
     const body = await readBody(req);
     const state = readState();
     const viewer = getAuthUser(req, state);
-    const index = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunityFollow[1]));
+    const index = findOpportunityIndex(state, opportunityFollow[1]);
     if (index < 0) return sendJson(res, 404, { error: "销售机会不存在" });
     const previous = state.opportunities[index];
     if (isOpportunityPublicPool(previous, Date.now(), state)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
@@ -850,8 +855,9 @@ async function routeApi(req, res, url) {
     appendManualFollowUp(state, next, { date: body.date || today(), createdAt: new Date().toISOString(), author: viewer.name, note, nextFollow: body.nextFollow || "" }, viewer);
     lockOpportunityOwnership(next, viewer, "提交有效跟进");
     state.opportunities[index] = next;
-    syncCustomerCompatibility(state, next.customerId);
-    writeState(state);
+    replaceOpportunityInIndexes(state, previous, next);
+    syncCustomerCompatibility(state, next.customerId, next);
+    writeState(state, { rebuildIndexes: false, reason: "opportunity-follow" });
     return sendJson(res, 200, opportunityView(state, next, { includeExternalFollowUps: true }));
   }
 
@@ -860,7 +866,7 @@ async function routeApi(req, res, url) {
     const body = await readBody(req);
     const state = readState();
     const viewer = getAuthUser(req, state);
-    const index = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunityClaim[1]));
+    const index = findOpportunityIndex(state, opportunityClaim[1]);
     if (index < 0) return sendJson(res, 404, { error: "公海机会不存在" });
     return claimOpportunityAtIndex(res, state, viewer, index, body);
   }
@@ -870,7 +876,7 @@ async function routeApi(req, res, url) {
     const body = await readBody(req);
     const state = readState();
     const viewer = getAuthUser(req, state);
-    const index = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunityPurchased[1]));
+    const index = findOpportunityIndex(state, opportunityPurchased[1]);
     if (index < 0) return sendJson(res, 404, { error: "销售机会不存在" });
     const previous = state.opportunities[index];
     if (isOpportunityPublicPool(previous, Date.now(), state)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
@@ -910,7 +916,7 @@ async function routeApi(req, res, url) {
     const body = await readBody(req);
     const state = readState();
     const viewer = getAuthUser(req, state);
-    const index = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunityRollbackRequest[1]));
+    const index = findOpportunityIndex(state, opportunityRollbackRequest[1]);
     if (index < 0) return sendJson(res, 404, { error: "销售机会不存在" });
     const opportunity = state.opportunities[index];
     if (isOpportunityPublicPool(opportunity, Date.now(), state)) return sendJson(res, 409, { error: "公海机会需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
@@ -945,7 +951,7 @@ async function routeApi(req, res, url) {
     const body = await readBody(req);
     const state = readState();
     const viewer = getAuthUser(req, state);
-    const index = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunityRollbackReview[1]));
+    const index = findOpportunityIndex(state, opportunityRollbackReview[1]);
     if (index < 0) return sendJson(res, 404, { error: "销售机会不存在" });
     const opportunity = state.opportunities[index];
     if (!canReviewRollback(state, viewer, opportunity)) return sendJson(res, 403, { error: "无权审批该回撤申请" });
@@ -981,7 +987,7 @@ async function routeApi(req, res, url) {
     const state = readState();
     const viewer = getAuthUser(req, state);
     if (!canAssignCustomers(state, viewer)) return sendJson(res, 403, { error: "无销售机会分配权限" });
-    const index = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunityAssign[1]));
+    const index = findOpportunityIndex(state, opportunityAssign[1]);
     if (index < 0) return sendJson(res, 404, { error: "销售机会不存在" });
     const previous = state.opportunities[index];
     if (!canManageOpportunityAssignment(state, viewer, previous)) return sendJson(res, 403, { error: "不可分配权限范围外的销售机会" });
@@ -1025,7 +1031,7 @@ async function routeApi(req, res, url) {
     let cursor = 0;
     assignmentPlan.forEach(({ target, count }) => {
       ids.slice(cursor, cursor + count).forEach((id) => {
-        const index = state.opportunities.findIndex((item) => Number(item.id) === id);
+        const index = findOpportunityIndex(state, id);
         if (index < 0) {
           failed.push({ id, name: "", reason: "销售机会不存在", code: "OPPORTUNITY_NOT_FOUND" });
           return;
@@ -1097,7 +1103,7 @@ async function routeApi(req, res, url) {
     const viewer = getAuthUser(req, state);
     const ids = [...new Set((body.customerIds || []).map(Number).filter(Boolean))].slice(0, 12);
     if (!ids.length) return sendJson(res, 400, { error: "请选择要拜访的工厂" });
-    const customers = ids.map((id) => state.customers.find((item) => Number(item.id) === id)).filter(Boolean);
+    const customers = ids.map((id) => findCustomer(state.customers || [], id)).filter(Boolean);
     if (customers.some((customer) => !canViewMapCustomer(state, viewer, customer))) return sendJson(res, 403, { error: "包含无权查看的客户" });
     const origin = { latitude: Number(body.latitude), longitude: Number(body.longitude) };
     const routeResult = await optimizeRoute(origin, customers);
@@ -1117,7 +1123,7 @@ async function routeApi(req, res, url) {
     const requestedStops = (Array.isArray(body.stops) ? body.stops : []).slice(0, 12);
     const routeStops = [];
     for (const [index, stop] of requestedStops.entries()) {
-      const customer = state.customers.find((item) => Number(item.id) === Number(stop.customerId || stop.id));
+      const customer = findCustomer(state.customers || [], stop.customerId || stop.id);
       if (!customer || customerMapAccess(state, viewer, customer).mode === "none") {
         return sendJson(res, 403, { error: "路线中包含无权查看的客户" });
       }
@@ -1258,7 +1264,7 @@ async function routeApi(req, res, url) {
     const state = readState();
     const viewer = getAuthUser(req, state);
     const normalizedPhone = normalizePhone(body.phone);
-    const index = state.customers.findIndex((item) => normalizePhone(item.phoneNormalized || item.phone) === normalizedPhone);
+    const index = findCustomerIndexByPhone(state.customers || [], normalizedPhone);
     if (!normalizedPhone || index < 0) return sendJson(res, 404, { error: "未找到可认领客户" });
     return claimCustomerAtIndex(res, state, viewer, index);
   }
@@ -1267,7 +1273,7 @@ async function routeApi(req, res, url) {
   if (req.method === "POST" && customerClaim) {
     const state = readState();
     const viewer = getAuthUser(req, state);
-    const index = state.customers.findIndex((item) => Number(item.id) === Number(customerClaim[1]));
+    const index = findCustomerIndex(state.customers || [], customerClaim[1]);
     if (index < 0) return sendJson(res, 404, { error: "未找到可认领客户" });
     return claimCustomerAtIndex(res, state, viewer, index);
   }
@@ -1277,7 +1283,7 @@ async function routeApi(req, res, url) {
     const body = await readBody(req);
     const state = readState();
     const viewer = getAuthUser(req, state);
-    const index = state.customers.findIndex((item) => Number(item.id) === Number(customerContacts[1]));
+    const index = findCustomerIndex(state.customers || [], customerContacts[1]);
     if (index < 0) return sendJson(res, 404, { error: "客户不存在" });
     const customer = state.customers[index];
     if (isCustomerPublicPool(customer, Date.now(), state)) return sendJson(res, 409, { error: "公海客户需先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
@@ -1301,7 +1307,7 @@ async function routeApi(req, res, url) {
     const body = await readBody(req);
     const state = readState();
     const viewer = getAuthUser(req, state);
-    const customer = state.customers.find((item) => Number(item.id) === Number(customerCompetitors[1]));
+    const customer = findCustomer(state.customers || [], customerCompetitors[1]);
     if (!customer) return sendJson(res, 404, { error: "客户不存在" });
     if (isCustomerPublicPool(customer, Date.now(), state)) return sendJson(res, 409, { error: "公海客户需先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
     if (!canViewRecord(state, viewer, customer)) return sendJson(res, 403, { error: "无权维护该客户竞品档案" });
@@ -1315,7 +1321,7 @@ async function routeApi(req, res, url) {
   if (req.method === "GET" && customerVisits) {
     const state = readState();
     const viewer = getAuthUser(req, state);
-    const customer = state.customers.find((item) => Number(item.id) === Number(customerVisits[1]));
+    const customer = findCustomer(state.customers || [], customerVisits[1]);
     if (!customer || customerMapAccess(state, viewer, customer).mode === "none") return sendJson(res, 404, { error: "客户不存在" });
     if (customerMapAccess(state, viewer, customer).mode === "public") {
       return sendJson(res, 409, { error: "公海客户认领后方可查看拜访记录", code: "CUSTOMER_CLAIM_REQUIRED" });
@@ -1341,6 +1347,7 @@ async function routeApi(req, res, url) {
       ...route,
       stops: (route.stops || []).filter((stop) => Number(stop.customerId) !== customerId)
     }));
+    const removedFollowUps = removeExternalFollowUpsForOpportunities(opportunityIds);
     appendSecurityLog(state, {
       type: "delete_customer",
       actorId: viewer.id,
@@ -1350,7 +1357,7 @@ async function routeApi(req, res, url) {
       sourceIp: req.socket?.remoteAddress || "unknown"
     });
     writeState(state);
-    return sendJson(res, 200, { ok: true, deletedId: customerId });
+    return sendJson(res, 200, { ok: true, deletedId: customerId, deletedOpportunities: opportunityIds.size, deletedFollowUps: removedFollowUps });
   }
 
   const customerArchive = url.pathname.match(/^\/api\/customers\/(\d+)\/archive$/);
@@ -1358,7 +1365,7 @@ async function routeApi(req, res, url) {
     const body = await readBody(req);
     const state = readState();
     const viewer = getAuthUser(req, state);
-    const customer = state.customers.find((item) => Number(item.id) === Number(customerArchive[1]));
+    const customer = findCustomer(state.customers || [], customerArchive[1]);
     if (!customer) return sendJson(res, 404, { error: "客户不存在" });
     if (!canViewRecord(state, viewer, customer)) return sendJson(res, 403, { error: "无权归档该客户" });
     customer.lifecycleStatus = LIFECYCLE_ARCHIVED;
@@ -1373,7 +1380,7 @@ async function routeApi(req, res, url) {
   if (req.method === "POST" && customerRestore) {
     const state = readState();
     const viewer = getAuthUser(req, state);
-    const customer = state.customers.find((item) => Number(item.id) === Number(customerRestore[1]));
+    const customer = findCustomer(state.customers || [], customerRestore[1]);
     if (!customer) return sendJson(res, 404, { error: "客户不存在" });
     if (!canManageCustomer(state, viewer, customer)) return sendJson(res, 403, { error: "仅管理人员可恢复归档客户" });
     customer.lifecycleStatus = LIFECYCLE_ACTIVE;
@@ -1388,10 +1395,10 @@ async function routeApi(req, res, url) {
   if (req.method === "POST" && customerFollow) {
     const body = await readBody(req);
     const state = readState();
-    const customer = state.customers.find((item) => item.id === Number(customerFollow[1]));
+    const customer = findCustomer(state.customers || [], Number(customerFollow[1]));
     if (!customer) return sendJson(res, 404, { error: "customer not found" });
     const viewer = getAuthUser(req, state);
-    const opportunity = state.opportunities.find((item) => Number(item.id) === Number(body.opportunityId)) || primaryOpportunity(state, customer.id);
+    const opportunity = findOpportunity(state, body.opportunityId) || primaryOpportunity(state, customer.id);
     if (!opportunity) return sendJson(res, 404, { error: "销售机会不存在" });
     if (isOpportunityPublicPool(opportunity, Date.now(), state)) {
       return sendJson(res, 409, { error: "公海客户需先认领后跟进", code: "CUSTOMER_CLAIM_REQUIRED" });
@@ -1399,6 +1406,7 @@ async function routeApi(req, res, url) {
     if (!canViewOpportunity(state, viewer, opportunity)) return sendJson(res, 403, { error: "无权跟进该销售机会" });
     const note = String(body.note || "").trim();
     if (!note) return sendJson(res, 400, { error: "请填写跟进内容" });
+    const previousOpportunity = { ...opportunity };
     const productUpdate = applyProductSelectionForFollow(state, opportunity, body);
     if (productUpdate.error) {
       return sendJson(res, productUpdate.error.code === "DUPLICATE_ACTIVE_OPPORTUNITY" ? 409 : 400, productUpdate.error);
@@ -1406,8 +1414,9 @@ async function routeApi(req, res, url) {
     Object.assign(opportunity, productUpdate.fields);
     appendManualFollowUp(state, opportunity, { date: body.date || today(), createdAt: new Date().toISOString(), author: viewer?.name, note, nextFollow: body.nextFollow || "" }, viewer);
     lockOpportunityOwnership(opportunity, viewer, "提交有效跟进");
-    syncCustomerCompatibility(state, customer.id);
-    writeState(state);
+    replaceOpportunityInIndexes(state, previousOpportunity, opportunity);
+    syncCustomerCompatibility(state, customer.id, opportunity);
+    writeState(state, { rebuildIndexes: false, reason: "customer-follow" });
     return sendJson(res, 200, opportunityView(state, opportunity, { includeExternalFollowUps: true }));
   }
 
@@ -1416,7 +1425,7 @@ async function routeApi(req, res, url) {
     const body = await readBody(req);
     const state = readState();
     const viewer = getAuthUser(req, state);
-    const index = state.customers.findIndex((item) => item.id === Number(customerAssign[1]));
+    const index = findCustomerIndex(state.customers || [], customerAssign[1]);
     if (index < 0) return sendJson(res, 404, { error: "customer not found" });
     const customer = state.customers[index];
     if (!canAssignCustomers(state, viewer)) return sendJson(res, 403, { error: "无客户分配权限" });
@@ -1446,7 +1455,7 @@ async function routeApi(req, res, url) {
     const assignedCustomers = [];
     const failed = [];
     ids.forEach((id) => {
-      const index = state.customers.findIndex((item) => Number(item.id) === Number(id));
+      const index = findCustomerIndex(state.customers || [], id);
       if (index < 0) {
         failed.push({ id, reason: "客户不存在" });
         return;
@@ -1488,7 +1497,7 @@ async function routeApi(req, res, url) {
     const beforeCounts = {};
     let updated = 0;
     ids.forEach((id) => {
-      const index = state.customers.findIndex((item) => Number(item.id) === Number(id));
+      const index = findCustomerIndex(state.customers || [], id);
       if (index < 0) return;
       const customer = state.customers[index];
       if (!canViewRecord(state, viewer, customer)) return;
@@ -1516,7 +1525,7 @@ async function routeApi(req, res, url) {
   if ((req.method === "PATCH" || req.method === "PUT") && customerPatch) {
     const body = await readBody(req);
     const state = readState();
-    const index = state.customers.findIndex((item) => item.id === Number(customerPatch[1]));
+    const index = findCustomerIndex(state.customers || [], customerPatch[1]);
     if (index < 0) return sendJson(res, 404, { error: "customer not found" });
     const previous = state.customers[index];
     const viewer = getAuthUser(req, state);
@@ -1565,9 +1574,9 @@ async function routeApi(req, res, url) {
     customerBody.city = body.city || (body.address !== undefined ? extractCity(body.address) || "待识别" : previous.city);
     const next = normalizeCustomer({ ...previous, ...customerBody, id: previous.id }, state);
     state.customers[index] = next;
-    const opportunity = state.opportunities.find((item) => Number(item.id) === Number(body.opportunityId)) || primaryOpportunity(state, previous.id);
+    const opportunity = findOpportunity(state, body.opportunityId) || primaryOpportunity(state, previous.id);
     if (opportunity && salesFields.some((field) => body[field] !== undefined)) {
-      const opportunityIndex = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunity.id));
+      const opportunityIndex = findOpportunityIndex(state, opportunity.id);
       const opportunityBody = Object.fromEntries(salesFields.filter((field) => body[field] !== undefined).map((field) => [field, body[field]]));
       if (body.productId !== undefined || body.productName !== undefined) {
         const product = resolveProduct(state, body.productId, body.productName);
@@ -1602,7 +1611,7 @@ async function routeApi(req, res, url) {
     }
     syncCustomerCompatibility(state, previous.id);
     writeState(state);
-    const responseOpportunity = state.opportunities.find((item) => Number(item.id) === Number(body.opportunityId)) || primaryOpportunity(state, previous.id);
+    const responseOpportunity = findOpportunity(state, body.opportunityId) || primaryOpportunity(state, previous.id);
     return sendJson(res, 200, responseOpportunity ? opportunityView(state, responseOpportunity) : toMiniCustomer(state.customers[index]));
   }
 
@@ -1613,8 +1622,8 @@ async function routeApi(req, res, url) {
     const conflict = visitCustomerConflict(state, viewer, body);
     if (conflict) return sendJson(res, conflict.status, conflict.payload);
     const visitOpportunity = body.opportunityId
-      ? state.opportunities.find((item) => Number(item.id) === Number(body.opportunityId))
-      : (state.opportunities || []).find((item) => Number(item.customerId) === Number(body.customerId) && !isOpportunityPublicPool(item, Date.now(), state) && canViewOpportunity(state, viewer, item));
+      ? findOpportunity(state, body.opportunityId)
+      : opportunitiesForCustomer(state, body.customerId).find((item) => !isOpportunityPublicPool(item, Date.now(), state) && canViewOpportunity(state, viewer, item));
     const visit = normalizeVisit({
       id: Date.now(),
       date: today(),
@@ -2813,6 +2822,39 @@ function findCustomer(customers = [], customerId) {
   return (customers || []).find((item) => Number(item.id) === Number(customerId)) || null;
 }
 
+function findCustomerIndex(customers = [], customerId) {
+  if ((customers || []) === stateCache?.customers && stateIndexes.customersById instanceof Map) {
+    const index = stateIndexes.customersById.get(Number(customerId));
+    return index === undefined ? -1 : index;
+  }
+  return (customers || []).findIndex((item) => Number(item.id) === Number(customerId));
+}
+
+function findCustomerIndexByPhone(customers = [], phone) {
+  const normalized = normalizePhone(phone);
+  if (!normalized) return -1;
+  if ((customers || []) === stateCache?.customers && stateIndexes.customersByPhone instanceof Map) {
+    const index = stateIndexes.customersByPhone.get(normalized);
+    return index === undefined ? -1 : index;
+  }
+  return (customers || []).findIndex((item) => normalizePhone(item.phoneNormalized || item.phone) === normalized);
+}
+
+function findOpportunity(state = {}, opportunityId) {
+  if (state === stateCache && stateIndexes.opportunitiesById instanceof Map) {
+    return stateIndexes.opportunitiesById.get(Number(opportunityId)) || null;
+  }
+  return (state.opportunities || []).find((item) => Number(item.id) === Number(opportunityId)) || null;
+}
+
+function findOpportunityIndex(state = {}, opportunityId) {
+  if (state === stateCache && stateIndexes.opportunityPositionsById instanceof Map) {
+    const index = stateIndexes.opportunityPositionsById.get(Number(opportunityId));
+    return index === undefined ? -1 : index;
+  }
+  return (state.opportunities || []).findIndex((item) => Number(item.id) === Number(opportunityId));
+}
+
 function normalizeZone(value) {
   const text = String(value || "");
   if (ZONES.includes(text)) return text;
@@ -3032,9 +3074,9 @@ function primaryOpportunity(state, customerId) {
     || null;
 }
 
-function syncCustomerCompatibility(state, customerId) {
+function syncCustomerCompatibility(state, customerId, preferredOpportunity = null) {
   const customer = findCustomer(state.customers || [], customerId);
-  const opportunity = primaryOpportunity(state, customerId);
+  const opportunity = preferredOpportunity || primaryOpportunity(state, customerId);
   if (!customer || !opportunity) return customer;
   ["stage", "owner", "ownerId", "followPerson", "unitId", "unit", "zone", "region", "orgPath", "amount", "demoAt", "quoteAmount", "expectedDealDate", "contractAmount", "paymentAmount", "paymentDate", "paymentOwnerId", "paymentOwner", "lossReason", "lossReasonDetail", "outcomeStatus", "purchasedInfo", "rollbackHistory", "ownershipStatus", "claimUntil", "effectiveFollowUpAt", "publicPoolAt", "publicPoolReason", "ownershipHistory", "leadAt", "opportunityAt", "dealAt", "nextFollow", "manualFollowCount", "followCount", "latestManualFollowAt", "lastFollow", "lastFollowAuthor", "lastNote"].forEach((field) => {
     customer[field] = opportunity[field];
@@ -3113,7 +3155,9 @@ function opportunityListRow(state, opportunity = {}, options = {}) {
   const maskPhone = Boolean(options.maskPhone);
   const archived = Boolean(options.archived);
   const phone = primaryContact.phone || customer.phone || "";
-  const photos = maskPhone ? [] : customerPhotosForDisplay(state, customer, 6, options.visitPhotoMap);
+  const photos = maskPhone || options.includePhotos === false
+    ? []
+    : customerPhotosForDisplay(state, customer, 6, options.visitPhotoMap);
   return {
     id: opportunity.id,
     opportunityId: opportunity.id,
@@ -3346,6 +3390,65 @@ function canManageOpportunityAssignment(state, viewer, opportunity) {
   return canViewOpportunity(state, viewer, opportunity);
 }
 
+function opportunitiesForCustomer(state = {}, customerId) {
+  if (state === stateCache && stateIndexes.opportunitiesByCustomerId instanceof Map) {
+    return stateIndexes.opportunitiesByCustomerId.get(Number(customerId)) || [];
+  }
+  return (state.opportunities || []).filter((item) => Number(item.customerId) === Number(customerId));
+}
+
+function mergeIndexedRecords(groups = []) {
+  const seen = new Set();
+  const records = [];
+  groups.forEach((group) => (group || []).forEach((record) => {
+    const key = Number(record.id || 0) || record;
+    if (seen.has(key)) return;
+    seen.add(key);
+    records.push(record);
+  }));
+  return records;
+}
+
+function indexedOpportunitiesForScope(state, scope = {}) {
+  if (state !== stateCache || !scope?.type || scope.type === "company") return state.opportunities || [];
+  if (scope.type === "user") return stateIndexes.opportunitiesByOwnerId.get(Number(scope.id)) || [];
+  if (scope.type === "zone") return stateIndexes.opportunitiesByZone.get(String(scope.id)) || [];
+  if (scope.type === "unit") {
+    const unitIds = unitDescendantIds(state.units || [], scope.id);
+    return mergeIndexedRecords([...unitIds].map((unitId) => stateIndexes.opportunitiesByUnitId.get(String(unitId)) || []));
+  }
+  return state.opportunities || [];
+}
+
+function indexedVisitsForScope(state, scope = {}) {
+  if (state !== stateCache || !scope?.type || scope.type === "company") return state.visits || [];
+  if (scope.type === "user") return stateIndexes.visitsByOwnerId.get(Number(scope.id)) || [];
+  if (scope.type === "zone") return stateIndexes.visitsByZone.get(String(scope.id)) || [];
+  if (scope.type === "unit") {
+    const unitIds = unitDescendantIds(state.units || [], scope.id);
+    return mergeIndexedRecords([...unitIds].map((unitId) => stateIndexes.visitsByUnitId.get(String(unitId)) || []));
+  }
+  return state.visits || [];
+}
+
+function opportunityCandidatesForViewer(state, viewer) {
+  if (state !== stateCache || !viewer) return state.opportunities || [];
+  const role = findRole(state.roles, viewer.roleId, viewer.role);
+  if (role.customerScope === "all") return state.opportunities || [];
+  if (role.customerScope === "self") return stateIndexes.opportunitiesByOwnerId.get(Number(viewer.id)) || [];
+  if (role.customerScope === "zone") {
+    return mergeIndexedRecords([
+      stateIndexes.opportunitiesByZone.get(String(viewer.zone || "")) || [],
+      stateIndexes.opportunitiesByOwnerId.get(Number(viewer.id)) || []
+    ]);
+  }
+  const unitIds = managedOrgUnitIds(state, viewer);
+  return mergeIndexedRecords([
+    ...[...unitIds].map((unitId) => stateIndexes.opportunitiesByUnitId.get(String(unitId)) || []),
+    stateIndexes.opportunitiesByOwnerId.get(Number(viewer.id)) || []
+  ]);
+}
+
 function visiblePublicPoolOpportunities(state, viewer) {
   return sortPublicPoolOpportunitiesForViewer(
     (state.opportunities || []).filter((item) => isOpportunityPublicPool(item, Date.now(), state) && (findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED)),
@@ -3373,7 +3476,15 @@ function isArchivedOpportunity(state, opportunity = {}) {
 
 function visibleArchivedOpportunities(state, viewer) {
   if (!viewer) return [];
+  if (state === stateCache && Array.isArray(stateIndexes.archivedOpportunities)) {
+    return [...stateIndexes.archivedOpportunities];
+  }
   return (state.opportunities || []).filter((item) => isArchivedOpportunity(state, item));
+}
+
+function countArchivedOpportunities(state = {}) {
+  if (state === stateCache && Array.isArray(stateIndexes.archivedOpportunities)) return stateIndexes.archivedOpportunities.length;
+  return (state.opportunities || []).reduce((count, item) => count + (isArchivedOpportunity(state, item) ? 1 : 0), 0);
 }
 
 function canViewFullPublicPoolInfo(state, viewer) {
@@ -3493,9 +3604,9 @@ function claimOpportunityAtIndex(res, state, viewer, index, body = {}) {
     publicPoolReason: "",
     ownershipHistory: [...(previous.ownershipHistory || []), ownershipEvent("claimed_public_pool", previous, viewer, viewer, "公海销售机会认领")]
   }, state);
-  state.opportunities[index] = next;
-  syncCustomerCompatibility(state, next.customerId);
-  const customer = findCustomer(state.customers || [], next.customerId);
+    state.opportunities[index] = next;
+    syncCustomerCompatibility(state, next.customerId, next);
+    const customer = findCustomer(state.customers || [], next.customerId);
   if (customer) transferCustomerVisits(state, customer, next);
   writeState(state);
   return sendJson(res, 200, claimOpportunityResponse(state, next));
@@ -3697,6 +3808,7 @@ function addExternalFollowUpToIndex(entry = {}) {
 function buildExternalFollowUpIndex() {
   const startedAt = Date.now();
   const index = new Map();
+  const validOpportunityIds = new Set(stateIndexes.opportunitiesById.keys());
   let entryCount = 0;
   if (fs.existsSync(FOLLOWUP_DIR)) {
     fs.readdirSync(FOLLOWUP_DIR)
@@ -3714,6 +3826,7 @@ function buildExternalFollowUpIndex() {
         lines.forEach((line) => {
           try {
             const entry = JSON.parse(line);
+            if (!validOpportunityIds.has(Number(entry.opportunityId))) return;
             if (addExternalFollowUpToMap(index, entry)) entryCount += 1;
           } catch {
             console.warn(`[follow-index] skipped malformed entry file=${name}`);
@@ -3727,6 +3840,19 @@ function buildExternalFollowUpIndex() {
   externalFollowUpIndexBuiltAt = new Date().toISOString();
   console.log(`[follow-index] built opportunities=${index.size} entries=${entryCount} duration=${Date.now() - startedAt}ms`);
   return index;
+}
+
+function removeExternalFollowUpsForOpportunities(opportunityIds = []) {
+  if (!(externalFollowUpIndex instanceof Map)) return 0;
+  let removed = 0;
+  opportunityIds.forEach((opportunityId) => {
+    const entries = externalFollowUpIndex.get(Number(opportunityId));
+    if (!entries) return;
+    removed += entries.length;
+    externalFollowUpIndex.delete(Number(opportunityId));
+  });
+  externalFollowUpIndexEntryCount = Math.max(0, externalFollowUpIndexEntryCount - removed);
+  return removed;
 }
 
 function readExternalFollowUpsForOpportunity(opportunityId) {
@@ -3807,23 +3933,37 @@ function mergePhotos(...groups) {
   return normalizePhotos(groups.flatMap((group) => Array.isArray(group) ? group : []));
 }
 
+function visitsForCustomer(state = {}, customerId) {
+  if (state === stateCache && stateIndexes.visitsByCustomerId instanceof Map) {
+    return stateIndexes.visitsByCustomerId.get(Number(customerId)) || [];
+  }
+  return (state.visits || []).filter((visit) => Number(visit.customerId) === Number(customerId));
+}
+
 function visitPhotosForCustomer(state = {}, customerId, limit = 8) {
   if (!customerId) return [];
-  const photos = (state.visits || [])
-    .filter((visit) => Number(visit.customerId) === Number(customerId))
+  const photos = visitsForCustomer(state, customerId)
+    .slice()
     .sort(sortByNewest)
     .flatMap((visit) => Array.isArray(visit.photos) ? visit.photos : []);
   return normalizePhotos(photos).slice(0, limit);
 }
 
-function buildVisitPhotoMap(state = {}, limit = 12) {
+function buildVisitPhotoMap(state = {}, limit = 12, customerIds = null) {
   const map = new Map();
-  (state.visits || [])
+  const requestedIds = customerIds instanceof Set
+    ? new Set([...customerIds].map(Number).filter(Boolean))
+    : null;
+  const visits = requestedIds && state === stateCache
+    ? [...requestedIds].flatMap((customerId) => visitsForCustomer(state, customerId))
+    : (state.visits || []);
+  visits
     .slice()
     .sort(sortByNewest)
     .forEach((visit) => {
       const customerId = Number(visit.customerId);
       if (!customerId) return;
+      if (requestedIds && !requestedIds.has(customerId)) return;
       const photos = normalizePhotos(visit.photos || []);
       if (!photos.length) return;
       const current = map.get(customerId) || [];
@@ -4032,7 +4172,7 @@ function syncVisitToCustomer(state, visit) {
   state.customers[index] = customer;
   const opportunity = (visit.opportunityId && state.opportunities.find((item) => Number(item.id) === Number(visit.opportunityId))) || primaryOpportunity(state, customer.id);
   if (opportunity) {
-    const opportunityIndex = state.opportunities.findIndex((item) => Number(item.id) === Number(opportunity.id));
+    const opportunityIndex = findOpportunityIndex(state, opportunity.id);
     const updatedOpportunity = normalizeOpportunity({
       ...opportunity,
       stage,
@@ -4459,7 +4599,7 @@ function visitCustomerConflict(state, viewer, body = {}) {
     return { status: 400, payload: { error: "客户电话与所选工厂不一致", code: "CUSTOMER_PHONE_MISMATCH" } };
   }
   if (body.opportunityId) {
-    const opportunity = (state.opportunities || []).find((item) => Number(item.id) === Number(body.opportunityId));
+    const opportunity = findOpportunity(state, body.opportunityId);
     if (!opportunity || (referenced && Number(opportunity.customerId) !== Number(referenced.id))) {
       return { status: 400, payload: { error: "销售机会与所选工厂不一致", code: "OPPORTUNITY_CUSTOMER_MISMATCH" } };
     }
@@ -4575,24 +4715,24 @@ function buildCustomerBoardLegacy(state, viewer, query = {}) {
 function buildCustomerBoard(state, viewer, query = {}) {
   if (!isPaginatedQuery(query)) return buildCustomerBoardLegacy(state, viewer, query);
   const now = Date.now();
-  const rawPrivate = (state.opportunities || [])
+  const stage = query.stage || STAGES[0];
+  const rawPrivate = opportunityCandidatesForViewer(state, viewer)
     .filter((item) => !isOpportunityPublicPool(item, now, state) && canViewOpportunity(state, viewer, item))
     .filter((item) => findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED);
   const rawPurchased = rawPrivate.filter((item) => isPurchasedOpportunity(item));
   const rawActive = rawPrivate.filter((item) => !isPurchasedOpportunity(item));
-  const rawPublic = visiblePublicPoolOpportunities(state, viewer);
-  const rawInvalid = visibleArchivedOpportunities(state, viewer);
+  const rawPublic = stage === PUBLIC_POOL_STATUS ? visiblePublicPoolOpportunities(state, viewer) : [];
+  const rawInvalid = (stage === "无效" || stage === "invalid") ? visibleArchivedOpportunities(state, viewer) : [];
   const counts = Object.fromEntries((state.stages || STAGES).map((stage) => [stage, rawActive.filter((item) => item.stage === stage).length]));
   const board = {
     backendVersion: BACKEND_VERSION,
     moneyUnit: MONEY_UNIT,
     stages: state.stages || STAGES,
     counts,
-    publicPool: { count: rawPublic.length },
+    publicPool: { count: stage === PUBLIC_POOL_STATUS ? rawPublic.length : countPublicPoolOpportunities(state) },
     purchased: { count: rawPurchased.length },
-    invalid: { count: rawInvalid.length }
+    invalid: { count: (stage === "无效" || stage === "invalid") ? rawInvalid.length : countArchivedOpportunities(state) }
   };
-  const stage = query.stage || STAGES[0];
   let rawRows = rawActive;
   let rowOptions = {};
   if (stage === "全部") rawRows = rawActive;
@@ -4606,17 +4746,23 @@ function buildCustomerBoard(state, viewer, query = {}) {
   } else {
     rawRows = rawActive.filter((item) => item.stage === stage);
   }
-  const visitPhotoMap = buildVisitPhotoMap(state);
-  const rows = rawRows.map((item) => opportunityListRow(state, item, { ...rowOptions, visitPhotoMap }));
+  const rows = rawRows.map((item) => opportunityListRow(state, item, { ...rowOptions, includePhotos: false }));
   const filterOptions = customerBoardFilterOptions(rows);
   const filteredRows = filterBoardRows(rows, query, stage);
   const sortedRows = sortBoardRows(filteredRows, query, stage);
   const page = paginateRows(sortedRows, query);
+  const pageCustomerIds = new Set(page.items.map((item) => Number(item.customerId)).filter(Boolean));
+  const visitPhotoMap = buildVisitPhotoMap(state, 12, pageCustomerIds);
+  const items = page.items.map((item) => {
+    const customer = findCustomer(state.customers || [], item.customerId) || {};
+    const photos = rowOptions.maskPhone ? [] : customerPhotosForDisplay(state, customer, 6, visitPhotoMap);
+    return { ...item, photoCount: photos.length, photos };
+  });
   return {
     ...board,
     stage,
     stageCounts: customerBoardStageCounts(board),
-    items: page.items,
+    items,
     total: page.total,
     page: page.page,
     pageSize: page.pageSize,
@@ -5297,20 +5443,29 @@ function buildFunnel(customers, range) {
   return STAGES.map((stage, index) => {
     const field = fields[index];
     const nextField = fields[index + 1];
-    const periodCount = customers.filter((item) => inRange(item[field], range.start, range.end)).length;
-    const cohort = customers.filter((item) => inRange(item[field], rollingStart, range.end));
-    const converted = nextField ? cohort.filter((item) => item[nextField] && item[nextField] <= range.end).length : cohort.length;
-    const stayValues = customers
-      .filter((item) => item[field] && item[field] <= range.end)
-      .map((item) => daysBetween(item[field], item[nextField] && item[nextField] <= range.end ? item[nextField] : range.end));
-    const overdue = thresholds[index]
-      ? customers.filter((item) => item.stage === stage && item[field] && daysBetween(item[field], range.end) > thresholds[index]).length
-      : 0;
+    let periodCount = 0;
+    let cohortCount = 0;
+    let converted = 0;
+    let stayTotal = 0;
+    let stayCount = 0;
+    let overdue = 0;
+    customers.forEach((item) => {
+      if (inRange(item[field], range.start, range.end)) periodCount += 1;
+      if (inRange(item[field], rollingStart, range.end)) {
+        cohortCount += 1;
+        if (!nextField || (item[nextField] && item[nextField] <= range.end)) converted += 1;
+      }
+      if (item[field] && item[field] <= range.end) {
+        stayTotal += daysBetween(item[field], item[nextField] && item[nextField] <= range.end ? item[nextField] : range.end);
+        stayCount += 1;
+      }
+      if (thresholds[index] && item.stage === stage && item[field] && daysBetween(item[field], range.end) > thresholds[index]) overdue += 1;
+    });
     return {
       stage,
       count: periodCount,
-      conversionRate: nextField ? percentage(converted, cohort.length) : 100,
-      averageStayDays: average(stayValues),
+      conversionRate: nextField ? percentage(converted, cohortCount) : 100,
+      averageStayDays: stayCount ? Math.round((stayTotal / stayCount) * 10) / 10 : 0,
       overdue,
       thresholdDays: thresholds[index]
     };
@@ -5325,18 +5480,27 @@ function buildRanking(state, viewer, selectedScope, range) {
   if (role.customerScope !== "self" && selectedScope.type !== "company") {
     users = users.filter((user) => recordMatchesScope(state, { ownerId: user.id, owner: user.name, unitId: user.unitId, zone: user.zone }, selectedScope));
   }
+  const customersByOwnerId = new Map();
+  const revenueByOwnerId = new Map();
+  (state.customers || []).forEach((item) => {
+    const owner = findUser(state.users || [], item.ownerId, item.owner);
+    const ownerId = Number(owner.id || item.ownerId || 0);
+    if (ownerId) addIndexedRecord(customersByOwnerId, ownerId, item);
+    if (!inRange(item.paymentDate, range.start, range.end)) return;
+    const paymentOwnerId = Number(paymentOwnerFor(state, item).id || 0);
+    if (paymentOwnerId) revenueByOwnerId.set(paymentOwnerId, (revenueByOwnerId.get(paymentOwnerId) || 0) + Number(item.paymentAmount || 0));
+  });
+  const rollingStart = addDays(range.end, -89);
+  const currentDate = today();
   return users.map((user) => {
-    const customers = (state.customers || []).filter((item) => Number(item.ownerId) === Number(user.id) || cleanText(item.owner) === cleanText(user.name));
-    const revenue = (state.customers || [])
-      .filter((item) => Number(paymentOwnerFor(state, item).id) === Number(user.id) && inRange(item.paymentDate, range.start, range.end))
-      .reduce((sum, item) => sum + Number(item.paymentAmount || 0), 0);
+    const customers = customersByOwnerId.get(Number(user.id)) || [];
+    const revenue = revenueByOwnerId.get(Number(user.id)) || 0;
     const deals = customers.filter((item) => inRange(item.dealAt, range.start, range.end)).length;
     const opportunities = customers.filter((item) => inRange(item.opportunityAt, range.start, range.end)).length;
-    const rollingStart = addDays(range.end, -89);
     const rollingOpportunities = customers.filter((item) => inRange(item.opportunityAt, rollingStart, range.end));
     const rollingDeals = rollingOpportunities.filter((item) => item.dealAt && item.dealAt <= range.end).length;
     const follow = customers.map((item) => customerFollowStats(item, range.end)).reduce((acc, item) => ({ due: acc.due + item.due, onTime: acc.onTime + item.onTime }), { due: 0, onTime: 0 });
-    const overdue = customers.filter((item) => item.nextFollow && item.nextFollow < today()).length;
+    const overdue = customers.filter((item) => item.nextFollow && item.nextFollow < currentDate).length;
     const target = effectiveTarget(state, range.month, { type: "user", id: String(user.id), name: user.name });
     return {
       userId: user.id,
@@ -5371,19 +5535,21 @@ function buildUnitRanking(state, viewer, selectedScope, range, scopedCustomers) 
     if (!groups.has(id)) groups.set(id, { id, name: customer.unit || owner.unit || "待分配", zone: customer.zone || owner.zone || "待分区", customers: [] });
     groups.get(id).customers.push(customer);
   });
+  const revenueByUnitId = new Map();
+  (state.customers || []).forEach((item) => {
+    if (!inRange(item.paymentDate, range.start, range.end)) return;
+    const unitId = String(paymentRecordFor(state, item).unitId || "");
+    if (unitId) revenueByUnitId.set(unitId, (revenueByUnitId.get(unitId) || 0) + Number(item.paymentAmount || 0));
+  });
   const rollingStart = addDays(range.end, -89);
+  const currentDate = today();
   return [...groups.values()].map((group) => {
-    const revenue = (state.customers || [])
-      .filter((item) => {
-        const paymentRecord = paymentRecordFor(state, item);
-        return String(paymentRecord.unitId) === String(group.id) && inRange(item.paymentDate, range.start, range.end);
-      })
-      .reduce((sum, item) => sum + Number(item.paymentAmount || 0), 0);
+    const revenue = revenueByUnitId.get(String(group.id)) || 0;
     const deals = group.customers.filter((item) => inRange(item.dealAt, range.start, range.end)).length;
     const opportunities = group.customers.filter((item) => inRange(item.opportunityAt, range.start, range.end)).length;
     const rollingOpportunities = group.customers.filter((item) => inRange(item.opportunityAt, rollingStart, range.end));
     const rollingDeals = rollingOpportunities.filter((item) => item.dealAt && item.dealAt <= range.end).length;
-    const overdue = group.customers.filter((item) => item.nextFollow && item.nextFollow < today()).length;
+    const overdue = group.customers.filter((item) => item.nextFollow && item.nextFollow < currentDate).length;
     const target = effectiveTarget(state, range.month, { type: "unit", id: group.id, name: group.name });
     return {
       unitId: group.id,
@@ -5555,6 +5721,15 @@ function allocationAuditCurrentStatus(state, opportunity = {}, customer = {}) {
   return STAGES.includes(opportunity.stage) ? opportunity.stage : STAGES[0];
 }
 
+function allocationAuditHasFollow(state, opportunity = {}) {
+  if (Number(opportunity.manualFollowCount || opportunity.followCount || 0) > 0) return true;
+  const rules = businessRules(state);
+  if (inlineFollowUps(opportunity).some((item) => !item.isSystem && isEffectiveFollowForRules(item, rules))) return true;
+  if (!(externalFollowUpIndex instanceof Map)) buildExternalFollowUpIndex();
+  return (externalFollowUpIndex.get(Number(opportunity.id)) || [])
+    .some((item) => !item.isSystem && isEffectiveFollowForRules(item, rules));
+}
+
 function buildAllocationAudit(state, viewer, query = {}, options = {}) {
   const start = normalizeDateText(query.start || query.startDate || addDays(today(), -30));
   const end = normalizeDateText(query.end || query.endDate || today());
@@ -5569,7 +5744,6 @@ function buildAllocationAudit(state, viewer, query = {}, options = {}) {
     const customer = findCustomer(state.customers || [], opportunity.customerId) || {};
     return dateMatchesOptionalRange(allocationAuditImportAt(opportunity, customer), start, end);
   });
-  const externalFollows = readAllocationAuditFollowUps(new Set(candidates.map((item) => Number(item.id)).filter(Boolean)));
   const rows = candidates.map((opportunity) => {
     const customer = findCustomer(state.customers || [], opportunity.customerId) || {};
     const currentStatus = allocationAuditCurrentStatus(state, opportunity, customer);
@@ -5577,9 +5751,9 @@ function buildAllocationAudit(state, viewer, query = {}, options = {}) {
     const currentOwnerId = isPublicPool ? 0 : Number(opportunity.ownerId || 0);
     const currentOwnerUser = usersById.get(currentOwnerId) || {};
     const ownerEvent = allocationAuditOwnerEvent(opportunity) || {};
-    const followHistory = allocationAuditFollowHistory(state, opportunity, externalFollows.get(Number(opportunity.id)) || []);
     const allocator = ownerEvent.operator || opportunity.createdBy || "未记录";
     return {
+      sourceOpportunity: opportunity,
       id: opportunity.id,
       opportunityId: opportunity.id,
       customerId: opportunity.customerId,
@@ -5595,9 +5769,7 @@ function buildAllocationAudit(state, viewer, query = {}, options = {}) {
       unitId: isPublicPool ? "" : currentOwnerUser.unitId || opportunity.unitId || "",
       unit: isPublicPool ? PUBLIC_POOL_STATUS : currentOwnerUser.unit || opportunity.unit || "待分配",
       currentStatus,
-      followCount: followHistory.length,
-      followed: followHistory.length > 0,
-      followHistory
+      followed: allocationAuditHasFollow(state, opportunity)
     };
   }).filter((row) => {
     if (ownerId && Number(row.ownerId || 0) !== ownerId) return false;
@@ -5618,7 +5790,12 @@ function buildAllocationAudit(state, viewer, query = {}, options = {}) {
   const total = rows.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const page = Math.min(requestedPage, totalPages);
-  const items = options.paginate === false ? rows : rows.slice((page - 1) * pageSize, page * pageSize);
+  const selectedRows = options.paginate === false ? rows : rows.slice((page - 1) * pageSize, page * pageSize);
+  const externalFollows = readAllocationAuditFollowUps(new Set(selectedRows.map((item) => Number(item.id)).filter(Boolean)));
+  const items = selectedRows.map(({ sourceOpportunity, ...row }) => {
+    const followHistory = allocationAuditFollowHistory(state, sourceOpportunity, externalFollows.get(Number(row.id)) || []);
+    return { ...row, followCount: followHistory.length, followed: followHistory.length > 0, followHistory };
+  });
   return { start, end, totals, items, total, page, pageSize, totalPages, computedAt: new Date().toISOString() };
 }
 
@@ -5804,21 +5981,42 @@ function buildDashboardCached(state, viewer, query = {}) {
   return payload;
 }
 
+function dashboardOpportunitySource(state, viewer, scope) {
+  const role = findRole(state.roles, viewer.roleId, viewer.role);
+  if (role.customerScope === "self" && viewer.unitId) {
+    return indexedOpportunitiesForScope(state, { type: "unit", id: String(viewer.unitId) });
+  }
+  return indexedOpportunitiesForScope(state, scope);
+}
+
+function countScopedPublicPoolOpportunities(state, scope) {
+  let count = 0;
+  const now = Date.now();
+  for (const opportunity of state.opportunities || []) {
+    if (!isOpportunityPublicPool(opportunity, now, state)) continue;
+    const customer = findCustomer(state.customers || [], opportunity.customerId);
+    if (customer?.lifecycleStatus === LIFECYCLE_ARCHIVED) continue;
+    if (recordMatchesScope(state, opportunityView(state, opportunity), scope)) count += 1;
+  }
+  return count;
+}
+
 function buildDashboard(state, viewer, query = {}) {
   const range = normalizeDashboardRange(query);
   const scopeOptions = dashboardScopeOptions(state, viewer);
   const scope = resolveDashboardScope(state, viewer, query);
-  const activeCustomers = (state.customers || []).filter((item) => item.lifecycleStatus !== LIFECYCLE_ARCHIVED);
-  const activeCustomerIds = new Set(activeCustomers.map((item) => Number(item.id)));
-  const activeOpportunities = (state.opportunities || [])
-    .filter((item) => activeCustomerIds.has(Number(item.customerId)) && !isOpportunityPublicPool(item, Date.now(), state) && !isPurchasedOpportunity(item))
+  const activeOpportunities = dashboardOpportunitySource(state, viewer, scope)
+    .filter((item) => findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED)
+    .filter((item) => !isOpportunityPublicPool(item, Date.now(), state) && !isPurchasedOpportunity(item))
     .map((item) => opportunityView(state, item));
   const dashboardState = { ...state, customers: activeOpportunities };
-  const publicPoolCount = visiblePublicPoolOpportunities(state, viewer).filter((item) => recordMatchesScope(state, opportunityView(state, item), scope)).length;
+  const publicPoolCount = countScopedPublicPoolOpportunities(state, scope);
   const customers = activeOpportunities.filter((item) => canViewOpportunity(state, viewer, item) && recordMatchesScope(state, item, scope));
   const customerMasterIds = new Set(customers.map((item) => Number(item.customerId)));
-  const customerMasters = activeCustomers.filter((item) => customerMasterIds.has(Number(item.id)));
-  const visits = (state.visits || []).filter((item) => canViewRecord(state, viewer, item) && recordMatchesScope(state, item, scope));
+  const customerMasters = [...customerMasterIds]
+    .map((customerId) => findCustomer(state.customers || [], customerId))
+    .filter((item) => item && item.lifecycleStatus !== LIFECYCLE_ARCHIVED);
+  const visits = indexedVisitsForScope(state, scope).filter((item) => canViewRecord(state, viewer, item) && recordMatchesScope(state, item, scope));
   const revenueCustomers = activeOpportunities.filter((item) => {
     const paymentRecord = paymentRecordFor(dashboardState, item);
     return canViewRecord(dashboardState, viewer, paymentRecord) && recordMatchesScope(dashboardState, paymentRecord, scope);
@@ -6013,7 +6211,7 @@ function shouldPersistMigratedState(raw = {}) {
 
 function writeState(state, options = {}) {
   stateCache = state || stateCache;
-  rebuildStateIndexes(stateCache);
+  if (options.rebuildIndexes !== false) rebuildStateIndexes(stateCache);
   stateDirty = true;
   stateRevision += 1;
   if (STATE_WRITE_DELAY_MS <= 0) {
@@ -6190,12 +6388,69 @@ function emptyStateIndexes() {
     customersById: new Map(),
     customersByPhone: new Map(),
     opportunitiesById: new Map(),
+    opportunityPositionsById: new Map(),
     opportunitiesByCustomerId: new Map(),
     opportunitiesByStage: new Map(),
     opportunitiesByOwnerId: new Map(),
+    opportunitiesByUnitId: new Map(),
+    opportunitiesByZone: new Map(),
     opportunitiesByOwnership: new Map(),
+    archivedOpportunities: [],
+    visitsByCustomerId: new Map(),
+    visitsByOwnerId: new Map(),
+    visitsByUnitId: new Map(),
+    visitsByZone: new Map(),
     unitsById: new Map()
   };
+}
+
+function addIndexedRecord(index, key, record) {
+  if (key === undefined || key === null || key === "") return;
+  if (!index.has(key)) index.set(key, []);
+  index.get(key).push(record);
+}
+
+function replaceGroupedIndexRecord(index, previousKey, nextKey, previous, next) {
+  if (previousKey === nextKey) {
+    const records = index.get(nextKey) || [];
+    const position = records.findIndex((item) => Number(item.id) === Number(previous.id));
+    if (position >= 0) records[position] = next;
+    else addIndexedRecord(index, nextKey, next);
+    return;
+  }
+  const previousRecords = index.get(previousKey) || [];
+  const remaining = previousRecords.filter((item) => Number(item.id) !== Number(previous.id));
+  if (remaining.length) index.set(previousKey, remaining);
+  else index.delete(previousKey);
+  addIndexedRecord(index, nextKey, next);
+}
+
+function opportunityIndexKeys(state, opportunity = {}) {
+  const owner = findUser(state.users || [], opportunity.ownerId, opportunity.owner);
+  return {
+    customerId: Number(opportunity.customerId),
+    stage: opportunity.stage || "",
+    ownerId: Number(opportunity.ownerId || owner.id || 0),
+    unitId: String(opportunity.unitId || owner.unitId || ""),
+    zone: opportunity.zone || owner.zone || "",
+    ownership: opportunity.ownershipStatus || ""
+  };
+}
+
+function replaceOpportunityInIndexes(state, previous, next) {
+  if (state !== stateCache || !previous?.id || !next?.id) return false;
+  const previousKeys = opportunityIndexKeys(state, previous);
+  const nextKeys = opportunityIndexKeys(state, next);
+  stateIndexes.opportunitiesById.set(Number(next.id), next);
+  replaceGroupedIndexRecord(stateIndexes.opportunitiesByCustomerId, previousKeys.customerId, nextKeys.customerId, previous, next);
+  replaceGroupedIndexRecord(stateIndexes.opportunitiesByStage, previousKeys.stage, nextKeys.stage, previous, next);
+  replaceGroupedIndexRecord(stateIndexes.opportunitiesByOwnerId, previousKeys.ownerId, nextKeys.ownerId, previous, next);
+  replaceGroupedIndexRecord(stateIndexes.opportunitiesByUnitId, previousKeys.unitId, nextKeys.unitId, previous, next);
+  replaceGroupedIndexRecord(stateIndexes.opportunitiesByZone, previousKeys.zone, nextKeys.zone, previous, next);
+  replaceGroupedIndexRecord(stateIndexes.opportunitiesByOwnership, previousKeys.ownership, nextKeys.ownership, previous, next);
+  const archivedIndex = stateIndexes.archivedOpportunities.findIndex((item) => Number(item.id) === Number(previous.id));
+  if (archivedIndex >= 0) stateIndexes.archivedOpportunities[archivedIndex] = next;
+  return true;
 }
 
 function rebuildStateIndexes(state = {}) {
@@ -6209,20 +6464,36 @@ function rebuildStateIndexes(state = {}) {
     const phone = normalizePhone(customer.phoneNormalized || customer.phone);
     if (phone) indexes.customersByPhone.set(phone, index);
   });
-  (state.opportunities || []).forEach((opportunity) => {
+  (state.opportunities || []).forEach((opportunity, position) => {
     indexes.opportunitiesById.set(Number(opportunity.id), opportunity);
+    indexes.opportunityPositionsById.set(Number(opportunity.id), position);
     const customerId = Number(opportunity.customerId);
-    if (!indexes.opportunitiesByCustomerId.has(customerId)) indexes.opportunitiesByCustomerId.set(customerId, []);
-    indexes.opportunitiesByCustomerId.get(customerId).push(opportunity);
+    addIndexedRecord(indexes.opportunitiesByCustomerId, customerId, opportunity);
     const stage = opportunity.stage || "";
-    if (!indexes.opportunitiesByStage.has(stage)) indexes.opportunitiesByStage.set(stage, []);
-    indexes.opportunitiesByStage.get(stage).push(opportunity);
+    addIndexedRecord(indexes.opportunitiesByStage, stage, opportunity);
     const ownerId = Number(opportunity.ownerId || 0);
-    if (!indexes.opportunitiesByOwnerId.has(ownerId)) indexes.opportunitiesByOwnerId.set(ownerId, []);
-    indexes.opportunitiesByOwnerId.get(ownerId).push(opportunity);
+    const ownerIndex = indexes.usersById.get(ownerId);
+    const owner = ownerIndex === undefined ? {} : state.users?.[ownerIndex] || {};
+    const unitId = String(opportunity.unitId || owner.unitId || "");
+    const zone = opportunity.zone || owner.zone || "";
+    addIndexedRecord(indexes.opportunitiesByOwnerId, ownerId, opportunity);
+    addIndexedRecord(indexes.opportunitiesByUnitId, unitId, opportunity);
+    addIndexedRecord(indexes.opportunitiesByZone, zone, opportunity);
     const ownership = opportunity.ownershipStatus || "";
-    if (!indexes.opportunitiesByOwnership.has(ownership)) indexes.opportunitiesByOwnership.set(ownership, []);
-    indexes.opportunitiesByOwnership.get(ownership).push(opportunity);
+    addIndexedRecord(indexes.opportunitiesByOwnership, ownership, opportunity);
+    const customerIndex = indexes.customersById.get(customerId);
+    if (customerIndex !== undefined && state.customers?.[customerIndex]?.lifecycleStatus === LIFECYCLE_ARCHIVED) {
+      indexes.archivedOpportunities.push(opportunity);
+    }
+  });
+  (state.visits || []).forEach((visit) => {
+    const ownerId = Number(visit.ownerId || 0);
+    const ownerIndex = indexes.usersById.get(ownerId);
+    const owner = ownerIndex === undefined ? {} : state.users?.[ownerIndex] || {};
+    addIndexedRecord(indexes.visitsByCustomerId, Number(visit.customerId), visit);
+    addIndexedRecord(indexes.visitsByOwnerId, ownerId, visit);
+    addIndexedRecord(indexes.visitsByUnitId, String(visit.unitId || owner.unitId || ""), visit);
+    addIndexedRecord(indexes.visitsByZone, visit.zone || owner.zone || "", visit);
   });
   (state.units || []).forEach((unit, index) => indexes.unitsById.set(String(unit.id), index));
   stateIndexes = indexes;
@@ -7325,12 +7596,12 @@ function canViewMapCustomer(state, viewer, customer) {
 
 function customerMapAccess(state, viewer, customer = {}) {
   if (!viewer || !customer?.id) return { mode: "none", opportunities: [] };
-  const opportunities = (state.opportunities || []).filter((item) => Number(item.customerId) === Number(customer.id));
+  const opportunities = opportunitiesForCustomer(state, customer.id);
   const privateOpportunities = opportunities.filter((item) => !isOpportunityPublicPool(item, Date.now(), state) && canViewOpportunity(state, viewer, item));
   if (privateOpportunities.length || (!opportunities.length && canViewRecord(state, viewer, customer))) {
     return { mode: "private", opportunities: privateOpportunities };
   }
-  const publicOpportunities = opportunities.filter(isOpportunityPublicPool);
+  const publicOpportunities = opportunities.filter((item) => isOpportunityPublicPool(item, Date.now(), state));
   if (customer.lifecycleStatus !== LIFECYCLE_ARCHIVED && publicOpportunities.length) {
     return { mode: "public", opportunities: publicOpportunities };
   }
@@ -7338,7 +7609,7 @@ function customerMapAccess(state, viewer, customer = {}) {
 }
 
 function visibleVisitsForCustomer(state, viewer, customerId) {
-  return (state.visits || []).filter((visit) => Number(visit.customerId) === Number(customerId) && canViewRecord(state, viewer, visit));
+  return visitsForCustomer(state, customerId).filter((visit) => canViewRecord(state, viewer, visit));
 }
 
 function customerPointStatus(customer = {}, opportunities = [], visits = []) {

@@ -37,6 +37,7 @@ Page({
 
   onShow() {
     if (!app.ensureLogin()) return;
+    if (this.dashboardLoadedAt && Date.now() - this.dashboardLoadedAt < 120000) return;
     this.loadDashboard();
   },
 
@@ -59,6 +60,7 @@ Page({
       const selectedKey = `${data.scope.type}:${data.scope.id}`;
       const scopeIndex = Math.max(0, scopeOptions.findIndex((item) => `${item.type}:${item.id}` === selectedKey));
       const summary = data.summary || {};
+      this.dashboardLoadedAt = Date.now();
       this.setData({
         loading: false,
         scopeOptions,

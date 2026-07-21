@@ -156,9 +156,12 @@
       <text class="pool-hint">已购客户不计入成交业绩</text>
       <button class="primary-btn" data-id="{{item.id}}" catchtap="openNewOpportunity">新增机会</button>
     </view>
+    <view wx:elif="{{item.isInvalid}}" class="strip-actions pool-actions invalid-actions">
+      <text class="pool-hint">已进入无效库</text>
+      <button wx:if="{{item.canDelete}}" class="danger-btn" data-id="{{item.id}}" catchtap="deleteInvalidCustomer" loading="{{deletingCustomerId === item.customerId}}" disabled="{{deletingCustomerId !== 0}}">删除</button>
+    </view>
     <view wx:else class="strip-actions pool-actions">
-      <text wx:if="{{item.isInvalid}}" class="pool-hint">已进入无效库</text>
-      <button wx:elif="{{item.canClaim}}" class="primary-btn" data-id="{{item.id}}" catchtap="claimCustomer">认领后跟进</button>
+      <button wx:if="{{item.canClaim}}" class="primary-btn" data-id="{{item.id}}" catchtap="claimCustomer">认领后跟进</button>
       <button wx:elif="{{item.canAssign}}" class="assign-btn" data-id="{{item.id}}" catchtap="assignCustomer">分配给销售</button>
       <text wx:else class="pool-hint">{{item.poolHint}}</text>
     </view>

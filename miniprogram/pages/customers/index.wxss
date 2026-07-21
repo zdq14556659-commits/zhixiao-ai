@@ -258,6 +258,23 @@
   width: 100%;
 }
 
+.invalid-actions .pool-hint {
+  flex: 1 1 auto;
+  justify-content: flex-start;
+  width: auto;
+}
+
+.invalid-actions .danger-btn {
+  flex: 0 0 140rpx;
+  width: 140rpx;
+  color: #d92d20;
+  background: #fff;
+}
+
+.invalid-actions .danger-btn::after {
+  border-color: #f2b8b5;
+}
+
 .pool-hint {
   display: flex;
   align-items: center;

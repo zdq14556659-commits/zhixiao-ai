@@ -37,6 +37,8 @@ Page({
     totalPages: 1,
     canAssign: false,
     canImportPublic: false,
+    canHardDelete: false,
+    deletingCustomerId: 0,
     publicPoolLoading: false,
     publicPoolLoaded: false,
     publicPoolTotal: 0,
@@ -111,6 +113,7 @@ Page({
     const state = app.getState();
     const currentUser = app.getCurrentUser();
     const role = app.getRole(currentUser);
+    const canHardDelete = ["总负责人", "管理员"].includes(role.name || currentUser.role || "");
     const privateCustomers = Array.isArray(this.privateOpportunityItems)
       ? this.privateOpportunityItems
       : app.scopeOpportunityRows();
@@ -158,6 +161,7 @@ Page({
       stageTimeLabel: this.stageTimeConfig(this.data.currentStage).label,
       canAssign: this.canAssignCustomers(),
       canImportPublic: app.canImportPublicPool(),
+      canHardDelete,
       canFilterOwner,
       publicPoolTotal: this.publicPoolCount || 0,
       currentStageTotal,
@@ -364,6 +368,7 @@ Page({
       isPurchased: Boolean(item.isPurchased),
       canClaim: Boolean(item.canClaim),
       canAssign: Boolean(item.canAssign),
+      canDelete: Boolean(item.canDelete),
       channelLabel: item.channelLabel || "其他",
       productName: item.productName || "待确认产品",
       city: item.city || "待识别",
@@ -413,6 +418,7 @@ Page({
           ? "公海客户"
           : Number(item.claimDaysRemaining || 0) > 0 ? `保护期剩${item.claimDaysRemaining || 0}天` : "",
         canAssign: item.outcomeStatus !== "purchased_existing" && this.data.canAssign && app.canSeePrivateRecord(item) && this.isCustomerAssignable(item),
+        canDelete: item.lifecycleStatus === "archived" && this.data.canHardDelete,
         poolHint: app.canOwnCustomer(currentUser) ? "公海客户需先认领" : "不在您的分配范围",
         photoCount: Array.isArray(item.photos) ? item.photos.length : 0,
         firstPhoto: Array.isArray(item.photos) && item.photos.length ? item.photos[0] : "",
@@ -531,6 +537,31 @@ Page({
     }
     this.preserveFiltersOnNextShow = true;
     wx.navigateTo({ url: `/pages/customer-form/index?id=${customer.customerId || id}&opportunityId=${id}` });
+  },
+
+  deleteInvalidCustomer(event) {
+    const item = this.findVisibleItem(event.currentTarget.dataset.id);
+    if (!item || item.lifecycleStatus !== "archived" || !item.canDelete) {
+      wx.showToast({ title: "仅总负责人和管理员可以删除无效客户", icon: "none" });
+      return;
+    }
+    wx.showModal({
+      title: "永久删除无效客户",
+      content: `确认删除“${item.name || "未命名客户"}”？相关机会、跟进和拜访记录会一并删除，且不可恢复。`,
+      confirmText: "删除",
+      confirmColor: "#d92d20",
+      success: (result) => {
+        if (!result.confirm) return;
+        this.setData({ deletingCustomerId: Number(item.customerId || 0) });
+        app.requestApi(`/customers/${Number(item.customerId)}`, { method: "DELETE" })
+          .then(() => {
+            wx.showToast({ title: "已删除" });
+            this.setData({ page: 1 }, () => this.loadCustomerBoard());
+          })
+          .catch((error) => wx.showToast({ title: error.message || "删除失败", icon: "none" }))
+          .finally(() => this.setData({ deletingCustomerId: 0 }));
+      }
+    });
   },
 
   callCustomer(event) {

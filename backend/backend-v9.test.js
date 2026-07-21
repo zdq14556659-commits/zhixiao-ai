@@ -198,10 +198,22 @@ async function run() {
   assert.equal(leadStatusImport.status, 201, JSON.stringify(leadStatusImport.data));
   assert.equal(leadStatusImport.data.customers[0].stage, "线索");
 
+  const followBeforeDelete = await request("/opportunities/201/follow", { method: "POST", token: sales, body: { note: "删除前跟进记录", nextFollow: today } });
+  assert.equal(followBeforeDelete.status, 200, JSON.stringify(followBeforeDelete.data));
+  const healthBeforeDelete = await request("/health");
+  const archivedCustomer = await request("/customers/101/archive", { method: "POST", token: sales, body: { reason: "invalid" } });
+  assert.equal(archivedCustomer.status, 200);
+  const invalidBoard = await request(`/customer-board?paginated=1&stage=${encodeURIComponent("无效")}`, { token: admin });
+  assert.ok(invalidBoard.data.items.some((item) => item.customerId === 101));
+
   const forbiddenDelete = await request("/customers/101", { method: "DELETE", token: sales });
   assert.equal(forbiddenDelete.status, 403);
   const deleteCustomer = await request("/customers/101", { method: "DELETE", token: admin });
   assert.equal(deleteCustomer.status, 200);
+  assert.equal(deleteCustomer.data.deletedOpportunities, 1);
+  assert.ok(deleteCustomer.data.deletedFollowUps >= 1);
+  const healthAfterDelete = await request("/health");
+  assert.ok(healthAfterDelete.data.followUpIndex.entries < healthBeforeDelete.data.followUpIndex.entries);
   const boardAfterDelete = await request("/customer-board?full=1", { token: admin });
   assert.ok(!boardAfterDelete.data.items.some((item) => item.customerId === 101));
 

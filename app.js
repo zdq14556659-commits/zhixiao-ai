@@ -1534,7 +1534,7 @@ function customerRow(item) {
         ? `<button class="primary" data-action="claim" data-id="${item.id}">认领</button>`
         : `<span class="pool-action-hint">${assignable ? "请勾选后分配" : "不在您的分配范围"}</span>`)
     : isInvalid
-      ? `<span class="pool-action-hint">已进入无效库</span>`
+      ? `${canHardDeleteCustomers() ? `<button class="danger-outline" data-action="delete-invalid" data-id="${item.id}">删除</button>` : ""}<span class="pool-action-hint">已进入无效库</span>`
       : isPurchased
         ? `<button data-action="history" data-id="${item.id}">查看历史</button><button class="primary" data-action="new-opportunity" data-id="${item.id}">新增机会</button>`
         : `<button data-action="follow" data-id="${item.id}">跟进</button><button data-action="ai" data-id="${item.id}">小智</button>${item.stage === "成交" ? `<button class="primary" data-action="new-opportunity" data-id="${item.id}">新增机会</button>` : `<button data-action="advance" data-id="${item.id}">推进</button>${rollbackActions}`}`;
@@ -2875,6 +2875,20 @@ async function deleteCustomerFromDialog() {
   toast("客户已删除");
 }
 
+async function deleteInvalidCustomerFromRow(opportunityId) {
+  const item = rowByOpportunityId(opportunityId);
+  if (!item || !isInvalidCustomer(item)) throw new Error("只能从无效客户列表执行删除");
+  if (!canHardDeleteCustomers()) throw new Error("仅总负责人和管理员可以删除无效客户");
+  const customerId = Number(item.customerId || 0);
+  if (!customerId) throw new Error("客户编号无效");
+  const confirmed = window.confirm(`确认永久删除无效客户：${item.name || "未命名客户"}？\n相关销售机会、跟进和拜访记录会一并删除，且不可恢复。`);
+  if (!confirmed) return;
+  await api(`/customers/${customerId}`, { method: "DELETE" });
+  selectedCustomerIds.delete(Number(opportunityId));
+  await refreshCustomersAfterMutation();
+  toast("无效客户已永久删除");
+}
+
 async function restoreCustomer(id) {
   await api(`/customers/${id}/restore`, { method: "POST", body: {} });
   $("#followHistoryDialog").close();
@@ -3562,6 +3576,7 @@ function wireEvents() {
       if (button.dataset.action === "rollback-request") openRollbackDialog(await fetchOpportunityDetail(id));
       if (button.dataset.action === "rollback-approve") reviewRollback(id, true);
       if (button.dataset.action === "rollback-reject") reviewRollback(id, false);
+      if (button.dataset.action === "delete-invalid") await deleteInvalidCustomerFromRow(id);
       if (button.dataset.action === "assign") {
         const select = button.parentElement.querySelector(`select[data-role="assign-owner"][data-id="${id}"]`);
         assignCustomer(id, select?.value);
