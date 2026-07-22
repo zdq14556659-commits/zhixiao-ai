@@ -99,7 +99,7 @@ jobs:
             systemctl enable --now mysql 2>/dev/null || systemctl enable --now mysqld 2>/dev/null || systemctl enable --now mariadb 2>/dev/null || true
           fi
 
-          if [ "$BOOTSTRAP_ACTION" != "verify_only" ]; then
+          if [ "$BOOTSTRAP_ACTION" = "install_import_verify" ]; then
             SQL_FILE="/tmp/zhixiao-create-db.sql"
             cat > "$SQL_FILE" <<SQL
           CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`
@@ -116,8 +116,26 @@ jobs:
               mysql -uroot < "$SQL_FILE"
             fi
             rm -f "$SQL_FILE"
+          fi
 
-            MYSQL_PWD="$MYSQL_APP_PASSWORD" mysql -h127.0.0.1 -u"$DB_USER" "$DB_NAME" < deploy/mysql/schema.sql
+          # Subsequent imports must use the existing application account. The
+          # server's MySQL root account may use a password and is intentionally
+          # not required after the first bootstrap.
+          start_mysql() {
+            systemctl start mysql 2>/dev/null || \
+              systemctl start mysqld 2>/dev/null || \
+              systemctl start mariadb 2>/dev/null || true
+          }
+          start_mysql
+
+          if [ "$BOOTSTRAP_ACTION" != "verify_only" ]; then
+            if ! MYSQL_PWD="$MYSQL_APP_PASSWORD" mysqladmin \
+              -h127.0.0.1 -u"$DB_USER" ping --silent; then
+              echo "Cannot connect to MySQL with the existing application account '$DB_USER'. Check MYSQL_APP_PASSWORD." >&2
+              exit 1
+            fi
+            MYSQL_PWD="$MYSQL_APP_PASSWORD" mysql \
+              -h127.0.0.1 -u"$DB_USER" "$DB_NAME" < deploy/mysql/schema.sql
           fi
 
           if [ ! -f "$DATA_FILE" ]; then
