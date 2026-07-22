@@ -90,8 +90,8 @@ async function upsertRole(db, role) {
      ON DUPLICATE KEY UPDATE name=VALUES(name), customer_scope=VALUES(customer_scope), active=VALUES(active), data=VALUES(data)`,
     [
       asId(role.id || role.name),
-      text(role.name),
-      text(role.customerScope),
+      fieldText(role.name, 80, "role", role.id, "name"),
+      fieldText(role.customerScope, 40, "role", role.id, "customer_scope"),
       bool(role.active, true),
       JSON.stringify(role)
     ]
@@ -106,12 +106,12 @@ async function upsertUnit(db, unit) {
        path_text=VALUES(path_text), zone=VALUES(zone), sort_no=VALUES(sort_no), active=VALUES(active), data=VALUES(data)`,
     [
       asId(unit.id || unit.name),
-      text(unit.name),
-      text(unit.parentId),
-      text(unit.type),
+      fieldText(unit.name, 160, "unit", unit.id, "name"),
+      fieldText(unit.parentId, 80, "unit", unit.id, "parent_id"),
+      fieldText(unit.type, 40, "unit", unit.id, "type"),
       nullableNumber(unit.level),
-      text(unit.path || unit.orgPath),
-      text(unit.zone),
+      fieldText(unit.path || unit.orgPath, 800, "unit", unit.id, "path_text"),
+      fieldText(unit.zone, 80, "unit", unit.id, "zone"),
       number(unit.sort),
       bool(unit.active, true),
       JSON.stringify(unit)
@@ -128,16 +128,16 @@ async function upsertUser(db, user) {
        org_path=VALUES(org_path), active=VALUES(active), auth_version=VALUES(auth_version), data=VALUES(data)`,
     [
       number(user.id),
-      text(user.account),
-      text(user.username),
-      text(user.phone),
-      text(user.name),
-      text(user.role),
-      text(user.roleId),
-      text(user.unitId),
-      text(user.unit),
-      text(user.zone),
-      text(user.orgPath || user.path),
+      fieldText(user.account, 80, "user", user.id, "account"),
+      fieldText(user.username, 80, "user", user.id, "username"),
+      fieldText(user.phone, 40, "user", user.id, "phone"),
+      fieldText(user.name, 120, "user", user.id, "name"),
+      fieldText(user.role, 80, "user", user.id, "role"),
+      fieldText(user.roleId, 80, "user", user.id, "role_id"),
+      fieldText(user.unitId, 80, "user", user.id, "unit_id"),
+      fieldText(user.unit, 160, "user", user.id, "unit"),
+      fieldText(user.zone, 80, "user", user.id, "zone"),
+      fieldText(user.orgPath || user.path, 800, "user", user.id, "org_path"),
       bool(user.active, true),
       number(user.authVersion),
       JSON.stringify(user)
@@ -163,20 +163,20 @@ async function upsertCustomer(db, customer) {
        updated_at=VALUES(updated_at), data=VALUES(data)`,
     [
       customerId,
-      text(customer.name),
+      fieldText(customer.name, 255, "customer", customerId, "name"),
       phone,
       phoneNormalized,
-      text(customer.city),
-      text(customer.address),
-      text(customer.channelSource),
-      text(customer.createdBy),
+      fieldText(customer.city, 120, "customer", customerId, "city"),
+      fieldText(customer.address, 800, "customer", customerId, "address"),
+      fieldText(customer.channelSource, 120, "customer", customerId, "channel_source"),
+      fieldText(customer.createdBy, 120, "customer", customerId, "created_by"),
       nullableNumber(customer.createdById),
-      text(customer.owner),
+      fieldText(customer.owner, 120, "customer", customerId, "owner"),
       nullableNumber(customer.ownerId),
-      text(customer.unitId),
-      text(customer.unit),
-      text(customer.zone),
-      text(customer.lifecycleStatus),
+      fieldText(customer.unitId, 80, "customer", customerId, "unit_id"),
+      fieldText(customer.unit, 160, "customer", customerId, "unit"),
+      fieldText(customer.zone, 80, "customer", customerId, "zone"),
+      fieldText(customer.lifecycleStatus, 40, "customer", customerId, "lifecycle_status"),
       dateValue(customer.createdAt),
       dateValue(customer.updatedAt),
       JSON.stringify(customer)
@@ -185,6 +185,7 @@ async function upsertCustomer(db, customer) {
 }
 
 async function upsertOpportunity(db, opportunity) {
+  const opportunityId = number(opportunity.id);
   await db.execute(
     `INSERT INTO opportunities (id, customer_id, stage, product_id, product_name, owner, owner_id, follow_person,
       created_by, created_by_id, unit_id, unit, zone, ownership_status, lifecycle_status, outcome_status, public_pool_at,
@@ -199,22 +200,22 @@ async function upsertOpportunity(db, opportunity) {
        updated_at=VALUES(updated_at), amount=VALUES(amount), contract_amount=VALUES(contract_amount),
        payment_amount=VALUES(payment_amount), data=VALUES(data)`,
     [
-      number(opportunity.id),
+      opportunityId,
       number(opportunity.customerId),
-      text(opportunity.stage),
-      text(opportunity.productId),
-      text(opportunity.productName),
-      text(opportunity.owner),
+      fieldText(opportunity.stage, 60, "opportunity", opportunityId, "stage"),
+      fieldText(opportunity.productId, 80, "opportunity", opportunityId, "product_id"),
+      fieldText(opportunity.productName, 160, "opportunity", opportunityId, "product_name"),
+      fieldText(opportunity.owner, 120, "opportunity", opportunityId, "owner"),
       nullableNumber(opportunity.ownerId),
-      text(opportunity.followPerson),
-      text(opportunity.createdBy),
+      fieldText(opportunity.followPerson, 120, "opportunity", opportunityId, "follow_person"),
+      fieldText(opportunity.createdBy, 120, "opportunity", opportunityId, "created_by"),
       nullableNumber(opportunity.createdById),
-      text(opportunity.unitId),
-      text(opportunity.unit),
-      text(opportunity.zone),
-      text(opportunity.ownershipStatus),
-      text(opportunity.lifecycleStatus),
-      text(opportunity.outcomeStatus),
+      fieldText(opportunity.unitId, 80, "opportunity", opportunityId, "unit_id"),
+      fieldText(opportunity.unit, 160, "opportunity", opportunityId, "unit"),
+      fieldText(opportunity.zone, 80, "opportunity", opportunityId, "zone"),
+      fieldText(opportunity.ownershipStatus, 60, "opportunity", opportunityId, "ownership_status"),
+      fieldText(opportunity.lifecycleStatus, 60, "opportunity", opportunityId, "lifecycle_status"),
+      fieldText(opportunity.outcomeStatus, 60, "opportunity", opportunityId, "outcome_status"),
       dateValue(opportunity.publicPoolAt),
       dateValue(opportunity.assignedAt || latestOwnershipAt(opportunity)),
       dateValue(opportunity.lastFollow || latestFollow(opportunity)?.date),
@@ -243,12 +244,12 @@ async function upsertFollowUps(db, opportunity) {
          follow_date=VALUES(follow_date), next_follow_at=VALUES(next_follow_at), author=VALUES(author),
          author_id=VALUES(author_id), note=VALUES(note), is_manual=VALUES(is_manual), data=VALUES(data)`,
       [
-        sourceKey,
+        boundedText(sourceKey, 160, `opportunity=${opportunityId} field=follow_source_key`),
         opportunityId,
         customerId,
         dateValue(follow.date),
         dateValue(follow.nextFollow),
-        text(follow.author || follow.owner || follow.followPerson),
+        fieldText(follow.author || follow.owner || follow.followPerson, 120, "follow", sourceKey, "author"),
         nullableNumber(follow.authorId || follow.ownerId),
         text(follow.note),
         isManualFollow(follow) ? 1 : 0,
@@ -259,6 +260,7 @@ async function upsertFollowUps(db, opportunity) {
 }
 
 async function upsertVisit(db, visit) {
+  const visitId = number(visit.id);
   await db.execute(
     `INSERT INTO visits (id, customer_id, opportunity_id, factory, city, address, owner, owner_id, visit_date, latitude, longitude, data)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -266,13 +268,13 @@ async function upsertVisit(db, visit) {
        city=VALUES(city), address=VALUES(address), owner=VALUES(owner), owner_id=VALUES(owner_id), visit_date=VALUES(visit_date),
        latitude=VALUES(latitude), longitude=VALUES(longitude), data=VALUES(data)`,
     [
-      number(visit.id),
+      visitId,
       nullableNumber(visit.customerId),
       nullableNumber(visit.opportunityId),
-      text(visit.factory || visit.name),
-      text(visit.city),
-      text(visit.address),
-      text(visit.owner),
+      fieldText(visit.factory || visit.name, 255, "visit", visitId, "factory"),
+      fieldText(visit.city, 120, "visit", visitId, "city"),
+      fieldText(visit.address, 800, "visit", visitId, "address"),
+      fieldText(visit.owner, 120, "visit", visitId, "owner"),
       nullableNumber(visit.ownerId),
       dateValue(visit.date || visit.createdAt),
       nullableNumber(visit.latitude),
@@ -291,9 +293,9 @@ async function upsertDictionary(db, type, items) {
        VALUES (?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE name=VALUES(name), active=VALUES(active), sort_no=VALUES(sort_no), data=VALUES(data)`,
       [
-        type,
+        boundedText(type, 60, `dictionary=${type}:${object.id || index} field=type`),
         asId(object.id || object.name || `${type}-${index}`),
-        text(object.name || object.question || object.title || object.id),
+        fieldText(object.name || object.question || object.title || object.id, 200, "dictionary", object.id || index, "name"),
         bool(object.active, true),
         number(object.sort ?? index),
         JSON.stringify(object)
@@ -310,11 +312,11 @@ async function upsertAudit(db, type, item) {
      ON DUPLICATE KEY UPDATE event_type=VALUES(event_type), actor=VALUES(actor), actor_id=VALUES(actor_id),
        target_id=VALUES(target_id), event_at=VALUES(event_at), data=VALUES(data)`,
     [
-      sourceKey,
-      text(item.type || item.action || type),
-      text(item.actor || item.owner || item.operator),
+      boundedText(sourceKey, 160, `audit=${item.id || "generated"} field=source_key`),
+      fieldText(item.type || item.action || type, 100, "audit", item.id, "event_type"),
+      fieldText(item.actor || item.owner || item.operator, 120, "audit", item.id, "actor"),
       nullableNumber(item.actorId || item.ownerId || item.operatorId),
-      text(item.customerId || item.opportunityId || item.targetId),
+      fieldText(item.customerId || item.opportunityId || item.targetId, 120, "audit", item.id, "target_id"),
       dateValue(item.date || item.time || item.createdAt),
       JSON.stringify(item)
     ]
@@ -382,6 +384,10 @@ function boundedText(value, maxLength, context) {
     `${context} length=${textValue.length}; projected value truncated to ${maxLength}, original preserved in data`
   );
   return textValue.slice(0, maxLength);
+}
+
+function fieldText(value, maxLength, entityType, entityId, field) {
+  return boundedText(value, maxLength, `${entityType}=${entityId ?? "unknown"} field=${field}`);
 }
 
 function dateValue(value) {
