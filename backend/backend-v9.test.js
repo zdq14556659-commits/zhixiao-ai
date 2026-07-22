@@ -8,7 +8,12 @@ const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "zhixiao-v9-test-"));
 const port = 25000 + Math.floor(Math.random() * 1000);
 const baseUrl = `http://127.0.0.1:${port}/api`;
 const now = new Date().toISOString();
-const today = now.slice(0, 10);
+const today = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Shanghai",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit"
+}).format(new Date());
 const seed = {
   version: "backend-v8",
   moneyUnit: "yuan",

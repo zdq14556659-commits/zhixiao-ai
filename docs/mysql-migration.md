@@ -1,7 +1,7 @@
 # Zhixiao AI MySQL migration runbook
 
-This is phase 1 only: create MySQL tables and import the current `db.json`.
-Do not switch production reads/writes to MySQL until the import and verify steps pass.
+The project now supports a controlled JSON/MySQL runtime switch. Ordinary
+deployments keep the current storage mode and never enable MySQL implicitly.
 
 ## 1. Install MySQL on the existing server
 
@@ -94,17 +94,52 @@ MYSQL_VERIFY_OK
 
 If any count is `MISMATCH`, do not switch production to MySQL.
 
-## 8. Next phase
+## 8. Controlled production cutover
 
-After phase 1 passes on the server:
+Use GitHub Actions -> `MySQL Runtime Cutover`. It provides four manual actions:
 
-1. Add a storage adapter to the backend.
-2. Move high-traffic reads first: customer list, public pool list, dashboard.
-3. Move writes next: follow-up, claim, assignment, import.
-4. Keep `db.json` as a read-only rollback backup until MySQL has run safely for several days.
+- `status`: show the current runtime storage and health response.
+- `sync_verify`: copy the latest production JSON/follow-up files into a temporary
+  snapshot, reset/import MySQL and verify counts. Runtime remains unchanged.
+- `cutover_mysql`: stop the CRM briefly, snapshot and back up the latest JSON,
+  import and verify MySQL again, then enable MySQL and require a successful
+  `/api/health` response before completing.
+- `rollback_json`: switch the runtime back to JSON and restart the CRM.
+
+Run `sync_verify` first. Only run `cutover_mysql` after it succeeds. The cutover
+workflow creates a production JSON backup under:
+
+```text
+/opt/zhixiao-ai/shared/data/manual-backups/db-before-mysql-cutover-*.json
+```
+
+The backend keeps JSON checkpoints while MySQL is active. If a MySQL startup or
+write fails, it falls back to JSON and writes this marker:
+
+```text
+/opt/zhixiao-ai/shared/data/.mysql-runtime-disabled
+```
+
+That marker prevents a later restart from silently loading stale MySQL data.
+Only a successful fresh `cutover_mysql` removes it.
+
+## 9. Runtime environment
+
+The service optionally reads:
+
+```text
+/opt/zhixiao-ai/shared/mysql.env
+/opt/zhixiao-ai/shared/storage.env
+```
+
+`mysql.env` contains `MYSQL_URL`. `storage.env` contains `STORAGE_MODE=json` or
+`STORAGE_MODE=mysql`. Never commit either file or the database password to Git.
 
 ## Notes
 
 - Photos/uploads stay on disk. MySQL stores paths/metadata only.
 - The schema stores important searchable fields as columns and the original object as JSON.
 - This makes the migration safer because old fields are not lost.
+- Users, roles, organization, dictionaries and other low-frequency metadata
+  remain JSON-backed in this phase. Customers, opportunities, follow-ups and
+  visits use MySQL when the runtime is switched.

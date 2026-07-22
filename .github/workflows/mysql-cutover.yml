@@ -1,0 +1,170 @@
+name: MySQL Runtime Cutover
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "status, sync_verify, cutover_mysql, rollback_json"
+        required: true
+        default: "status"
+
+jobs:
+  cutover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check secrets
+        run: |
+          test -n "${{ secrets.DEPLOY_HOST }}" || (echo "DEPLOY_HOST is empty" && exit 1)
+          test -n "${{ secrets.DEPLOY_USER }}" || (echo "DEPLOY_USER is empty" && exit 1)
+          test -n "${{ secrets.DEPLOY_SSH_KEY }}" || (echo "DEPLOY_SSH_KEY is empty" && exit 1)
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Add server to known_hosts
+        run: ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Run controlled storage action
+        env:
+          STORAGE_ACTION: ${{ inputs.action }}
+        run: |
+          ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "STORAGE_ACTION='${STORAGE_ACTION}' bash -s" <<'EOF'
+          set -euo pipefail
+
+          APP_DIR="/opt/zhixiao-ai/current"
+          DATA_DIR="/opt/zhixiao-ai/shared/data"
+          DATA_FILE="$DATA_DIR/db.json"
+          MYSQL_ENV="/opt/zhixiao-ai/shared/mysql.env"
+          STORAGE_ENV="/opt/zhixiao-ai/shared/storage.env"
+          HEALTH_URL="https://isales.santi.ren/crm/api/health"
+
+          require_mysql_env() {
+            test -f "$MYSQL_ENV" || { echo "Missing $MYSQL_ENV. Run Bootstrap MySQL first." >&2; exit 1; }
+            set -a
+            . "$MYSQL_ENV"
+            set +a
+            test -n "${MYSQL_URL:-}" || { echo "MYSQL_URL is empty" >&2; exit 1; }
+          }
+
+          start_mysql() {
+            systemctl start mysql 2>/dev/null || \
+              systemctl start mysqld 2>/dev/null || \
+              systemctl start mariadb 2>/dev/null || true
+          }
+
+          snapshot_live_data() {
+            local stamp snapshot backup
+            stamp="$(date +%Y%m%d-%H%M%S)"
+            snapshot="/tmp/zhixiao-mysql-sync-$stamp"
+            backup="$DATA_DIR/manual-backups/db-before-mysql-cutover-$stamp.json"
+            mkdir -p "$snapshot" "$DATA_DIR/manual-backups"
+            cp "$DATA_FILE" "$snapshot/db.json"
+            cp "$DATA_FILE" "$backup"
+            if [ -d "$DATA_DIR/followups" ]; then cp -a "$DATA_DIR/followups" "$snapshot/followups"; fi
+            echo "Production JSON backup: $backup" >&2
+            echo "$snapshot"
+          }
+
+          import_and_verify() {
+            local snapshot="$1"
+            cd "$APP_DIR"
+            node -e "require('mysql2/promise'); console.log('MYSQL_RUNTIME_DRIVER_OK')"
+            DATA_FILE="$snapshot/db.json" MYSQL_URL="$MYSQL_URL" \
+              node scripts/mysql/migrate-json-to-mysql.mjs --reset
+            DATA_FILE="$snapshot/db.json" MYSQL_URL="$MYSQL_URL" \
+              node scripts/mysql/verify-mysql-migration.mjs
+          }
+
+          write_storage_mode() {
+            local mode="$1"
+            mkdir -p "$(dirname "$STORAGE_ENV")"
+            cat > "$STORAGE_ENV" <<ENV
+          STORAGE_MODE=$mode
+          MYSQL_FALLBACK_TO_JSON=1
+          MYSQL_MIN_COUNT_RATIO=0.98
+          MYSQL_POOL_SIZE=6
+          MYSQL_CONNECT_TIMEOUT_MS=3000
+          ENV
+            chmod 600 "$STORAGE_ENV"
+          }
+
+          wait_for_health() {
+            local expected="$1"
+            for attempt in $(seq 1 40); do
+              response="$(curl -k -fsS --max-time 5 "$HEALTH_URL" 2>/dev/null || true)"
+              if [ -n "$response" ] && echo "$response" | grep -q "\"active\":\"$expected\""; then
+                echo "$response"
+                return 0
+              fi
+              sleep 2
+            done
+            echo "Health check did not report storage.active=$expected" >&2
+            return 1
+          }
+
+          rollback_to_json() {
+            echo "Rolling back runtime to JSON..." >&2
+            printf '{"disabledAt":"%s","reason":"manual JSON rollback"}\n' "$(date -Iseconds)" > "$DATA_DIR/.mysql-runtime-disabled"
+            write_storage_mode json
+            systemctl daemon-reload
+            systemctl restart zhixiao-ai
+            wait_for_health json
+          }
+
+          handle_cutover_error() {
+            trap - ERR
+            rollback_to_json || true
+            exit 1
+          }
+
+          case "$STORAGE_ACTION" in
+            status)
+              echo "===== storage env ====="
+              if [ -f "$STORAGE_ENV" ]; then sed -E 's#(MYSQL_URL=).*#\1***#' "$STORAGE_ENV"; else echo "STORAGE_MODE=json (default)"; fi
+              echo "===== mysql ====="
+              systemctl is-active mysql 2>/dev/null || systemctl is-active mysqld 2>/dev/null || systemctl is-active mariadb 2>/dev/null || true
+              echo "===== health ====="
+              curl -k -fsS --max-time 10 "$HEALTH_URL"
+              ;;
+
+            sync_verify)
+              require_mysql_env
+              start_mysql
+              snapshot="$(snapshot_live_data)"
+              import_and_verify "$snapshot"
+              echo "MYSQL_SYNC_VERIFY_OK; runtime remains unchanged"
+              ;;
+
+            cutover_mysql)
+              require_mysql_env
+              start_mysql
+              trap handle_cutover_error ERR
+              systemctl stop zhixiao-ai
+              snapshot="$(snapshot_live_data)"
+              import_and_verify "$snapshot"
+              rm -f "$DATA_DIR/.mysql-runtime-disabled"
+              write_storage_mode mysql
+              systemctl daemon-reload
+              systemctl start zhixiao-ai
+              wait_for_health mysql
+              trap - ERR
+              echo "MYSQL_RUNTIME_CUTOVER_OK"
+              ;;
+
+            rollback_json)
+              rollback_to_json
+              echo "JSON_RUNTIME_ROLLBACK_OK"
+              ;;
+
+            *)
+              echo "Unknown action: $STORAGE_ACTION" >&2
+              exit 1
+              ;;
+          esac
+          EOF

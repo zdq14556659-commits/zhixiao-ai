@@ -21,7 +21,8 @@
     "test:metadata-state": "node backend/metadata-state.test.js",
     "test:allocation-audit": "node backend/allocation-audit.test.js",
     "test:performance-stability": "node backend/performance-stability.test.js",
-    "test": "npm run test:password && npm run test:customers && npm run test:v6 && npm run test:v7 && npm run test:v8 && npm run test:v9 && npm run test:channels && npm run test:import-counts && npm run test:follow-persistence && npm run test:dashboard-actions && npm run test:metadata-state && npm run test:allocation-audit && npm run test:performance-stability"
+    "test:mysql-fallback": "node backend/mysql-runtime-fallback.test.js",
+    "test": "npm run test:password && npm run test:customers && npm run test:v6 && npm run test:v7 && npm run test:v8 && npm run test:v9 && npm run test:channels && npm run test:import-counts && npm run test:follow-persistence && npm run test:dashboard-actions && npm run test:metadata-state && npm run test:allocation-audit && npm run test:performance-stability && npm run test:mysql-fallback"
   },
   "dependencies": {
     "jszip": "^3.10.1",

@@ -32,7 +32,7 @@ try {
     if (!ok) failed = true;
   }
 
-  const expectedFollowUps = (state.opportunities || []).reduce((sum, item) => sum + count(item.followUps), 0);
+  const expectedFollowUps = expectedFollowUpCount(state, dataFile);
   const actualFollowUps = await tableCount(db, "follow_ups");
   const followOk = actualFollowUps === expectedFollowUps;
   console.log(`${followOk ? "OK" : "MISMATCH"} follow_ups: mysql=${actualFollowUps} json=${expectedFollowUps}`);
@@ -65,4 +65,38 @@ async function queryValue(db, sql) {
 
 function count(items) {
   return Array.isArray(items) ? items.length : 0;
+}
+
+function expectedFollowUpCount(source, sourceFile) {
+  const opportunityIds = new Set((source.opportunities || []).map((item) => Number(item.id)));
+  const keys = new Set();
+  const add = (follow = {}, fallbackOpportunityId) => {
+    const opportunityId = Number(follow.opportunityId || fallbackOpportunityId);
+    if (!Number.isFinite(opportunityId) || !opportunityIds.has(opportunityId)) return;
+    const identity = follow.id || hash([
+      follow.createdAt || follow.date || "",
+      follow.author || follow.owner || follow.followPerson || "",
+      follow.note || "",
+      follow.nextFollow || ""
+    ].join("|"));
+    keys.add(`follow:${opportunityId}:${identity}`);
+  };
+  for (const opportunity of source.opportunities || []) {
+    for (const follow of opportunity.followUps || []) add(follow, opportunity.id);
+  }
+  const followDir = path.join(path.dirname(sourceFile), "followups");
+  if (fs.existsSync(followDir)) {
+    for (const name of fs.readdirSync(followDir).filter((item) => item.endsWith(".jsonl"))) {
+      for (const line of fs.readFileSync(path.join(followDir, name), "utf8").split(/\r?\n/).filter(Boolean)) {
+        try { add(JSON.parse(line)); } catch {}
+      }
+    }
+  }
+  return keys.size;
+}
+
+function hash(value) {
+  let result = 0;
+  for (const character of String(value || "")) result = ((result << 5) - result + character.charCodeAt(0)) | 0;
+  return Math.abs(result).toString(36);
 }

@@ -6,6 +6,7 @@ const path = require("path");
 const crypto = require("crypto");
 const zlib = require("zlib");
 const { URL } = require("url");
+const { createMysqlStore } = require("./storage/mysql-store");
 
 const PORT = Number(process.env.PORT || 8787);
 const AMAP_KEY = process.env.AMAP_KEY || "";
@@ -17,6 +18,10 @@ const DATA_FILE = path.join(DATA_DIR, "db.json");
 const BACKUP_FILE = path.join(DATA_DIR, "db.backup.json");
 const SEED_FILE = path.join(DATA_DIR, "seed.json");
 const FOLLOWUP_DIR = path.join(DATA_DIR, "followups");
+const MYSQL_DISABLE_MARKER = path.join(DATA_DIR, ".mysql-runtime-disabled");
+const REQUESTED_STORAGE_MODE = String(process.env.STORAGE_MODE || "json").trim().toLowerCase();
+const MYSQL_FALLBACK_TO_JSON = String(process.env.MYSQL_FALLBACK_TO_JSON || "1") !== "0";
+const MYSQL_MIN_COUNT_RATIO = Math.max(0, Math.min(1, Number(process.env.MYSQL_MIN_COUNT_RATIO || 0.98)));
 const UPLOAD_DIR = process.env.UPLOAD_DIR ? path.resolve(process.env.UPLOAD_DIR) : path.join(__dirname, "uploads");
 const FALLBACK_SEED_FILE = path.join(__dirname, "data", "seed.json");
 const PUBLIC_ROOT = path.resolve(__dirname, "..");
@@ -59,6 +64,11 @@ let externalFollowUpIndex = null;
 let externalFollowUpIndexEntryCount = 0;
 let externalFollowUpIndexBuiltAt = "";
 let lastEventLoopLagMs = 0;
+let activeStorageMode = "json";
+let mysqlStore = null;
+let storageStartupError = "";
+let storageFallbackAt = "";
+let mysqlLoadedCounts = null;
 const ADMIN_ROLES = ["总负责人", "运营", "管理员"];
 const DEFAULT_PERMISSIONS = ["dashboard", "customers", "field", "assistant"];
 const PUBLIC_POOL_IMPORT_PERMISSION = "publicPoolImport";
@@ -187,21 +197,6 @@ const DEMO_ACCOUNTS = {
 };
 const HIDDEN_DEMO_USERS = new Set(["linchen", "zhouyang"]);
 
-ensureDataFile();
-try {
-  readState();
-} catch (error) {
-  console.error("智销AI backend-v9 数据迁移失败，服务已停止启动，原数据库和备份文件均未删除。", error);
-  throw error;
-}
-
-try {
-  buildExternalFollowUpIndex();
-  reconcileExternalFollowUpSummaries(stateCache);
-} catch (error) {
-  console.error("[follow-index] startup build failed", error);
-}
-
 const server = http.createServer(async (req, res) => {
   try {
     res.isHeadRequest = req.method === "HEAD";
@@ -225,12 +220,19 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`智销AI backend running: http://localhost:${PORT}`);
-  if (!process.env.AUTH_TOKEN_SECRET) {
-    console.warn("AUTH_TOKEN_SECRET 未配置，当前使用开发环境密钥；正式环境必须配置高强度随机字符串。");
-  }
-});
+void initializeRuntimeStorage()
+  .then(() => {
+    server.listen(PORT, "0.0.0.0", () => {
+      console.log(`智销AI backend running: http://localhost:${PORT} storage=${activeStorageMode}`);
+      if (!process.env.AUTH_TOKEN_SECRET) {
+        console.warn("AUTH_TOKEN_SECRET 未配置，当前使用开发环境密钥；正式环境必须配置高强度随机字符串。");
+      }
+    });
+  })
+  .catch((error) => {
+    console.error("[storage] backend startup aborted", error);
+    process.exitCode = 1;
+  });
 
 module.exports = server;
 
@@ -299,6 +301,7 @@ async function shutdownSafely() {
       });
     }
     await flushStateBeforeExit();
+    if (mysqlStore) await mysqlStore.close();
   } catch (error) {
     console.error("[db] shutdown flush failed", error);
     process.exitCode = 1;
@@ -341,6 +344,16 @@ async function routeApi(req, res, url) {
         opportunities: externalFollowUpIndex?.size || 0,
         entries: externalFollowUpIndexEntryCount,
         builtAt: externalFollowUpIndexBuiltAt
+      },
+      storage: {
+        requested: REQUESTED_STORAGE_MODE,
+        active: activeStorageMode,
+        mysqlDisabled: fs.existsSync(MYSQL_DISABLE_MARKER),
+        fallbackEnabled: MYSQL_FALLBACK_TO_JSON,
+        fallbackAt: storageFallbackAt,
+        startupError: storageStartupError,
+        mysqlCounts: mysqlLoadedCounts,
+        mysql: mysqlStore?.status() || null
       }
     });
   }
@@ -776,7 +789,12 @@ async function routeApi(req, res, url) {
     state.opportunities.unshift(opportunity);
     state.activities.push({ date: today(), owner: opportunity.owner, type: opportunity.stage, customerId: customer.id, opportunityId: opportunity.id });
     syncCustomerCompatibility(state, customer.id, opportunity);
-    writeState(state);
+    await commitCoreState(state, {
+      reason: "opportunity-create",
+      customerIds: [customer.id],
+      opportunityIds: [opportunity.id],
+      followUps: opportunity.followUps || []
+    });
     return sendJson(res, 201, opportunityView(state, opportunity));
   }
 
@@ -804,7 +822,7 @@ async function routeApi(req, res, url) {
     const next = normalizeOpportunity({ ...previous, ...body, id: previous.id, customerId: previous.customerId }, state);
     state.opportunities[index] = next;
     syncCustomerCompatibility(state, next.customerId, next);
-    writeState(state);
+    await commitCoreState(state, { reason: "opportunity-update", opportunityIds: [next.id] });
     return sendJson(res, 200, opportunityView(state, next));
   }
 
@@ -837,7 +855,11 @@ async function routeApi(req, res, url) {
     state.opportunities[index] = next;
     state.activities.push({ date: today(), owner: next.owner, type: nextStage, customerId: next.customerId, opportunityId: next.id });
     syncCustomerCompatibility(state, next.customerId, next);
-    writeState(state);
+    await commitCoreState(state, {
+      reason: "opportunity-advance",
+      opportunityIds: [next.id],
+      followUps: next.followUps?.length ? [next.followUps[next.followUps.length - 1]] : []
+    });
     return sendJson(res, 200, opportunityView(state, next));
   }
 
@@ -862,12 +884,16 @@ async function routeApi(req, res, url) {
       ...productUpdate.fields,
       nextFollow: String(body.nextFollow || "")
     }, state);
-    appendManualFollowUp(state, next, { date: body.date || today(), createdAt: new Date().toISOString(), author: viewer.name, note, nextFollow: body.nextFollow || "" }, viewer);
+    const savedFollow = appendManualFollowUp(state, next, { date: body.date || today(), createdAt: new Date().toISOString(), author: viewer.name, note, nextFollow: body.nextFollow || "" }, viewer);
     lockOpportunityOwnership(next, viewer, "提交有效跟进");
     state.opportunities[index] = next;
     replaceOpportunityInIndexes(state, previous, next);
     syncCustomerCompatibility(state, next.customerId, next);
-    writeState(state, { rebuildIndexes: false, reason: "opportunity-follow" });
+    await commitCoreState(state, {
+      reason: "opportunity-follow",
+      opportunityIds: [next.id],
+      followUps: [savedFollow]
+    }, { rebuildIndexes: false, reason: "opportunity-follow" });
     return sendJson(res, 200, opportunityView(state, next, { includeExternalFollowUps: true }));
   }
 
@@ -878,7 +904,7 @@ async function routeApi(req, res, url) {
     const viewer = getAuthUser(req, state);
     const index = findOpportunityIndex(state, opportunityClaim[1]);
     if (index < 0) return sendJson(res, 404, { error: "公海机会不存在" });
-    return claimOpportunityAtIndex(res, state, viewer, index, body);
+    return await claimOpportunityAtIndex(res, state, viewer, index, body);
   }
 
   const opportunityPurchased = url.pathname.match(/^\/api\/opportunities\/(\d+)\/mark-purchased$/);
@@ -917,7 +943,11 @@ async function routeApi(req, res, url) {
     state.opportunities[index] = next;
     state.activities.push({ date: today(), owner: next.owner, type: PURCHASED_STATUS, customerId: next.customerId, opportunityId: next.id });
     syncCustomerCompatibility(state, next.customerId);
-    writeState(state);
+    await commitCoreState(state, {
+      reason: "opportunity-mark-purchased",
+      opportunityIds: [next.id],
+      followUps: next.followUps?.length ? [next.followUps[next.followUps.length - 1]] : []
+    });
     return sendJson(res, 200, opportunityView(state, next));
   }
 
@@ -952,7 +982,7 @@ async function routeApi(req, res, url) {
     opportunity.rollbackHistory = [...(opportunity.rollbackHistory || []), rollback];
     state.opportunities[index] = normalizeOpportunity(opportunity, state);
     syncCustomerCompatibility(state, opportunity.customerId);
-    writeState(state);
+    await commitCoreState(state, { reason: "opportunity-rollback-request", opportunityIds: [opportunity.id] });
     return sendJson(res, 200, opportunityView(state, state.opportunities[index]));
   }
 
@@ -987,7 +1017,11 @@ async function routeApi(req, res, url) {
     }
     state.opportunities[index] = normalizeOpportunity(opportunity, state);
     syncCustomerCompatibility(state, opportunity.customerId);
-    writeState(state);
+    await commitCoreState(state, {
+      reason: "opportunity-rollback-review",
+      opportunityIds: [opportunity.id],
+      followUps: approved && opportunity.followUps?.length ? [opportunity.followUps[opportunity.followUps.length - 1]] : []
+    });
     return sendJson(res, 200, opportunityView(state, state.opportunities[index]));
   }
 
@@ -1006,7 +1040,7 @@ async function routeApi(req, res, url) {
     const next = assignOpportunity(state, previous, target, viewer);
     state.opportunities[index] = next;
     syncCustomerCompatibility(state, next.customerId);
-    writeState(state);
+    await commitCoreState(state, { reason: "opportunity-assign", opportunityIds: [next.id] });
     return sendJson(res, 200, opportunityView(state, next));
   }
 
@@ -1078,7 +1112,10 @@ async function routeApi(req, res, url) {
       summary.assigned += 1;
       summaryMap.set(target.id, summary);
     });
-    writeState(state);
+    await commitCoreState(state, {
+      reason: "opportunity-bulk-assign",
+      opportunityIds: plannedItems.map((item) => item.id)
+    });
     return sendJson(res, 200, { assigned: assigned.length, failed: [], summary: [...summaryMap.values()], opportunities: assigned });
   }
 
@@ -1178,7 +1215,18 @@ async function routeApi(req, res, url) {
     if (!viewer) return sendJson(res, 401, { error: "请先登录" });
     if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无权批量修改系统数据" });
     const nextState = normalizeIncomingState(body);
-    writeState(nextState);
+    const nextCustomerIds = new Set((nextState.customers || []).map((item) => Number(item.id)));
+    const nextOpportunityIds = new Set((nextState.opportunities || []).map((item) => Number(item.id)));
+    const nextVisitIds = new Set((nextState.visits || []).map((item) => Number(item.id)));
+    await commitCoreState(nextState, {
+      reason: "admin-state-replace",
+      customerIds: [...nextCustomerIds],
+      opportunityIds: [...nextOpportunityIds],
+      visitIds: [...nextVisitIds],
+      deletedCustomerIds: (state.customers || []).map((item) => Number(item.id)).filter((id) => !nextCustomerIds.has(id)),
+      deletedOpportunityIds: (state.opportunities || []).map((item) => Number(item.id)).filter((id) => !nextOpportunityIds.has(id)),
+      deletedVisitIds: (state.visits || []).map((item) => Number(item.id)).filter((id) => !nextVisitIds.has(id))
+    });
     return sendJson(res, 200, { ok: true, state: publicState(nextState, viewer) });
   }
 
@@ -1265,7 +1313,12 @@ async function routeApi(req, res, url) {
     state.opportunities.unshift(opportunity);
     syncCustomerCompatibility(state, customer.id);
     state.activities.push({ date: today(), owner: opportunity.owner, type: opportunity.stage, customerId: customer.id, opportunityId: opportunity.id });
-    writeState(state);
+    await commitCoreState(state, {
+      reason: "customer-create",
+      customerIds: [customer.id],
+      opportunityIds: [opportunity.id],
+      followUps: opportunity.followUps || []
+    });
     return sendJson(res, 201, opportunityView(state, opportunity));
   }
 
@@ -1276,7 +1329,7 @@ async function routeApi(req, res, url) {
     const normalizedPhone = normalizePhone(body.phone);
     const index = findCustomerIndexByPhone(state.customers || [], normalizedPhone);
     if (!normalizedPhone || index < 0) return sendJson(res, 404, { error: "未找到可认领客户" });
-    return claimCustomerAtIndex(res, state, viewer, index);
+    return await claimCustomerAtIndex(res, state, viewer, index);
   }
 
   const customerClaim = url.pathname.match(/^\/api\/customers\/(\d+)\/claim$/);
@@ -1285,7 +1338,7 @@ async function routeApi(req, res, url) {
     const viewer = getAuthUser(req, state);
     const index = findCustomerIndex(state.customers || [], customerClaim[1]);
     if (index < 0) return sendJson(res, 404, { error: "未找到可认领客户" });
-    return claimCustomerAtIndex(res, state, viewer, index);
+    return await claimCustomerAtIndex(res, state, viewer, index);
   }
 
   const customerContacts = url.pathname.match(/^\/api\/customers\/(\d+)\/contacts$/);
@@ -1308,7 +1361,7 @@ async function routeApi(req, res, url) {
     customer.contacts = contacts;
     customer.phone = primary.phone;
     customer.phoneNormalized = primary.phoneNormalized;
-    writeState(state);
+    await commitCoreState(state, { reason: "customer-contacts", customerIds: [customer.id] });
     return sendJson(res, 200, toMiniCustomer(customer));
   }
 
@@ -1323,7 +1376,7 @@ async function routeApi(req, res, url) {
     if (!canViewRecord(state, viewer, customer)) return sendJson(res, 403, { error: "无权维护该客户竞品档案" });
     customer.competitorProfiles = normalizeCompetitorProfiles(body.competitorProfiles || body.profiles || [], state.competitors);
     customer.software = primaryCompetitorName(customer) || customer.software;
-    writeState(state);
+    await commitCoreState(state, { reason: "customer-competitors", customerIds: [customer.id] });
     return sendJson(res, 200, toMiniCustomer(customer));
   }
 
@@ -1366,7 +1419,11 @@ async function routeApi(req, res, url) {
       targetName: `${customer.name || ""} ${customer.phone || ""}`.trim(),
       sourceIp: req.socket?.remoteAddress || "unknown"
     });
-    writeState(state);
+    await commitCoreState(state, {
+      reason: "customer-delete",
+      deletedCustomerIds: [customerId],
+      deletedOpportunityIds: [...opportunityIds]
+    });
     return sendJson(res, 200, { ok: true, deletedId: customerId, deletedOpportunities: opportunityIds.size, deletedFollowUps: removedFollowUps });
   }
 
@@ -1382,7 +1439,7 @@ async function routeApi(req, res, url) {
     customer.archiveReason = body.reason === "closed" ? "closed" : "invalid";
     customer.archivedAt = new Date().toISOString();
     customer.archivedBy = viewer.name;
-    writeState(state);
+    await commitCoreState(state, { reason: "customer-archive", customerIds: [customer.id] });
     return sendJson(res, 200, toMiniCustomer(customer));
   }
 
@@ -1397,7 +1454,7 @@ async function routeApi(req, res, url) {
     customer.archiveReason = "";
     customer.archivedAt = "";
     customer.archivedBy = "";
-    writeState(state);
+    await commitCoreState(state, { reason: "customer-restore", customerIds: [customer.id] });
     return sendJson(res, 200, toMiniCustomer(customer));
   }
 
@@ -1422,11 +1479,16 @@ async function routeApi(req, res, url) {
       return sendJson(res, productUpdate.error.code === "DUPLICATE_ACTIVE_OPPORTUNITY" ? 409 : 400, productUpdate.error);
     }
     Object.assign(opportunity, productUpdate.fields);
-    appendManualFollowUp(state, opportunity, { date: body.date || today(), createdAt: new Date().toISOString(), author: viewer?.name, note, nextFollow: body.nextFollow || "" }, viewer);
+    const savedFollow = appendManualFollowUp(state, opportunity, { date: body.date || today(), createdAt: new Date().toISOString(), author: viewer?.name, note, nextFollow: body.nextFollow || "" }, viewer);
     lockOpportunityOwnership(opportunity, viewer, "提交有效跟进");
     replaceOpportunityInIndexes(state, previousOpportunity, opportunity);
     syncCustomerCompatibility(state, customer.id, opportunity);
-    writeState(state, { rebuildIndexes: false, reason: "customer-follow" });
+    await commitCoreState(state, {
+      reason: "customer-follow",
+      customerIds: [customer.id],
+      opportunityIds: [opportunity.id],
+      followUps: savedFollow ? [savedFollow] : []
+    }, { rebuildIndexes: false, reason: "customer-follow" });
     return sendJson(res, 200, opportunityView(state, opportunity, { includeExternalFollowUps: true }));
   }
 
@@ -1449,7 +1511,11 @@ async function routeApi(req, res, url) {
     if (previousStage !== next.stage) {
       state.activities.push({ date: today(), owner: next.owner, type: next.stage, customerId: next.id });
     }
-    writeState(state);
+    await commitCoreState(state, {
+      reason: "customer-assign",
+      customerIds: [next.id],
+      opportunityIds: opportunitiesForCustomer(state, next.id).map((item) => item.id)
+    });
     return sendJson(res, 200, toMiniCustomer(next));
   }
 
@@ -1487,7 +1553,14 @@ async function routeApi(req, res, url) {
       }
       assignedCustomers.push(toMiniCustomer(next));
     });
-    if (assignedCustomers.length) writeState(state);
+    if (assignedCustomers.length) {
+      const assignedIds = assignedCustomers.map((item) => Number(item.id));
+      await commitCoreState(state, {
+        reason: "customer-bulk-assign",
+        customerIds: assignedIds,
+        opportunityIds: (state.opportunities || []).filter((item) => assignedIds.includes(Number(item.customerId))).map((item) => item.id)
+      });
+    }
     return sendJson(res, 200, {
       assigned: assignedCustomers.length,
       failed,
@@ -1505,6 +1578,7 @@ async function routeApi(req, res, url) {
     const resolved = resolveChannelSource(body.channelSource, state.channelSources);
     if (!resolved.raw || !resolved.recognized) return sendJson(res, 400, { error: "请选择有效渠道来源" });
     const beforeCounts = {};
+    const updatedCustomerIds = [];
     let updated = 0;
     ids.forEach((id) => {
       const index = findCustomerIndex(state.customers || [], id);
@@ -1517,6 +1591,7 @@ async function routeApi(req, res, url) {
         if (Number(opportunity.customerId) === Number(id)) opportunity.channelSource = resolved.value;
       });
       updated += 1;
+      updatedCustomerIds.push(Number(id));
     });
     if (!updated) return sendJson(res, 404, { error: "没有可修改的客户" });
     appendSecurityLog(state, {
@@ -1527,7 +1602,11 @@ async function routeApi(req, res, url) {
       targetName: `${updated}个客户 -> ${resolved.value}`,
       sourceIp: getRequestIp(req)
     });
-    writeState(state);
+    await commitCoreState(state, {
+      reason: "customer-channel-source",
+      customerIds: updatedCustomerIds,
+      opportunityIds: (state.opportunities || []).filter((item) => updatedCustomerIds.includes(Number(item.customerId))).map((item) => item.id)
+    });
     return sendJson(res, 200, { updated, channelSource: resolved.value, beforeCounts });
   }
 
@@ -1585,6 +1664,8 @@ async function routeApi(req, res, url) {
     const next = normalizeCustomer({ ...previous, ...customerBody, id: previous.id }, state);
     state.customers[index] = next;
     const opportunity = findOpportunity(state, body.opportunityId) || primaryOpportunity(state, previous.id);
+    let savedCompatibilityFollow = null;
+    let updatedOpportunity = null;
     if (opportunity && salesFields.some((field) => body[field] !== undefined)) {
       const opportunityIndex = findOpportunityIndex(state, opportunity.id);
       const opportunityBody = Object.fromEntries(salesFields.filter((field) => body[field] !== undefined).map((field) => [field, body[field]]));
@@ -1609,7 +1690,8 @@ async function routeApi(req, res, url) {
       const updated = normalizeOpportunity({ ...opportunity, ...opportunityBody }, state);
       if (body.nextFollow !== undefined) updated.nextFollow = String(body.nextFollow || "");
       if (String(body.lastNote || body.note || "").trim()) {
-        updated.followUps.push(normalizeFollowUp({ date: body.lastFollow || today(), createdAt: new Date().toISOString(), author: viewer.name, note: body.lastNote || body.note, nextFollow: body.nextFollow || "", isSystem: false }, opportunity));
+        savedCompatibilityFollow = normalizeFollowUp({ date: body.lastFollow || today(), createdAt: new Date().toISOString(), author: viewer.name, note: body.lastNote || body.note, nextFollow: body.nextFollow || "", isSystem: false }, opportunity);
+        updated.followUps.push(savedCompatibilityFollow);
         updated.nextFollow = String(body.nextFollow || "");
         lockOpportunityOwnership(updated, viewer, "兼容接口提交有效跟进");
       }
@@ -1618,10 +1700,18 @@ async function routeApi(req, res, url) {
         state.activities.push({ date: body.date || today(), owner: updated.owner, type: body.stage, customerId: previous.id, opportunityId: updated.id });
       }
       state.opportunities[opportunityIndex] = updated;
+      updatedOpportunity = updated;
     }
     syncCustomerCompatibility(state, previous.id);
-    writeState(state);
-    const responseOpportunity = findOpportunity(state, body.opportunityId) || primaryOpportunity(state, previous.id);
+    const responseOpportunity = updatedOpportunity || opportunity;
+    await commitCoreState(state, {
+      reason: "customer-update",
+      customerIds: [previous.id],
+      opportunityIds: responseOpportunity ? [responseOpportunity.id] : [],
+      followUps: savedCompatibilityFollow && responseOpportunity
+        ? [{ ...savedCompatibilityFollow, opportunityId: responseOpportunity.id, customerId: previous.id }]
+        : []
+    });
     return sendJson(res, 200, responseOpportunity ? opportunityView(state, responseOpportunity) : toMiniCustomer(state.customers[index]));
   }
 
@@ -1651,7 +1741,17 @@ async function routeApi(req, res, url) {
     state.visits.unshift(visit);
     syncVisitToCustomer(state, visit);
     completeRouteStop(state, viewer.id, visit.customerId, visit.date);
-    writeState(state);
+    const syncedOpportunity = findOpportunity(state, visit.opportunityId) || primaryOpportunity(state, visit.customerId);
+    const visitFollow = syncedOpportunity?.followUps?.[syncedOpportunity.followUps.length - 1];
+    await commitCoreState(state, {
+      reason: "visit-create",
+      customerIds: visit.customerId ? [visit.customerId] : [],
+      opportunityIds: syncedOpportunity ? [syncedOpportunity.id] : [],
+      visitIds: [visit.id],
+      followUps: visitFollow && !visitFollow.isSystem
+        ? [{ ...visitFollow, customerId: visit.customerId, opportunityId: syncedOpportunity.id }]
+        : []
+    });
     return sendJson(res, 201, visit);
   }
 
@@ -1679,7 +1779,17 @@ async function routeApi(req, res, url) {
     state.visits[index] = visit;
     syncVisitToCustomer(state, visit);
     completeRouteStop(state, viewer.id, visit.customerId, visit.date);
-    writeState(state);
+    const syncedOpportunity = findOpportunity(state, visit.opportunityId) || primaryOpportunity(state, visit.customerId);
+    const visitFollow = syncedOpportunity?.followUps?.[syncedOpportunity.followUps.length - 1];
+    await commitCoreState(state, {
+      reason: "visit-update",
+      customerIds: visit.customerId ? [visit.customerId] : [],
+      opportunityIds: syncedOpportunity ? [syncedOpportunity.id] : [],
+      visitIds: [visit.id],
+      followUps: visitFollow && !visitFollow.isSystem
+        ? [{ ...visitFollow, customerId: visit.customerId, opportunityId: syncedOpportunity.id }]
+        : []
+    });
     return sendJson(res, 200, visit);
   }
 
@@ -1866,7 +1976,12 @@ async function routeApi(req, res, url) {
     target.offboardedAt = new Date().toISOString();
     target.offboardedBy = viewer.name;
     appendSecurityLog(state, { type: "offboard_user", actorId: viewer.id, actorName: viewer.name, targetId: target.id, targetName: target.name, sourceIp: getRequestIp(req), receiverId: receiver.id, receiverName: receiver.name });
-    writeState(state);
+    await commitCoreState(state, {
+      reason: "user-offboard",
+      customerIds: transferredIds,
+      opportunityIds: transferredOpportunityIds,
+      visitIds: (state.visits || []).filter((item) => transferredIds.includes(Number(item.customerId))).map((item) => item.id)
+    });
     return sendJson(res, 200, { ok: true, transferred: transferredIds.length, transferredOpportunities: transferredOpportunityIds.length, user: publicUser(target), receiver: publicUser(receiver) });
   }
 
@@ -3574,7 +3689,7 @@ function sanitizeArchivedOpportunity(customer = {}, opportunity = {}) {
   };
 }
 
-function claimOpportunityAtIndex(res, state, viewer, index, body = {}) {
+async function claimOpportunityAtIndex(res, state, viewer, index, body = {}) {
   const previous = state.opportunities[index];
   if (!isOpportunityPublicPool(previous, Date.now(), state)) {
     if (Number(previous.ownerId) === Number(viewer.id)) {
@@ -3621,7 +3736,12 @@ function claimOpportunityAtIndex(res, state, viewer, index, body = {}) {
     syncCustomerCompatibility(state, next.customerId, next);
     const customer = findCustomer(state.customers || [], next.customerId);
   if (customer) transferCustomerVisits(state, customer, next);
-  writeState(state);
+  await commitCoreState(state, {
+    reason: "public-pool-claim",
+    customerIds: next.customerId ? [next.customerId] : [],
+    opportunityIds: [next.id],
+    visitIds: (state.visits || []).filter((item) => Number(item.customerId) === Number(next.customerId)).map((item) => item.id)
+  });
   return sendJson(res, 200, claimOpportunityResponse(state, next));
 }
 
@@ -3772,6 +3892,7 @@ function normalizeFollowUp(item = {}, customer = {}) {
   const hasExplicitAmount = item.amount !== undefined && item.amount !== null && item.amount !== "";
   return {
     id: item.id || `${Date.now()}-${crypto.randomBytes(3).toString("hex")}`,
+    sourceKey: item.sourceKey || "",
     customerId: item.customerId || customer.customerId || customer.id || "",
     opportunityId: item.opportunityId || customer.opportunityId || "",
     date: item.date || customer.lastFollow || customer.createdAt || today(),
@@ -3819,9 +3940,21 @@ function addExternalFollowUpToMap(index, entry = {}) {
   if (!Number.isFinite(opportunityId)) return false;
   const normalized = normalizeFollowUp(entry, entry);
   const entries = index.get(opportunityId) || [];
+  const key = followUpIdentity(normalized);
+  if (entries.some((item) => followUpIdentity(item) === key)) return false;
   entries.push(normalized);
   index.set(opportunityId, entries);
   return true;
+}
+
+function followUpIdentity(entry = {}) {
+  if (entry.id) return `${entry.opportunityId || 0}|${entry.id}`;
+  return String(entry.sourceKey || [
+    entry.opportunityId || 0,
+    entry.createdAt || entry.date || "",
+    entry.author || entry.owner || "",
+    entry.note || ""
+  ].join("|"));
 }
 
 function addExternalFollowUpToIndex(entry = {}) {
@@ -4625,10 +4758,10 @@ function lockCustomerOwnership(customer, operator, reason) {
   customer.publicPoolReason = "";
 }
 
-function claimCustomerAtIndex(res, state, viewer, index) {
+async function claimCustomerAtIndex(res, state, viewer, index) {
   const customerId = state.customers[index]?.id;
   const opportunityIndex = state.opportunities.findIndex((item) => Number(item.customerId) === Number(customerId) && isOpportunityPublicPool(item, Date.now(), state));
-  if (opportunityIndex >= 0) return claimOpportunityAtIndex(res, state, viewer, opportunityIndex, { allowPlaceholderProduct: true });
+  if (opportunityIndex >= 0) return await claimOpportunityAtIndex(res, state, viewer, opportunityIndex, { allowPlaceholderProduct: true });
   const role = findRole(state.roles, viewer.roleId, viewer.role);
   if (role.customerScope !== "self" && role.name !== "销售") {
     return sendJson(res, 403, { error: "主管及以上请使用客户分配功能" });
@@ -4659,7 +4792,11 @@ function claimCustomerAtIndex(res, state, viewer, index) {
   }, state);
   state.customers[index] = next;
   transferCustomerVisits(state, previous, next);
-  writeState(state);
+  await commitCoreState(state, {
+    reason: "public-pool-customer-claim",
+    customerIds: [next.id],
+    visitIds: (state.visits || []).filter((item) => Number(item.customerId) === Number(next.id)).map((item) => item.id)
+  });
   return sendJson(res, 200, toMiniCustomer(next));
 }
 
@@ -6372,8 +6509,160 @@ function toMiniCustomer(customer) {
   };
 }
 
+async function initializeRuntimeStorage() {
+  ensureDataFile();
+  let jsonState;
+  try {
+    jsonState = readState();
+  } catch (error) {
+    console.error("智销AI backend-v9 数据迁移失败，服务已停止启动，原数据库和备份文件均未删除。", error);
+    throw error;
+  }
+
+  try {
+    buildExternalFollowUpIndex();
+  } catch (error) {
+    console.error("[follow-index] startup build failed", error);
+  }
+
+  if (REQUESTED_STORAGE_MODE !== "mysql") {
+    activeStorageMode = "json";
+    try { reconcileExternalFollowUpSummaries(stateCache); } catch (error) {
+      console.error("[follow-index] startup reconcile failed", error);
+    }
+    console.log(`[storage] active=json customers=${jsonState.customers?.length || 0} opportunities=${jsonState.opportunities?.length || 0}`);
+    return;
+  }
+
+  if (fs.existsSync(MYSQL_DISABLE_MARKER)) {
+    activeStorageMode = "json";
+    storageFallbackAt = new Date(fs.statSync(MYSQL_DISABLE_MARKER).mtimeMs).toISOString();
+    storageStartupError = readMysqlDisableReason();
+    try { reconcileExternalFollowUpSummaries(stateCache); } catch (error) {
+      console.error("[follow-index] startup reconcile failed", error);
+    }
+    console.warn(`[storage] MySQL runtime is disabled by marker; active=json reason=${storageStartupError}`);
+    return;
+  }
+
+  try {
+    mysqlStore = createMysqlStore({ url: process.env.MYSQL_URL });
+    await mysqlStore.connect();
+    const core = await mysqlStore.loadCoreState();
+    assertMysqlCoreReady(jsonState, core);
+    stateCache = {
+      ...jsonState,
+      customers: core.customers,
+      opportunities: core.opportunities,
+      visits: core.visits
+    };
+    for (const follow of core.followUps) addExternalFollowUpToIndex(follow);
+    rebuildStateIndexes(stateCache);
+    stateRevision += 1;
+    persistedStateRevision = stateRevision;
+    stateDirty = false;
+    activeStorageMode = "mysql";
+    mysqlLoadedCounts = core.counts;
+    storageStartupError = "";
+    console.log(`[storage] active=mysql customers=${core.counts.customers} opportunities=${core.counts.opportunities} followUps=${core.counts.followUps} visits=${core.counts.visits} loadMs=${core.durationMs}`);
+  } catch (error) {
+    storageStartupError = error.message || String(error);
+    console.error("[storage] MySQL startup failed", error);
+    if (!MYSQL_FALLBACK_TO_JSON) throw error;
+    activeStorageMode = "json";
+    storageFallbackAt = new Date().toISOString();
+    mysqlLoadedCounts = null;
+    disableMysqlRuntime(`startup: ${storageStartupError}`);
+    try { await mysqlStore?.close(); } catch {}
+    mysqlStore = null;
+    stateCache = jsonState;
+    rebuildStateIndexes(stateCache);
+    console.warn("[storage] fallback=json; CRM remains available on db.json");
+  }
+}
+
+function assertMysqlCoreReady(jsonState = {}, core = {}) {
+  const expected = {
+    customers: Number(jsonState.customers?.length || 0),
+    opportunities: Number(jsonState.opportunities?.length || 0)
+  };
+  const actual = core.counts || {};
+  for (const key of Object.keys(expected)) {
+    if (!expected[key]) continue;
+    const ratio = Number(actual[key] || 0) / expected[key];
+    if (ratio < MYSQL_MIN_COUNT_RATIO) {
+      throw new Error(`MySQL ${key} count ${actual[key] || 0} is below JSON ${expected[key]} (minimum ratio ${MYSQL_MIN_COUNT_RATIO})`);
+    }
+  }
+}
+
+async function persistMysqlCoreChanges(state, changes = {}) {
+  if (activeStorageMode !== "mysql" || !mysqlStore) return { skipped: true };
+  const opportunityIds = new Set((changes.opportunityIds || []).map(Number).filter(Number.isFinite));
+  const customerIds = new Set((changes.customerIds || []).map(Number).filter(Number.isFinite));
+  const visitIds = new Set((changes.visitIds || []).map(Number).filter(Number.isFinite));
+  const opportunities = (state.opportunities || []).filter((item) => opportunityIds.has(Number(item.id)));
+  for (const opportunity of opportunities) customerIds.add(Number(opportunity.customerId));
+  const customers = (state.customers || []).filter((item) => customerIds.has(Number(item.id)));
+  const visits = (state.visits || []).filter((item) => visitIds.has(Number(item.id)) || customerIds.has(Number(item.customerId)));
+  try {
+    return await mysqlStore.persistChanges({
+      customers,
+      opportunities,
+      visits,
+      followUps: changes.followUps || [],
+      deletedCustomerIds: changes.deletedCustomerIds || [],
+      deletedOpportunityIds: changes.deletedOpportunityIds || [],
+      deletedVisitIds: changes.deletedVisitIds || []
+    });
+  } catch (error) {
+    storageStartupError = error.message || String(error);
+    console.error(`[storage] MySQL write failed reason=${changes.reason || "core-write"}`, error);
+    if (!MYSQL_FALLBACK_TO_JSON) throw error;
+    activeStorageMode = "json";
+    storageFallbackAt = new Date().toISOString();
+    disableMysqlRuntime(`write ${changes.reason || "core-write"}: ${storageStartupError}`);
+    try { await mysqlStore?.close(); } catch {}
+    mysqlStore = null;
+    console.warn("[storage] switched to JSON fallback after MySQL write failure");
+    return { fallback: true, error: storageStartupError };
+  }
+}
+
+function disableMysqlRuntime(reason = "unknown MySQL failure") {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const payload = JSON.stringify({
+      disabledAt: new Date().toISOString(),
+      reason: String(reason || "unknown MySQL failure").slice(0, 2000)
+    });
+    const tempFile = `${MYSQL_DISABLE_MARKER}.${process.pid}.tmp`;
+    fs.writeFileSync(tempFile, payload, "utf8");
+    fs.renameSync(tempFile, MYSQL_DISABLE_MARKER);
+  } catch (error) {
+    console.error("[storage] failed to persist MySQL disable marker", error);
+  }
+}
+
+function readMysqlDisableReason() {
+  try {
+    const value = JSON.parse(fs.readFileSync(MYSQL_DISABLE_MARKER, "utf8"));
+    return String(value.reason || "MySQL runtime disabled after a previous failure");
+  } catch {
+    return "MySQL runtime disabled after a previous failure";
+  }
+}
+
+async function commitCoreState(state, changes = {}, writeOptions = {}) {
+  await persistMysqlCoreChanges(state, changes);
+  return writeState(state, writeOptions);
+}
+
 function readState() {
   ensureDataFile();
+  // MySQL owns the live core state after cutover. A delayed JSON checkpoint or
+  // an external backup must never replace that in-memory state mid-request.
+  if (activeStorageMode === "mysql" && stateCache) return stateCache;
   const signature = fileSignature(DATA_FILE);
   if (stateCache && stateDirty) return stateCache;
   if (stateCache && signature && signature === stateDiskSignature) return stateCache;
@@ -7382,7 +7671,18 @@ async function importCustomers(req, viewer, target = "") {
     syncCustomerCompatibility(state, customer.id);
     importedOpportunities.push(opportunity);
   });
-  if (importedOpportunities.length) writeState(state);
+  if (importedOpportunities.length) {
+    await commitCoreState(state, {
+      reason: "customer-import",
+      customerIds: createdCustomers.map((item) => item.id),
+      opportunityIds: importedOpportunities.map((item) => item.id),
+      followUps: importedOpportunities.flatMap((opportunity) => (opportunity.followUps || []).map((follow) => ({
+        ...follow,
+        customerId: opportunity.customerId,
+        opportunityId: opportunity.id
+      })))
+    });
+  }
   const reportRows = [...skipped, ...failed, ...warnings];
   const reportUrl = reportRows.length ? writeImportReport(reportRows) : "";
   const pendingLocation = createdCustomers.filter((item) => item.location?.status !== "resolved").length;

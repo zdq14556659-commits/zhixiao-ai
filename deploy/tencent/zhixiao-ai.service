@@ -8,6 +8,8 @@ User=zhixiao
 Group=zhixiao
 WorkingDirectory=/opt/zhixiao-ai/current
 EnvironmentFile=/etc/zhixiao-ai.env
+EnvironmentFile=-/opt/zhixiao-ai/shared/mysql.env
+EnvironmentFile=-/opt/zhixiao-ai/shared/storage.env
 Environment=NODE_OPTIONS=--max-old-space-size=1024
 ExecStart=/usr/bin/node /opt/zhixiao-ai/current/backend/server.js
 Restart=always
