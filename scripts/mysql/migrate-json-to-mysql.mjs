@@ -222,9 +222,9 @@ async function upsertOpportunity(db, opportunity) {
       dateValue(opportunity.nextFollow || latestFollow(opportunity)?.nextFollow),
       dateValue(opportunity.createdAt),
       dateValue(opportunity.updatedAt),
-      money(opportunity.amount),
-      money(opportunity.contractAmount),
-      money(opportunity.paymentAmount),
+      money(opportunity.amount, `opportunity=${opportunityId} field=amount`),
+      money(opportunity.contractAmount, `opportunity=${opportunityId} field=contract_amount`),
+      money(opportunity.paymentAmount, `opportunity=${opportunityId} field=payment_amount`),
       JSON.stringify(opportunity)
     ]
   );
@@ -277,8 +277,8 @@ async function upsertVisit(db, visit) {
       fieldText(visit.owner, 120, "visit", visitId, "owner"),
       nullableNumber(visit.ownerId),
       dateValue(visit.date || visit.createdAt),
-      nullableNumber(visit.latitude),
-      nullableNumber(visit.longitude),
+      coordinate(visit.latitude, -90, 90, `visit=${visitId} field=latitude`),
+      coordinate(visit.longitude, -180, 180, `visit=${visitId} field=longitude`),
       JSON.stringify(visit)
     ]
   );
@@ -392,12 +392,78 @@ function fieldText(value, maxLength, entityType, entityId, field) {
 
 function dateValue(value) {
   if (!value) return null;
-  const textValue = String(value).trim();
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (value >= 20_000 && value <= 80_000) {
+      return formatUtcDate(new Date(Math.round((value - 25_569) * 86_400_000)));
+    }
+    if (value >= 946_684_800_000 && value <= 7_258_118_400_000) {
+      return formatUtcDate(new Date(value));
+    }
+    if (value >= 946_684_800 && value <= 7_258_118_400) {
+      return formatUtcDate(new Date(value * 1000));
+    }
+    return null;
+  }
+
+  let textValue = String(value).trim();
   if (!textValue) return null;
-  const normalized = textValue.length === 10 ? `${textValue} 00:00:00` : textValue.replace("T", " ").replace(/\.\d+Z$/, "");
-  const date = new Date(normalized);
-  if (Number.isNaN(date.getTime())) return null;
-  return normalized.slice(0, 19);
+
+  if (/^\d{8}$/.test(textValue)) {
+    textValue = `${textValue.slice(0, 4)}-${textValue.slice(4, 6)}-${textValue.slice(6, 8)}`;
+  }
+
+  const normalized = textValue
+    .replace(/[年/.]/g, "-")
+    .replace(/月/g, "-")
+    .replace(/日/g, "")
+    .replace("T", " ")
+    .replace(/\.\d+(?=Z|[+-]\d{2}:?\d{2}$|$)/, "")
+    .replace(/Z$/, "")
+    .replace(/[+-]\d{2}:?\d{2}$/, "")
+    .trim();
+
+  const match = normalized.match(
+    /^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/
+  );
+  if (!match) return null;
+
+  const [, yearText, monthText, dayText, hourText = "0", minuteText = "0", secondText = "0"] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const probe = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  if (
+    year < 1900 || year > 2200 ||
+    probe.getUTCFullYear() !== year ||
+    probe.getUTCMonth() !== month - 1 ||
+    probe.getUTCDate() !== day ||
+    probe.getUTCHours() !== hour ||
+    probe.getUTCMinutes() !== minute ||
+    probe.getUTCSeconds() !== second
+  ) {
+    return null;
+  }
+  return formatDateParts(year, month, day, hour, minute, second);
+}
+
+function formatUtcDate(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
+  return formatDateParts(
+    date.getUTCFullYear(),
+    date.getUTCMonth() + 1,
+    date.getUTCDate(),
+    date.getUTCHours(),
+    date.getUTCMinutes(),
+    date.getUTCSeconds()
+  );
+}
+
+function formatDateParts(year, month, day, hour, minute, second) {
+  const pad = (numberValue) => String(numberValue).padStart(2, "0");
+  return `${year}-${pad(month)}-${pad(day)} ${pad(hour)}:${pad(minute)}:${pad(second)}`;
 }
 
 function bool(value, fallback = false) {
@@ -405,9 +471,18 @@ function bool(value, fallback = false) {
   return value === false || value === 0 || value === "0" ? 0 : 1;
 }
 
-function money(value) {
+function money(value, context = "money") {
   const numberValue = Number(value || 0);
-  return Number.isFinite(numberValue) ? numberValue : 0;
+  if (!Number.isFinite(numberValue)) {
+    projectionWarnings.push(`${context} invalid numeric value omitted, original preserved in data`);
+    return 0;
+  }
+  const maxValue = 999_999_999_999.99;
+  if (Math.abs(numberValue) > maxValue) {
+    projectionWarnings.push(`${context} exceeds DECIMAL(14,2); projected value set to 0, original preserved in data`);
+    return 0;
+  }
+  return Math.round(numberValue * 100) / 100;
 }
 
 function number(value) {
@@ -419,6 +494,16 @@ function nullableNumber(value) {
   if (value === undefined || value === null || value === "") return null;
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function coordinate(value, min, max, context) {
+  const numberValue = nullableNumber(value);
+  if (numberValue === null) return null;
+  if (numberValue < min || numberValue > max) {
+    projectionWarnings.push(`${context} out of range; projected value omitted, original preserved in data`);
+    return null;
+  }
+  return numberValue;
 }
 
 function text(value) {

@@ -160,7 +160,7 @@ jobs:
           if [ "$BOOTSTRAP_ACTION" != "verify_only" ]; then
             RESET_FLAG=""
             if [ "$RESET_MYSQL_TABLES" = "true" ]; then RESET_FLAG="--reset"; fi
-            node scripts/mysql/migrate-json-to-mysql.mjs $RESET_FLAG --snapshot
+            node scripts/mysql/migrate-json-to-mysql.mjs $RESET_FLAG
           fi
 
           node scripts/mysql/verify-mysql-migration.mjs
