@@ -64,8 +64,8 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS customers (
   id BIGINT PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
-  phone VARCHAR(40) NULL,
-  phone_normalized VARCHAR(40) NULL,
+  phone VARCHAR(255) NULL,
+  phone_normalized VARCHAR(80) NULL,
   city VARCHAR(120) NULL,
   address VARCHAR(800) NULL,
   channel_source VARCHAR(120) NULL,
@@ -91,6 +91,12 @@ CREATE TABLE IF NOT EXISTS customers (
   KEY idx_customers_lifecycle (lifecycle_status),
   KEY idx_customers_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Keep existing bootstrap databases compatible with the wider projection.
+-- The complete source value remains available in the data JSON column.
+ALTER TABLE customers
+  MODIFY COLUMN phone VARCHAR(255) NULL,
+  MODIFY COLUMN phone_normalized VARCHAR(80) NULL;
 
 CREATE TABLE IF NOT EXISTS opportunities (
   id BIGINT PRIMARY KEY,

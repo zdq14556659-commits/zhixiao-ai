@@ -9,6 +9,7 @@ const dataFile = path.resolve(process.env.DATA_FILE || defaultDataFile);
 const databaseUrl = process.env.MYSQL_URL || "";
 const reset = process.argv.includes("--reset");
 const snapshot = process.argv.includes("--snapshot");
+const projectionWarnings = [];
 
 if (!databaseUrl) {
   fail("Missing MYSQL_URL. Example: mysql://zhixiao_user:password@127.0.0.1:3306/zhixiao_ai");
@@ -32,6 +33,13 @@ try {
     );
   }
   await connection.commit();
+  if (projectionWarnings.length) {
+    console.warn(`MYSQL_IMPORT_WARNINGS count=${projectionWarnings.length}`);
+    for (const warning of projectionWarnings.slice(0, 20)) console.warn(`WARN ${warning}`);
+    if (projectionWarnings.length > 20) {
+      console.warn(`WARN ${projectionWarnings.length - 20} additional projection warnings omitted`);
+    }
+  }
   console.log(`MYSQL_IMPORT_OK customers=${count(state.customers)} opportunities=${count(state.opportunities)} users=${count(state.users)}`);
 } catch (error) {
   await connection.rollback();
@@ -138,6 +146,12 @@ async function upsertUser(db, user) {
 }
 
 async function upsertCustomer(db, customer) {
+  const customerId = number(customer.id);
+  const phone = boundedText(customer.phone, 255, `customer=${customerId} field=phone`);
+  const phoneNormalized = normalizedPhoneValue(
+    customer.phoneNormalized || normalizePhone(customer.phone),
+    customerId
+  );
   await db.execute(
     `INSERT INTO customers (id, name, phone, phone_normalized, city, address, channel_source, created_by, created_by_id,
       owner, owner_id, unit_id, unit, zone, lifecycle_status, created_at, updated_at, data)
@@ -148,10 +162,10 @@ async function upsertCustomer(db, customer) {
        unit=VALUES(unit), zone=VALUES(zone), lifecycle_status=VALUES(lifecycle_status), created_at=VALUES(created_at),
        updated_at=VALUES(updated_at), data=VALUES(data)`,
     [
-      number(customer.id),
+      customerId,
       text(customer.name),
-      text(customer.phone),
-      text(customer.phoneNormalized || normalizePhone(customer.phone)),
+      phone,
+      phoneNormalized,
       text(customer.city),
       text(customer.address),
       text(customer.channelSource),
@@ -349,6 +363,25 @@ function isManualFollow(follow) {
 
 function normalizePhone(value) {
   return String(value || "").replace(/^\+?86|^0086/, "").replace(/[^\d]/g, "");
+}
+
+function normalizedPhoneValue(value, customerId) {
+  const normalized = text(value);
+  if (!normalized) return null;
+  if (normalized.length <= 80) return normalized;
+  projectionWarnings.push(
+    `customer=${customerId} field=phone_normalized length=${normalized.length}; index value omitted, original preserved in data`
+  );
+  return null;
+}
+
+function boundedText(value, maxLength, context) {
+  const textValue = text(value);
+  if (!textValue || textValue.length <= maxLength) return textValue;
+  projectionWarnings.push(
+    `${context} length=${textValue.length}; projected value truncated to ${maxLength}, original preserved in data`
+  );
+  return textValue.slice(0, maxLength);
 }
 
 function dateValue(value) {
