@@ -62,6 +62,7 @@ const seed = {
     zone: T.eastZone,
     createdBy: "Admin",
     createdAt: recentDate,
+    amount: 150000,
     ownershipStatus: "locked",
     followUps: []
   }],
@@ -82,7 +83,7 @@ fs.writeFileSync(path.join(tempDir, "seed.json"), JSON.stringify(seed, null, 2))
 let child = null;
 let output = "";
 
-function startServer() {
+function startServer(writeDelayMs = "25") {
   output = "";
   child = spawn(process.execPath, [path.join(__dirname, "server.js")], {
     env: {
@@ -91,7 +92,7 @@ function startServer() {
       DATA_DIR: tempDir,
       UPLOAD_DIR: uploadDir,
       AUTH_TOKEN_SECRET: "follow-persistence-test-secret",
-      STATE_WRITE_DELAY_MS: "25",
+      STATE_WRITE_DELAY_MS: String(writeDelayMs),
       STATE_BACKUP_INTERVAL_MS: "600000"
     },
     stdio: ["ignore", "pipe", "pipe"]
@@ -106,6 +107,15 @@ async function stopServer() {
   child = null;
   if (current.exitCode !== null) return;
   current.kill();
+  await new Promise((resolve) => current.once("exit", resolve));
+}
+
+async function crashServer() {
+  if (!child) return;
+  const current = child;
+  child = null;
+  if (current.exitCode !== null) return;
+  current.kill("SIGKILL");
   await new Promise((resolve) => current.once("exit", resolve));
 }
 
@@ -221,6 +231,52 @@ async function run() {
   const restartedDetail = await request("/opportunities/101/detail", { token: tokenAfterRestart });
   assert.equal(restartedDetail.status, 200, JSON.stringify(restartedDetail.data));
   assert.ok(restartedDetail.data.followUps.some((item) => item.note === note && item.nextFollow === nextFollow));
+
+  // Simulate the production failure mode: the API accepts a follow-up, then the
+  // process is killed before the delayed db.json snapshot can run. The append-only
+  // follow-up log must recover the summary on the next start.
+  await stopServer();
+  startServer("60000");
+  await waitForServer();
+  const crashToken = await login("sales");
+  const crashNote = "follow survives abrupt process kill";
+  const crashNextFollow = "2026-07-08";
+  const crashFollow = await request("/opportunities/101/follow", {
+    method: "POST",
+    token: crashToken,
+    body: { note: crashNote, nextFollow: crashNextFollow, productId: "product-v1" }
+  });
+  assert.equal(crashFollow.status, 200, JSON.stringify(crashFollow.data));
+  assert.equal(crashFollow.data.lastNote, crashNote);
+  await crashServer();
+
+  const diskBeforeRecovery = JSON.parse(fs.readFileSync(dataFile, "utf8"));
+  assert.notEqual(
+    diskBeforeRecovery.opportunities.find((item) => Number(item.id) === 101)?.lastNote,
+    crashNote,
+    "the test must kill the process before the delayed snapshot"
+  );
+
+  // Emulate an older log record that did not carry amount information.
+  const crashLogFile = path.join(followLogDir, fs.readdirSync(followLogDir).filter((name) => name.endsWith(".jsonl")).sort().at(-1));
+  const crashLogLines = fs.readFileSync(crashLogFile, "utf8").trim().split(/\r?\n/);
+  const latestCrashLog = JSON.parse(crashLogLines.at(-1));
+  delete latestCrashLog.amount;
+  crashLogLines[crashLogLines.length - 1] = JSON.stringify(latestCrashLog);
+  fs.writeFileSync(crashLogFile, `${crashLogLines.join("\n")}\n`, "utf8");
+
+  startServer();
+  await waitForServer();
+  const recoveredToken = await login("sales");
+  const recoveredState = await request("/state?lite=1", { token: recoveredToken });
+  assert.equal(recoveredState.status, 200, JSON.stringify(recoveredState.data));
+  const recoveredOpportunity = recoveredState.data.opportunities.find((item) => Number(item.id) === 101);
+  assert.equal(recoveredOpportunity.lastNote, crashNote);
+  assert.equal(recoveredOpportunity.nextFollow, crashNextFollow);
+  assert.equal(recoveredOpportunity.amount, 150000, "old follow logs must not reset opportunity amount");
+  const recoveredDetail = await request("/opportunities/101/detail", { token: recoveredToken });
+  assert.equal(recoveredDetail.status, 200, JSON.stringify(recoveredDetail.data));
+  assert.ok(recoveredDetail.data.followUps.some((item) => item.note === crashNote));
 }
 
 run()

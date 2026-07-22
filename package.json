@@ -20,7 +20,8 @@
     "test:dashboard-actions": "node backend/dashboard-assigned-unfollowed.test.js",
     "test:metadata-state": "node backend/metadata-state.test.js",
     "test:allocation-audit": "node backend/allocation-audit.test.js",
-    "test": "npm run test:password && npm run test:customers && npm run test:v6 && npm run test:v7 && npm run test:v8 && npm run test:v9 && npm run test:channels && npm run test:import-counts && npm run test:follow-persistence && npm run test:dashboard-actions && npm run test:metadata-state && npm run test:allocation-audit"
+    "test:performance-stability": "node backend/performance-stability.test.js",
+    "test": "npm run test:password && npm run test:customers && npm run test:v6 && npm run test:v7 && npm run test:v8 && npm run test:v9 && npm run test:channels && npm run test:import-counts && npm run test:follow-persistence && npm run test:dashboard-actions && npm run test:metadata-state && npm run test:allocation-audit && npm run test:performance-stability"
   },
   "dependencies": {
     "jszip": "^3.10.1",

@@ -43,6 +43,7 @@ let geocodeQueueRunning = false;
 let stateCache = null;
 let stateIndexes = emptyStateIndexes();
 let stateWriteTimer = null;
+let stateWriteMaxTimer = null;
 let stateWritePromise = null;
 let stateDirty = false;
 let stateDiskSignature = "";
@@ -94,10 +95,18 @@ const BACKEND_VERSION = "backend-v9";
 const MONEY_UNIT = "yuan";
 const LEGACY_MONEY_MULTIPLIER = 10000;
 const DEFAULT_EXPECTED_AMOUNT = 150000;
-const DEFAULT_STATE_WRITE_DELAY_MS = DATA_DIR.toLowerCase().startsWith(os.tmpdir().toLowerCase()) ? 0 : 1500;
+const DEFAULT_STATE_WRITE_DELAY_MS = DATA_DIR.toLowerCase().startsWith(os.tmpdir().toLowerCase()) ? 0 : 15000;
 const STATE_WRITE_DELAY_MS = Math.max(
   0,
   Number(process.env.STATE_WRITE_DELAY_MS ?? DEFAULT_STATE_WRITE_DELAY_MS)
+);
+const STATE_WRITE_MAX_DELAY_MS = Math.max(
+  STATE_WRITE_DELAY_MS,
+  Number(process.env.STATE_WRITE_MAX_DELAY_MS || 60000)
+);
+const STATE_STREAM_BATCH_SIZE = Math.max(
+  10,
+  Number(process.env.STATE_STREAM_BATCH_SIZE || 100)
 );
 const STATE_BACKUP_INTERVAL_MS = Math.max(
   60000,
@@ -188,6 +197,7 @@ try {
 
 try {
   buildExternalFollowUpIndex();
+  reconcileExternalFollowUpSummaries(stateCache);
 } catch (error) {
   console.error("[follow-index] startup build failed", error);
 }
@@ -3128,10 +3138,8 @@ function opportunityView(state, opportunity, options = {}) {
 
 function opportunityManualFollows(state, opportunity = {}) {
   const rules = businessRules(state);
-  const follows = inlineFollowUps(opportunity).filter((item) => isEffectiveFollowForRules(item, rules));
-  if (follows.length) return follows;
-  const summary = summaryFollowUp(opportunity);
-  return summary && isEffectiveFollowForRules(summary, rules) ? [summary] : [];
+  return mergedFollowUpsForOpportunity(opportunity)
+    .filter((item) => isEffectiveFollowForRules(item, rules));
 }
 
 function latestOpportunityManualFollow(state, opportunity = {}) {
@@ -3505,7 +3513,12 @@ function sortPublicPoolOpportunitiesForViewer(items = [], state = {}, viewer = {
   if (managementView || rules.publicPoolSortMode === PUBLIC_POOL_SORT_CREATED_AT) {
     return list.sort((a, b) => String(b.publicPoolAt || b.createdAt || "").localeCompare(String(a.publicPoolAt || a.createdAt || "")) || Number(b.id || 0) - Number(a.id || 0));
   }
-  return list.sort((a, b) => stablePublicPoolScore(viewer, a).localeCompare(stablePublicPoolScore(viewer, b)));
+  // Decorate once before sorting. Calculating SHA1 inside the comparator makes a
+  // large public pool hash the same records tens of thousands of times.
+  return list
+    .map((item) => ({ item, score: stablePublicPoolScore(viewer, item) }))
+    .sort((left, right) => left.score.localeCompare(right.score) || Number(right.item.id || 0) - Number(left.item.id || 0))
+    .map(({ item }) => item);
 }
 
 function sanitizePublicPoolOpportunity(customer = {}, opportunity = {}, state = {}, viewer = null) {
@@ -3756,6 +3769,7 @@ function setStageTime(customer, stage, date = today()) {
 }
 
 function normalizeFollowUp(item = {}, customer = {}) {
+  const hasExplicitAmount = item.amount !== undefined && item.amount !== null && item.amount !== "";
   return {
     id: item.id || `${Date.now()}-${crypto.randomBytes(3).toString("hex")}`,
     customerId: item.customerId || customer.customerId || customer.id || "",
@@ -3766,7 +3780,19 @@ function normalizeFollowUp(item = {}, customer = {}) {
     note: item.note || item.lastNote || "更新了客户信息。",
     nextFollow: item.nextFollow || "",
     source: item.source || "",
-    isSystem: Boolean(item.isSystem)
+    isSystem: Boolean(item.isSystem),
+    ownerId: item.ownerId || customer.ownerId || "",
+    owner: item.owner || customer.owner || "",
+    followPerson: item.followPerson || customer.followPerson || item.owner || customer.owner || "",
+    unitId: item.unitId || customer.unitId || "",
+    unit: item.unit || customer.unit || "",
+    zone: item.zone || customer.zone || "",
+    orgPath: item.orgPath || customer.orgPath || "",
+    productId: item.productId || customer.productId || "",
+    productName: item.productName || customer.productName || "",
+    // Older external follow-up logs do not contain an amount. Keep that absence
+    // explicit so recovery never overwrites a real opportunity amount with zero.
+    amount: hasExplicitAmount ? normalizeMoney(item.amount) : null
   };
 }
 
@@ -3842,6 +3868,75 @@ function buildExternalFollowUpIndex() {
   return index;
 }
 
+function reconcileExternalFollowUpSummaries(state = {}) {
+  if (!(externalFollowUpIndex instanceof Map) || !state?.opportunities?.length) return 0;
+  const rules = businessRules(state);
+  let changed = 0;
+  externalFollowUpIndex.forEach((entries, opportunityId) => {
+    const index = findOpportunityIndex(state, opportunityId);
+    if (index < 0) return;
+    const effective = entries
+      .filter((item) => isEffectiveFollowForRules(item, rules))
+      .sort(sortByNewest);
+    const latest = effective[0];
+    if (!latest) return;
+    const previous = state.opportunities[index];
+    const externalAt = Date.parse(latest.createdAt || latest.date || "");
+    const currentAt = Date.parse(previous.latestManualFollowAt || previous.effectiveFollowUpAt || previous.lastFollow || "");
+    const externalIsNewer = !Number.isFinite(currentAt)
+      || (Number.isFinite(externalAt) && externalAt > currentAt);
+    const needsCountRecovery = Number(previous.manualFollowCount || previous.followCount || 0) < effective.length;
+    const needsSummary = externalIsNewer || needsCountRecovery;
+    if (!needsSummary) return;
+
+    const assignmentAt = Date.parse(latestAssignmentAt(previous) || "");
+    const canRecoverOwner = externalIsNewer && latest.ownerId && (
+      !previous.ownerId
+      || isOpportunityPublicPool(previous, Date.now(), state)
+      || !Number.isFinite(assignmentAt)
+      || !Number.isFinite(externalAt)
+      || externalAt >= assignmentAt
+    );
+    const recovered = {
+      ...previous,
+      manualFollowCount: Math.max(Number(previous.manualFollowCount || previous.followCount || 0), effective.length),
+      followCount: Math.max(Number(previous.followCount || previous.manualFollowCount || 0), effective.length)
+    };
+    if (externalIsNewer) {
+      recovered.latestManualFollowAt = latest.createdAt || latest.date || previous.latestManualFollowAt || "";
+      recovered.effectiveFollowUpAt = latest.createdAt || latest.date || previous.effectiveFollowUpAt || "";
+      recovered.lastFollow = latest.date || String(latest.createdAt || "").slice(0, 10);
+      recovered.lastFollowAuthor = latest.author || previous.lastFollowAuthor || "";
+      recovered.lastNote = latest.note || previous.lastNote || "";
+      recovered.nextFollow = latest.nextFollow || "";
+      recovered.productId = latest.productId || previous.productId;
+      recovered.productName = latest.productName || previous.productName;
+      if (latest.amount !== null && latest.amount !== undefined) recovered.amount = latest.amount;
+    }
+    if (canRecoverOwner) {
+      recovered.ownerId = latest.ownerId;
+      recovered.owner = latest.owner || latest.followPerson || previous.owner;
+      recovered.followPerson = latest.followPerson || latest.owner || previous.followPerson;
+      recovered.unitId = latest.unitId || previous.unitId;
+      recovered.unit = latest.unit || previous.unit;
+      recovered.zone = latest.zone || previous.zone;
+      recovered.orgPath = latest.orgPath || previous.orgPath;
+      recovered.ownershipStatus = OWNERSHIP_LOCKED;
+      recovered.claimUntil = "";
+      recovered.publicPoolAt = "";
+      recovered.publicPoolReason = "";
+    }
+    state.opportunities[index] = normalizeOpportunity(recovered, state);
+    syncCustomerCompatibility(state, previous.customerId, state.opportunities[index]);
+    changed += 1;
+  });
+  if (!changed) return 0;
+  rebuildStateIndexes(state);
+  writeState(state, { rebuildIndexes: false, reason: "follow-log-reconcile" });
+  console.warn(`[follow-index] reconciled opportunity summaries=${changed}`);
+  return changed;
+}
+
 function removeExternalFollowUpsForOpportunities(opportunityIds = []) {
   if (!(externalFollowUpIndex instanceof Map)) return 0;
   let removed = 0;
@@ -3909,6 +4004,16 @@ function appendManualFollowUp(state, opportunity = {}, follow = {}, viewer = {})
     customerId: opportunity.customerId,
     opportunityId: opportunity.id,
     author: follow.author || viewer?.name || opportunity.followPerson || opportunity.owner,
+    ownerId: opportunity.ownerId || viewer?.id || "",
+    owner: opportunity.owner || viewer?.name || "",
+    followPerson: opportunity.followPerson || opportunity.owner || viewer?.name || "",
+    unitId: opportunity.unitId || viewer?.unitId || "",
+    unit: opportunity.unit || viewer?.unit || "",
+    zone: opportunity.zone || viewer?.zone || "",
+    orgPath: opportunity.orgPath || viewer?.orgPath || "",
+    productId: opportunity.productId || "",
+    productName: opportunity.productName || "",
+    amount: opportunity.amount || 0,
     isSystem: false
   }, opportunity);
   appendFollowUpLogEntry(normalized);
@@ -4746,14 +4851,22 @@ function buildCustomerBoard(state, viewer, query = {}) {
   } else {
     rawRows = rawActive.filter((item) => item.stage === stage);
   }
-  const rows = rawRows.map((item) => opportunityListRow(state, item, { ...rowOptions, includePhotos: false }));
-  const filterOptions = customerBoardFilterOptions(rows);
-  const filteredRows = filterBoardRows(rows, query, stage);
-  const sortedRows = sortBoardRows(filteredRows, query, stage);
+  const requestedIds = boardRequestedIds(query.ids);
+  if (requestedIds.size) {
+    rawRows = rawRows.filter((item) => requestedIds.has(Number(item.id)) || requestedIds.has(Number(item.customerId)));
+  }
+  const projectedRows = rawRows.map((item) => ({
+    source: item,
+    row: opportunityBoardFilterProjection(state, item, stage)
+  }));
+  const filterOptions = customerBoardFilterOptions(projectedRows.map((item) => item.row));
+  const filteredRows = projectedRows.filter((item) => boardProjectionMatchesQuery(item.row, query, stage));
+  const sortedRows = sortBoardProjectionRows(filteredRows, query, stage);
   const page = paginateRows(sortedRows, query);
-  const pageCustomerIds = new Set(page.items.map((item) => Number(item.customerId)).filter(Boolean));
+  const pageCustomerIds = new Set(page.items.map((item) => Number(item.row.customerId)).filter(Boolean));
   const visitPhotoMap = buildVisitPhotoMap(state, 12, pageCustomerIds);
-  const items = page.items.map((item) => {
+  const items = page.items.map(({ source }) => {
+    const item = opportunityListRow(state, source, { ...rowOptions, includePhotos: false });
     const customer = findCustomer(state.customers || [], item.customerId) || {};
     const photos = rowOptions.maskPhone ? [] : customerPhotosForDisplay(state, customer, 6, visitPhotoMap);
     return { ...item, photoCount: photos.length, photos };
@@ -4769,6 +4882,83 @@ function buildCustomerBoard(state, viewer, query = {}) {
     totalPages: page.totalPages,
     filterOptions
   };
+}
+
+function boardRequestedIds(value = "") {
+  return new Set(String(value || "")
+    .split(",")
+    .map((id) => Number(id))
+    .filter(Boolean));
+}
+
+function opportunityBoardFilterProjection(state, opportunity = {}, stage = "") {
+  const customer = findCustomer(state.customers || [], opportunity.customerId) || {};
+  const primaryContact = primaryContactForCustomer(customer);
+  const publicPool = stage === PUBLIC_POOL_STATUS
+    ? opportunityPublicPoolInfo(opportunity, Date.now(), state)
+    : { at: opportunity.publicPoolAt || "" };
+  const isPublic = stage === PUBLIC_POOL_STATUS;
+  return {
+    id: opportunity.id,
+    customerId: opportunity.customerId,
+    name: customer.name || "",
+    phone: primaryContact.phone || customer.phone || "",
+    channelSource: customer.channelSource || "",
+    createdBy: opportunity.createdBy || customer.createdBy || "",
+    followPerson: isPublic ? PUBLIC_POOL_STATUS : opportunity.followPerson || opportunity.owner || "",
+    owner: isPublic ? PUBLIC_POOL_STATUS : opportunity.owner || "",
+    unitId: opportunity.unitId || customer.unitId || "",
+    unit: displayUnitName(state, opportunity, customer),
+    orgPath: opportunity.orgPath || customer.orgPath || "",
+    city: customer.city || customer.location?.city || extractCity(customer.address) || "",
+    stage: opportunity.stage || STAGES[0],
+    createdAt: opportunity.createdAt || customer.createdAt || "",
+    leadAt: opportunity.leadAt || "",
+    opportunityAt: opportunity.opportunityAt || "",
+    dealAt: opportunity.dealAt || "",
+    publicPoolAt: publicPool.at || opportunity.publicPoolAt || "",
+    purchasedInfo: opportunity.purchasedInfo || {},
+    archivedAt: customer.archivedAt || "",
+    nextFollow: opportunity.nextFollow || "",
+    assignedAt: latestAssignmentAt(opportunity),
+    manualFollowCount: Number(opportunity.manualFollowCount || opportunity.followCount || 0),
+    followCount: Number(opportunity.followCount || opportunity.manualFollowCount || 0),
+    latestManualFollowAt: opportunity.latestManualFollowAt || opportunity.effectiveFollowUpAt || "",
+    effectiveFollowUpAt: opportunity.effectiveFollowUpAt || "",
+    lastFollow: opportunity.lastFollow || "",
+    lastNote: opportunity.lastNote || ""
+  };
+}
+
+function boardProjectionMatchesQuery(row = {}, query = {}, stage = "") {
+  const keyword = cleanText(query.keyword);
+  const channelSource = cleanText(query.channelSource);
+  const createdBy = cleanText(query.createdBy);
+  const followPerson = cleanText(query.followPerson);
+  const unit = cleanText(query.unit);
+  const city = cleanText(query.city);
+  const followStatus = String(query.followStatus || "");
+  if (keyword && !cleanText(`${row.name || ""} ${row.phone || ""}`).includes(keyword)) return false;
+  if (channelSource && cleanText(normalizeChannelSource(row.channelSource)) !== channelSource) return false;
+  if (createdBy && !cleanText(row.createdBy).includes(createdBy)) return false;
+  if (stage !== PUBLIC_POOL_STATUS && followPerson && !cleanText(row.followPerson || row.owner).includes(followPerson)) return false;
+  if (stage !== PUBLIC_POOL_STATUS && unit && !rowMatchesUnitFilter(row, unit)) return false;
+  if (city && cleanText(row.city) !== city) return false;
+  if (followStatus === "unfollowed" && hasManualFollow(row)) return false;
+  if (followStatus === "followed" && !hasManualFollow(row)) return false;
+  if (!dateMatchesOptionalRange(row.createdAt, query.createdStart, query.createdEnd)) return false;
+  if (!dateMatchesOptionalRange(stageDateForBoardRow(row, stage), query.stageStart, query.stageEnd)) return false;
+  if (!dateMatchesOptionalRange(latestManualFollowDate(row), query.lastStart, query.lastEnd)) return false;
+  if (!dateMatchesOptionalRange(row.nextFollow, query.nextStart, query.nextEnd)) return false;
+  if (!dateMatchesOptionalRange(row.publicPoolAt, query.publicPoolStart, query.publicPoolEnd)) return false;
+  return true;
+}
+
+function sortBoardProjectionRows(items = [], query = {}, stage = "") {
+  const rows = items.map((item) => item.row);
+  const sorted = sortBoardRows(rows, query, stage);
+  const byId = new Map(items.map((item) => [Number(item.row.id), item]));
+  return sorted.map((row) => byId.get(Number(row.id))).filter(Boolean);
 }
 
 function isPaginatedQuery(query = {}) {
@@ -6232,6 +6422,17 @@ function scheduleStateWrite(reason = "queued-write") {
     void persistStateQueued(reason, { retryOnFailure: true });
   }, STATE_WRITE_DELAY_MS);
   if (typeof stateWriteTimer.unref === "function") stateWriteTimer.unref();
+  if (!stateWriteMaxTimer && STATE_WRITE_MAX_DELAY_MS > 0) {
+    stateWriteMaxTimer = setTimeout(() => {
+      stateWriteMaxTimer = null;
+      if (stateWriteTimer) {
+        clearTimeout(stateWriteTimer);
+        stateWriteTimer = null;
+      }
+      void persistStateQueued(`${reason}-max-delay`, { retryOnFailure: true });
+    }, STATE_WRITE_MAX_DELAY_MS);
+    if (typeof stateWriteMaxTimer.unref === "function") stateWriteMaxTimer.unref();
+  }
 }
 
 async function flushStateRevision(targetRevision, reason = "write-through") {
@@ -6250,6 +6451,17 @@ function scheduleStateWriteRetry(reason) {
     void persistStateQueued(`${reason}-retry`, { retryOnFailure: true });
   }, retryDelay);
   if (typeof stateWriteTimer.unref === "function") stateWriteTimer.unref();
+}
+
+function clearStateWriteTimers() {
+  if (stateWriteTimer) {
+    clearTimeout(stateWriteTimer);
+    stateWriteTimer = null;
+  }
+  if (stateWriteMaxTimer) {
+    clearTimeout(stateWriteMaxTimer);
+    stateWriteMaxTimer = null;
+  }
 }
 
 function backupWriteIsDue(options = {}) {
@@ -6277,7 +6489,84 @@ function recordStatePersist(reason, revision, bytes, startedAt) {
   console.log(`[db] persisted reason=${reason} revision=${revision} duration=${lastStatePersistDurationMs}ms size=${Math.round(bytes / 1024 / 1024)}MB dirty=${stateDirty}`);
 }
 
-async function persistSerializedState(serialized, revision, options = {}) {
+function waitForStreamDrain(stream) {
+  return new Promise((resolve, reject) => {
+    const onError = (error) => {
+      stream.off("drain", onDrain);
+      reject(error);
+    };
+    const onDrain = () => {
+      stream.off("error", onError);
+      resolve();
+    };
+    stream.once("error", onError);
+    stream.once("drain", onDrain);
+  });
+}
+
+function finishWriteStream(stream) {
+  return new Promise((resolve, reject) => {
+    stream.once("error", reject);
+    stream.once("finish", resolve);
+    stream.end();
+  });
+}
+
+async function writeStreamChunk(stream, chunk) {
+  if (stream.write(chunk, "utf8")) return;
+  await waitForStreamDrain(stream);
+}
+
+function yieldToEventLoop() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+function captureStateSnapshot(state = {}) {
+  return Object.fromEntries(Object.entries(state).map(([key, value]) => {
+    if (Array.isArray(value)) {
+      return [key, value.map((item) => (
+        item && typeof item === "object" && !Array.isArray(item) ? { ...item } : item
+      ))];
+    }
+    if (value && typeof value === "object") return [key, { ...value }];
+    return [key, value];
+  }));
+}
+
+async function writeStateSnapshotIncrementally(file, state = {}) {
+  const stream = fs.createWriteStream(file, { encoding: "utf8" });
+  const entries = Object.entries(state);
+  let itemCount = 0;
+  try {
+    await writeStreamChunk(stream, "{");
+    for (let entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {
+      const [key, value] = entries[entryIndex];
+      if (entryIndex) await writeStreamChunk(stream, ",");
+      await writeStreamChunk(stream, `${JSON.stringify(key)}:`);
+      if (!Array.isArray(value)) {
+        const serialized = JSON.stringify(value);
+        await writeStreamChunk(stream, serialized === undefined ? "null" : serialized);
+        continue;
+      }
+      await writeStreamChunk(stream, "[");
+      for (let index = 0; index < value.length; index += 1) {
+        if (index) await writeStreamChunk(stream, ",");
+        const serialized = JSON.stringify(value[index]);
+        await writeStreamChunk(stream, serialized === undefined ? "null" : serialized);
+        itemCount += 1;
+        if (itemCount % STATE_STREAM_BATCH_SIZE === 0) await yieldToEventLoop();
+      }
+      await writeStreamChunk(stream, "]");
+    }
+    await writeStreamChunk(stream, "}");
+    await finishWriteStream(stream);
+  } catch (error) {
+    stream.destroy();
+    throw error;
+  }
+}
+
+async function persistStateSnapshot(state, revision, options = {}) {
   await fs.promises.mkdir(DATA_DIR, { recursive: true });
   const shouldBackup = backupWriteIsDue(options);
   if (shouldBackup) {
@@ -6286,14 +6575,15 @@ async function persistSerializedState(serialized, revision, options = {}) {
   }
   const tempFile = `${DATA_FILE}.${process.pid}.${Date.now()}.${revision}.tmp`;
   try {
-    await fs.promises.writeFile(tempFile, serialized, "utf8");
+    await writeStateSnapshotIncrementally(tempFile, state);
     await fs.promises.rename(tempFile, DATA_FILE);
     if (options.refreshBackupAfterWrite) {
       await fs.promises.copyFile(DATA_FILE, BACKUP_FILE);
       lastStateBackupAt = Date.now();
     }
     stateDiskSignature = fileSignature(DATA_FILE);
-    return DATA_FILE;
+    const bytes = fs.statSync(DATA_FILE).size;
+    return { filePath: DATA_FILE, bytes };
   } finally {
     await fs.promises.rm(tempFile, { force: true }).catch(() => {});
   }
@@ -6302,25 +6592,15 @@ async function persistSerializedState(serialized, revision, options = {}) {
 function persistStateQueued(reason = "queued-write", options = {}) {
   if (stateWritePromise) return stateWritePromise;
   if (!stateCache || !stateDirty) return Promise.resolve(DATA_FILE);
-  if (stateWriteTimer) {
-    clearTimeout(stateWriteTimer);
-    stateWriteTimer = null;
-  }
+  clearStateWriteTimers();
   const startedAt = Date.now();
   const revision = stateRevision;
-  let serialized;
-  try {
-    serialized = JSON.stringify(stateCache);
-  } catch (error) {
-    stateWriteFailureCount += 1;
-    console.error(`[db] serialize failed (${reason}, attempt ${stateWriteFailureCount})`, error);
-    if (options.retryOnFailure !== false) scheduleStateWriteRetry(reason);
-    return options.throwOnFailure ? Promise.reject(error) : Promise.resolve("");
-  }
-  const bytes = Buffer.byteLength(serialized);
+  // Freeze the top-level collections cheaply. Requests can continue updating the
+  // live state while this immutable view is streamed to disk.
+  const snapshot = captureStateSnapshot(stateCache);
   stateWritePromise = (async () => {
     try {
-      const filePath = await persistSerializedState(serialized, revision, options);
+      const { filePath, bytes } = await persistStateSnapshot(snapshot, revision, options);
       recordStatePersist(reason, revision, bytes, startedAt);
       return filePath;
     } catch (error) {
@@ -6340,10 +6620,7 @@ function persistStateQueued(reason = "queued-write", options = {}) {
 
 function persistStateNow(reason = "manual-flush", options = {}) {
   if (!stateCache) return "";
-  if (stateWriteTimer) {
-    clearTimeout(stateWriteTimer);
-    stateWriteTimer = null;
-  }
+  clearStateWriteTimers();
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (backupWriteIsDue(options)) {
     fs.copyFileSync(DATA_FILE, BACKUP_FILE);
@@ -6369,16 +6646,19 @@ function persistStateNow(reason = "manual-flush", options = {}) {
 }
 
 async function flushStateBeforeExit() {
-  if (stateWriteTimer) {
-    clearTimeout(stateWriteTimer);
-    stateWriteTimer = null;
-  }
+  clearStateWriteTimers();
   if (stateWritePromise) {
     try {
       await stateWritePromise;
     } catch {}
   }
-  if (stateDirty) persistStateNow("shutdown", { retryOnFailure: false });
+  if (stateDirty) {
+    await persistStateQueued("shutdown", {
+      retryOnFailure: false,
+      throwOnFailure: true,
+      forceBackup: true
+    });
+  }
 }
 
 function emptyStateIndexes() {
