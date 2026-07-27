@@ -1618,10 +1618,21 @@ async function routeApi(req, res, url) {
     if (index < 0) return sendJson(res, 404, { error: "customer not found" });
     const previous = state.customers[index];
     const viewer = getAuthUser(req, state);
-    if (isCustomerPublicPool(previous, Date.now(), state)) {
+    const requestedOpportunity = body.opportunityId ? findOpportunity(state, body.opportunityId) : null;
+    const requestedOpportunityMatchesCustomer = requestedOpportunity
+      && Number(requestedOpportunity.customerId) === Number(previous.id);
+    if (requestedOpportunity && !requestedOpportunityMatchesCustomer) {
+      return sendJson(res, 400, { error: "销售机会与客户不匹配" });
+    }
+    const canModifyThroughOpportunity = requestedOpportunityMatchesCustomer
+      && !isOpportunityPublicPool(requestedOpportunity, Date.now(), state)
+      && canViewOpportunity(state, viewer, requestedOpportunity);
+    if (!canModifyThroughOpportunity && isCustomerPublicPool(previous, Date.now(), state)) {
       return sendJson(res, 409, { error: "公海客户需先认领后修改", code: "CUSTOMER_CLAIM_REQUIRED" });
     }
-    if (!canViewRecord(state, viewer, previous)) return sendJson(res, 403, { error: "无权修改该客户" });
+    if (!canModifyThroughOpportunity && !canViewRecord(state, viewer, previous)) {
+      return sendJson(res, 403, { error: "无权修改该客户" });
+    }
     if (!canUseAdmin(state, viewer)) {
       const changesName = body.name !== undefined && String(body.name).trim() !== String(previous.name || "").trim();
       const changesPhone = body.phone !== undefined && normalizePhone(body.phone) !== normalizePhone(previous.phone);
@@ -1663,7 +1674,7 @@ async function routeApi(req, res, url) {
     customerBody.city = body.city || (body.address !== undefined ? extractCity(body.address) || "待识别" : previous.city);
     const next = normalizeCustomer({ ...previous, ...customerBody, id: previous.id }, state);
     state.customers[index] = next;
-    const opportunity = findOpportunity(state, body.opportunityId) || primaryOpportunity(state, previous.id);
+    const opportunity = requestedOpportunity || primaryOpportunity(state, previous.id);
     let savedCompatibilityFollow = null;
     let updatedOpportunity = null;
     if (opportunity && salesFields.some((field) => body[field] !== undefined)) {

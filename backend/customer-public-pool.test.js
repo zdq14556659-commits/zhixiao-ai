@@ -199,6 +199,18 @@ async function run() {
   assert.ok(protectedLeads.data.items.filter((item) => [7, 8].includes(item.customerId)).every((item) => item.ownershipStatus === "pending_followup"));
   const latestManualProtected = protectedLeads.data.items.find((item) => item.customerId === 10);
   assert.ok(latestManualProtected.claimDaysRemaining >= 29);
+  const protectedFollowSave = await request("/customers/10", {
+    method: "PUT",
+    token: tokenA,
+    body: {
+      opportunityId: latestManualProtected.id,
+      productId: "product-v1",
+      lastNote: "保护期内继续跟进",
+      nextFollow: dateDaysAgo(-2)
+    }
+  });
+  assert.equal(protectedFollowSave.status, 200, JSON.stringify(protectedFollowSave.data));
+  assert.equal(protectedFollowSave.data.nextFollow, dateDaysAgo(-2));
   assert.ok(!stateB.data.customers.some((item) => item.id === 2));
   const publicPoolB = await request("/public-pool", { token: tokenB });
   assert.equal(publicPoolB.status, 200);
