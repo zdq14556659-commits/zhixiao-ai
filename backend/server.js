@@ -826,6 +826,73 @@ async function routeApi(req, res, url) {
     return sendJson(res, 200, opportunityView(state, next));
   }
 
+  if (req.method === "POST" && url.pathname === "/api/opportunities/batch-correct-stage") {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canHardDeleteCustomer(state, viewer)) {
+      return sendJson(res, 403, { error: "仅管理员和总负责人可以批量纠正阶段" });
+    }
+    const ids = [...new Set((Array.isArray(body.ids) ? body.ids : []).map(Number).filter(Boolean))];
+    const targetStage = String(body.targetStage || "");
+    const reason = String(body.reason || "").trim();
+    if (!ids.length) return sendJson(res, 400, { error: "请先选择需要纠正的客户" });
+    if (!["名单", "线索"].includes(targetStage)) return sendJson(res, 400, { error: "请选择有效的目标阶段" });
+    if (!reason) return sendJson(res, 400, { error: "请填写阶段纠正原因" });
+    const corrected = [];
+    const failures = [];
+    for (const id of ids) {
+      const index = findOpportunityIndex(state, id);
+      if (index < 0) {
+        failures.push({ id, reason: "销售机会不存在" });
+        continue;
+      }
+      const previous = state.opportunities[index];
+      const allowed = (previous.stage === "线索" && targetStage === "名单")
+        || (previous.stage === "商机" && ["名单", "线索"].includes(targetStage));
+      const customer = findCustomer(state.customers || [], previous.customerId);
+      if (!allowed) {
+        failures.push({ id, reason: `${previous.stage || "当前"}阶段不能纠正到${targetStage}` });
+        continue;
+      }
+      if (isOpportunityPublicPool(previous, Date.now(), state) || isPurchasedOpportunity(previous) || customer?.lifecycleStatus === LIFECYCLE_ARCHIVED) {
+        failures.push({ id, reason: "公海、已购或无效客户不能批量纠正阶段" });
+        continue;
+      }
+      const correction = {
+        id: crypto.randomUUID(),
+        fromStage: previous.stage,
+        targetStage,
+        reason,
+        actorId: Number(viewer.id || 0),
+        actorName: viewer.name || "",
+        createdAt: new Date().toISOString()
+      };
+      const next = normalizeOpportunity({
+        ...previous,
+        stage: targetStage,
+        leadAt: targetStage === "名单" ? "" : (previous.leadAt || today()),
+        opportunityAt: "",
+        dealAt: "",
+        stageCorrectionHistory: [...(previous.stageCorrectionHistory || []), correction]
+      }, state);
+      state.opportunities[index] = next;
+      syncCustomerCompatibility(state, next.customerId, next);
+      corrected.push(next.id);
+    }
+    if (!corrected.length) return sendJson(res, 409, { error: failures[0]?.reason || "没有可纠正的客户", failures });
+    appendSecurityLog(state, {
+      type: "batch_correct_customer_stage",
+      actorId: viewer.id,
+      actorName: viewer.name,
+      targetId: corrected[0],
+      targetName: `${corrected.length}条机会纠正为${targetStage}`,
+      sourceIp: getRequestIp(req)
+    });
+    await commitCoreState(state, { reason: "batch-correct-stage", opportunityIds: corrected });
+    return sendJson(res, 200, { ok: true, updated: corrected.length, failures, targetStage });
+  }
+
   const opportunityAdvance = url.pathname.match(/^\/api\/opportunities\/(\d+)\/advance$/);
   if (req.method === "POST" && opportunityAdvance) {
     const body = await readBody(req);
@@ -861,6 +928,70 @@ async function routeApi(req, res, url) {
       followUps: next.followUps?.length ? [next.followUps[next.followUps.length - 1]] : []
     });
     return sendJson(res, 200, opportunityView(state, next));
+  }
+
+  const opportunityFollowAndAdvance = url.pathname.match(/^\/api\/opportunities\/(\d+)\/follow-and-advance$/);
+  if (req.method === "POST" && opportunityFollowAndAdvance) {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    const index = findOpportunityIndex(state, opportunityFollowAndAdvance[1]);
+    if (index < 0) return sendJson(res, 404, { error: "销售机会不存在" });
+    const previous = state.opportunities[index];
+    if (isOpportunityPublicPool(previous, Date.now(), state)) {
+      return sendJson(res, 409, { error: "公海客户需要先认领", code: "CUSTOMER_CLAIM_REQUIRED" });
+    }
+    if (!canViewOpportunity(state, viewer, previous)) return sendJson(res, 403, { error: "无权跟进该销售机会" });
+    const stageIndex = STAGES.indexOf(previous.stage);
+    if (stageIndex < 0 || stageIndex >= STAGES.length - 1) return sendJson(res, 409, { error: "当前阶段不能继续推进" });
+    const nextStage = STAGES[stageIndex + 1];
+    const requiredError = validateOpportunityAdvance(previous, nextStage, body);
+    if (requiredError) return sendJson(res, 400, requiredError);
+    const productUpdate = applyProductSelectionForFollow(state, previous, body);
+    if (productUpdate.error) {
+      return sendJson(res, productUpdate.error.code === "DUPLICATE_ACTIVE_OPPORTUNITY" ? 409 : 400, productUpdate.error);
+    }
+    const mergedBody = { ...body, ...productUpdate.fields, stage: nextStage };
+    const validationError = validateOpportunityBusinessUpdate(previous, mergedBody);
+    if (validationError) return sendJson(res, 400, { error: validationError });
+    const next = normalizeOpportunity({
+      ...previous,
+      ...mergedBody,
+      id: previous.id,
+      customerId: previous.customerId
+    }, state);
+    const savedFollow = appendManualFollowUp(state, next, {
+      date: body.date || today(),
+      createdAt: new Date().toISOString(),
+      author: viewer.name,
+      note: String(body.note || "").trim(),
+      nextFollow: body.nextFollow || ""
+    }, viewer);
+    setStageTime(next, nextStage, today());
+    lockOpportunityOwnership(next, viewer, "保存跟进并推进");
+    const customer = findCustomer(state.customers || [], next.customerId);
+    if (customer && Array.isArray(body.contacts)) {
+      customer.contacts = normalizeContacts(body.contacts, customer);
+      const primary = customer.contacts.find((item) => item.isPrimary) || customer.contacts[0];
+      if (primary?.phone) {
+        customer.phone = primary.phone;
+        customer.phoneNormalized = primary.phoneNormalized || normalizePhone(primary.phone);
+      }
+    }
+    if (customer && Array.isArray(body.competitorProfiles)) {
+      customer.competitorProfiles = normalizeCompetitorProfiles(body.competitorProfiles, state.competitors || DEFAULT_COMPETITORS, customer.software);
+      customer.software = displaySoftwareName(primaryCompetitorName(customer));
+    }
+    state.opportunities[index] = next;
+    state.activities.push({ date: today(), owner: next.owner, type: nextStage, customerId: next.customerId, opportunityId: next.id });
+    syncCustomerCompatibility(state, next.customerId, next);
+    await commitCoreState(state, {
+      reason: "opportunity-follow-and-advance",
+      opportunityIds: [next.id],
+      customerIds: [next.customerId],
+      followUps: [savedFollow]
+    });
+    return sendJson(res, 200, opportunityView(state, next, { includeExternalFollowUps: true }));
   }
 
   const opportunityFollow = url.pathname.match(/^\/api\/opportunities\/(\d+)\/follow$/);
@@ -1435,10 +1566,21 @@ async function routeApi(req, res, url) {
     const customer = findCustomer(state.customers || [], customerArchive[1]);
     if (!customer) return sendJson(res, 404, { error: "客户不存在" });
     if (!canViewRecord(state, viewer, customer)) return sendJson(res, 403, { error: "无权归档该客户" });
+    const reason = String(body.reason || "");
+    if (!["invalid", "closed"].includes(reason)) return sendJson(res, 400, { error: "请选择无效原因" });
     customer.lifecycleStatus = LIFECYCLE_ARCHIVED;
-    customer.archiveReason = body.reason === "closed" ? "closed" : "invalid";
+    customer.archiveReason = reason;
+    customer.archiveNote = String(body.note || "").trim();
     customer.archivedAt = new Date().toISOString();
     customer.archivedBy = viewer.name;
+    appendSecurityLog(state, {
+      type: "archive_customer",
+      actorId: viewer.id,
+      actorName: viewer.name,
+      targetId: customer.id,
+      targetName: customer.name || "",
+      sourceIp: getRequestIp(req)
+    });
     await commitCoreState(state, { reason: "customer-archive", customerIds: [customer.id] });
     return sendJson(res, 200, toMiniCustomer(customer));
   }
@@ -1449,11 +1591,20 @@ async function routeApi(req, res, url) {
     const viewer = getAuthUser(req, state);
     const customer = findCustomer(state.customers || [], customerRestore[1]);
     if (!customer) return sendJson(res, 404, { error: "客户不存在" });
-    if (!canManageCustomer(state, viewer, customer)) return sendJson(res, 403, { error: "仅管理人员可恢复归档客户" });
+    if (!canHardDeleteCustomer(state, viewer)) return sendJson(res, 403, { error: "仅管理员和总负责人可以恢复无效客户" });
     customer.lifecycleStatus = LIFECYCLE_ACTIVE;
     customer.archiveReason = "";
+    customer.archiveNote = "";
     customer.archivedAt = "";
     customer.archivedBy = "";
+    appendSecurityLog(state, {
+      type: "restore_customer",
+      actorId: viewer.id,
+      actorName: viewer.name,
+      targetId: customer.id,
+      targetName: customer.name || "",
+      sourceIp: getRequestIp(req)
+    });
     await commitCoreState(state, { reason: "customer-restore", customerIds: [customer.id] });
     return sendJson(res, 200, toMiniCustomer(customer));
   }
@@ -2340,6 +2491,7 @@ function migrateState(state) {
     version: BACKEND_VERSION,
     moneyUnit: MONEY_UNIT,
     moneyMigratedAt: source.moneyMigratedAt || new Date().toISOString(),
+    excelDateSerialsNormalizedAt: source.excelDateSerialsNormalizedAt || new Date().toISOString(),
     currentUserId: Number(source.currentUserId || users[0]?.id || 0),
     stages: Array.isArray(source.stages) && source.stages.length ? source.stages : STAGES,
     zones: Array.isArray(source.zones) && source.zones.length ? source.zones : ZONES,
@@ -3014,7 +3166,7 @@ function normalizeCustomer(customer, context = {}) {
           nextFollow: customer.nextFollow || ""
         }, customer)
       ];
-  const createdAt = customer.createdAt || today();
+  const createdAt = normalizeDateText(customer.createdAt) || today();
   const stageTimes = normalizeStageTimes(customer, context.activities || [], createdAt);
   const owner = customer.owner || ownerUser.name || "林晨";
   const ownerId = customer.ownerId || ownerUser.id || "";
@@ -3047,12 +3199,12 @@ function normalizeCustomer(customer, context = {}) {
     orgPath: customer.orgPath || ownerUser.orgPath || unit.path || "",
     region: customer.region || ownerUser.zone || unit.zone || "待分区",
     amount: normalizeOptionalMoney(customer.amount, 0),
-    demoAt: customer.demoAt || customer.effectiveDemoAt || "",
+    demoAt: normalizeDateText(customer.demoAt || customer.effectiveDemoAt),
     quoteAmount: normalizeMoney(customer.quoteAmount),
-    expectedDealDate: customer.expectedDealDate || "",
+    expectedDealDate: normalizeDateText(customer.expectedDealDate),
     contractAmount: normalizeMoney(customer.contractAmount),
     paymentAmount: normalizeMoney(customer.paymentAmount),
-    paymentDate: customer.paymentDate || "",
+    paymentDate: normalizeDateText(customer.paymentDate),
     paymentOwnerId: customer.paymentOwnerId || (customer.paymentAmount ? ownerId : ""),
     paymentOwner: customer.paymentOwner || (customer.paymentAmount ? owner : ""),
     lossReason: customer.lossReason || "",
@@ -3064,13 +3216,15 @@ function normalizeCustomer(customer, context = {}) {
     archiveReason: customer.archiveReason || "",
     archivedAt: customer.archivedAt || "",
     archivedBy: customer.archivedBy || "",
-    lastVisitedAt: customer.lastVisitedAt || "",
+    lastVisitedAt: normalizeDateTimeText(customer.lastVisitedAt),
     photos: normalizePhotos(customer.photos || customer.visitPhotos),
     createdAt,
     ownershipStatus: context.legacyOwnership ? OWNERSHIP_LOCKED : ownershipStatus,
-    claimUntil: context.legacyOwnership ? "" : (customer.claimUntil || ""),
-    effectiveFollowUpAt: context.legacyOwnership ? (customer.effectiveFollowUpAt || createdAt) : (customer.effectiveFollowUpAt || ""),
-    publicPoolAt: context.legacyOwnership ? "" : (customer.publicPoolAt || ""),
+    claimUntil: context.legacyOwnership ? "" : normalizeDateTimeText(customer.claimUntil),
+    effectiveFollowUpAt: context.legacyOwnership
+      ? (normalizeDateTimeText(customer.effectiveFollowUpAt) || createdAt)
+      : normalizeDateTimeText(customer.effectiveFollowUpAt),
+    publicPoolAt: context.legacyOwnership ? "" : normalizeDateTimeText(customer.publicPoolAt),
     publicPoolReason: context.legacyOwnership ? "" : (customer.publicPoolReason || ""),
     ownershipHistory: Array.isArray(customer.ownershipHistory) ? customer.ownershipHistory : [],
     ...stageTimes,
@@ -3131,7 +3285,7 @@ function normalizeOpportunity(opportunity = {}, context = {}) {
     id: opportunity.productId || stableId("product", opportunity.productName || "待确认产品"),
     name: opportunity.productName || "待确认产品"
   };
-  const createdAt = opportunity.createdAt || customer.createdAt || today();
+  const createdAt = normalizeDateText(opportunity.createdAt || customer.createdAt) || today();
   const followUps = Array.isArray(opportunity.followUps)
     ? opportunity.followUps.map((item) => normalizeFollowUp(item, opportunity))
     : [normalizeFollowUp({ date: createdAt, author: opportunity.createdBy || ownerUser.name || "历史数据", note: "新增销售机会。", isSystem: true }, opportunity)];
@@ -3154,7 +3308,7 @@ function normalizeOpportunity(opportunity = {}, context = {}) {
     region: opportunity.region || customer.region || "待分区",
     createdBy: opportunity.createdBy || customer.createdBy || ownerUser.name || "未记录",
     createdAt,
-    assignedAt: opportunity.assignedAt || latestAssignmentAt(opportunity),
+    assignedAt: normalizeDateTimeText(opportunity.assignedAt || latestAssignmentAt(opportunity)),
     amount: defaultOpportunityAmount(opportunity, customer, product),
     demoAt: opportunity.demoAt || "",
     quoteAmount: normalizeMoney(opportunity.quoteAmount),
@@ -3169,24 +3323,25 @@ function normalizeOpportunity(opportunity = {}, context = {}) {
     outcomeStatus: [OUTCOME_ACTIVE, OUTCOME_PURCHASED].includes(opportunity.outcomeStatus) ? opportunity.outcomeStatus : OUTCOME_ACTIVE,
     purchasedInfo: normalizePurchasedInfo(opportunity.purchasedInfo || {}),
     rollbackHistory: Array.isArray(opportunity.rollbackHistory) ? opportunity.rollbackHistory : [],
-    nextFollow: latest.nextFollow || opportunity.nextFollow || "",
+    stageCorrectionHistory: Array.isArray(opportunity.stageCorrectionHistory) ? opportunity.stageCorrectionHistory : [],
+    nextFollow: normalizeDateText(latest.nextFollow || opportunity.nextFollow),
     manualFollowCount,
     followCount: Number(opportunity.followCount || manualFollowCount || 0),
-    latestManualFollowAt: opportunity.latestManualFollowAt || opportunity.effectiveFollowUpAt || "",
-    lastFollow: opportunity.lastFollow || "",
+    latestManualFollowAt: normalizeDateTimeText(opportunity.latestManualFollowAt || opportunity.effectiveFollowUpAt),
+    lastFollow: normalizeDateText(opportunity.lastFollow),
     lastFollowAuthor: opportunity.lastFollowAuthor || "",
     lastNote: opportunity.lastNote || "",
     ownershipStatus: [OWNERSHIP_PENDING, OWNERSHIP_LOCKED, OWNERSHIP_PUBLIC, OWNERSHIP_CLAIMABLE].includes(opportunity.ownershipStatus)
       ? opportunity.ownershipStatus
       : OWNERSHIP_LOCKED,
-    claimUntil: opportunity.claimUntil || "",
-    effectiveFollowUpAt: opportunity.effectiveFollowUpAt || "",
-    publicPoolAt: opportunity.publicPoolAt || "",
+    claimUntil: normalizeDateTimeText(opportunity.claimUntil),
+    effectiveFollowUpAt: normalizeDateTimeText(opportunity.effectiveFollowUpAt),
+    publicPoolAt: normalizeDateTimeText(opportunity.publicPoolAt),
     publicPoolReason: opportunity.publicPoolReason || "",
     ownershipHistory: Array.isArray(opportunity.ownershipHistory) ? opportunity.ownershipHistory : [],
-    leadAt: opportunity.leadAt || (STAGES.indexOf(stage) >= 1 ? latest.date || createdAt : ""),
-    opportunityAt: opportunity.opportunityAt || (STAGES.indexOf(stage) >= 2 ? latest.date || createdAt : ""),
-    dealAt: opportunity.dealAt || (stage === "成交" ? latest.date || createdAt : ""),
+    leadAt: normalizeDateText(opportunity.leadAt || (STAGES.indexOf(stage) >= 1 ? latest.date || createdAt : "")),
+    opportunityAt: normalizeDateText(opportunity.opportunityAt || (STAGES.indexOf(stage) >= 2 ? latest.date || createdAt : "")),
+    dealAt: normalizeDateText(opportunity.dealAt || (stage === "成交" ? latest.date || createdAt : "")),
     followUps
   };
 }
@@ -3214,7 +3369,7 @@ function syncCustomerCompatibility(state, customerId, preferredOpportunity = nul
   const customer = findCustomer(state.customers || [], customerId);
   const opportunity = preferredOpportunity || primaryOpportunity(state, customerId);
   if (!customer || !opportunity) return customer;
-  ["stage", "owner", "ownerId", "followPerson", "unitId", "unit", "zone", "region", "orgPath", "amount", "demoAt", "quoteAmount", "expectedDealDate", "contractAmount", "paymentAmount", "paymentDate", "paymentOwnerId", "paymentOwner", "lossReason", "lossReasonDetail", "outcomeStatus", "purchasedInfo", "rollbackHistory", "ownershipStatus", "claimUntil", "effectiveFollowUpAt", "publicPoolAt", "publicPoolReason", "ownershipHistory", "leadAt", "opportunityAt", "dealAt", "nextFollow", "manualFollowCount", "followCount", "latestManualFollowAt", "lastFollow", "lastFollowAuthor", "lastNote"].forEach((field) => {
+  ["stage", "owner", "ownerId", "followPerson", "unitId", "unit", "zone", "region", "orgPath", "amount", "demoAt", "quoteAmount", "expectedDealDate", "contractAmount", "paymentAmount", "paymentDate", "paymentOwnerId", "paymentOwner", "lossReason", "lossReasonDetail", "outcomeStatus", "purchasedInfo", "rollbackHistory", "stageCorrectionHistory", "ownershipStatus", "claimUntil", "effectiveFollowUpAt", "publicPoolAt", "publicPoolReason", "ownershipHistory", "leadAt", "opportunityAt", "dealAt", "nextFollow", "manualFollowCount", "followCount", "latestManualFollowAt", "lastFollow", "lastFollowAuthor", "lastNote"].forEach((field) => {
     customer[field] = opportunity[field];
   });
   return customer;
@@ -3314,7 +3469,7 @@ function opportunityListRow(state, opportunity = {}, options = {}) {
     competitor: primaryCompetitorName(customer),
     lifecycleStatus: archived ? LIFECYCLE_ARCHIVED : customer.lifecycleStatus || LIFECYCLE_ACTIVE,
     archiveReason: customer.archiveReason || "",
-    archivedAt: customer.archivedAt || "",
+    archivedAt: normalizeDateTimeText(customer.archivedAt),
     archivedBy: customer.archivedBy || "",
     productId: opportunity.productId || "",
     productName: opportunity.productName || "待确认产品",
@@ -3330,11 +3485,11 @@ function opportunityListRow(state, opportunity = {}, options = {}) {
     region: opportunity.region || customer.region || "",
     orgPath: opportunity.orgPath || customer.orgPath || "",
     amount: opportunity.amount || 0,
-    demoAt: opportunity.demoAt || "",
-    expectedDealDate: opportunity.expectedDealDate || "",
+    demoAt: normalizeDateText(opportunity.demoAt),
+    expectedDealDate: normalizeDateText(opportunity.expectedDealDate),
     contractAmount: opportunity.contractAmount || 0,
     paymentAmount: opportunity.paymentAmount || 0,
-    paymentDate: opportunity.paymentDate || "",
+    paymentDate: normalizeDateText(opportunity.paymentDate),
     paymentOwnerId: opportunity.paymentOwnerId || "",
     paymentOwner: opportunity.paymentOwner || "",
     lossReason: opportunity.lossReason || "",
@@ -3887,9 +4042,9 @@ function normalizeStageTimes(customer = {}, activities = [], createdAt = today()
     ? (activityDate(stage) || customer.lastFollow || createdAt)
     : "";
   return {
-    leadAt: customer.leadAt || customer.leadConvertedAt || fallbackFor("线索"),
-    opportunityAt: customer.opportunityAt || customer.opportunityConvertedAt || fallbackFor("商机"),
-    dealAt: customer.dealAt || customer.closedAt || customer.dealDate || fallbackFor("成交")
+    leadAt: normalizeDateText(customer.leadAt || customer.leadConvertedAt || fallbackFor("线索")),
+    opportunityAt: normalizeDateText(customer.opportunityAt || customer.opportunityConvertedAt || fallbackFor("商机")),
+    dealAt: normalizeDateText(customer.dealAt || customer.closedAt || customer.dealDate || fallbackFor("成交"))
   };
 }
 
@@ -3906,11 +4061,11 @@ function normalizeFollowUp(item = {}, customer = {}) {
     sourceKey: item.sourceKey || "",
     customerId: item.customerId || customer.customerId || customer.id || "",
     opportunityId: item.opportunityId || customer.opportunityId || "",
-    date: item.date || customer.lastFollow || customer.createdAt || today(),
-    createdAt: item.createdAt || "",
+    date: normalizeDateText(item.date || customer.lastFollow || customer.createdAt) || today(),
+    createdAt: normalizeDateTimeText(item.createdAt),
     author: item.author || item.owner || customer.followPerson || customer.owner || "历史数据",
     note: item.note || item.lastNote || "更新了客户信息。",
-    nextFollow: item.nextFollow || "",
+    nextFollow: normalizeDateText(item.nextFollow),
     source: item.source || "",
     isSystem: Boolean(item.isSystem),
     ownerId: item.ownerId || customer.ownerId || "",
@@ -6696,6 +6851,7 @@ function shouldPersistMigratedState(raw = {}) {
   if (!raw || typeof raw !== "object") return true;
   if (raw.version !== BACKEND_VERSION) return true;
   if (raw.moneyUnit !== MONEY_UNIT) return true;
+  if (!raw.excelDateSerialsNormalizedAt) return true;
   return ["roles", "units", "users", "customers", "opportunities", "products", "channelSources", "lossReasons", "businessRules"].some((key) => raw[key] === undefined);
 }
 
@@ -7923,9 +8079,23 @@ function normalizeDateText(value) {
   if (!value) return "";
   if (value instanceof Date) return value.toISOString().slice(0, 10);
   const text = String(value).trim();
+  const numeric = Number(text);
+  if (/^\d+(?:\.\d+)?$/.test(text) && Number.isFinite(numeric) && numeric >= 20000 && numeric <= 80000) {
+    const excelDate = new Date(Math.round((numeric - 25569) * 86400000));
+    if (!Number.isNaN(excelDate.getTime())) return excelDate.toISOString().slice(0, 10);
+  }
   const match = text.match(/(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})/);
   if (!match) return text;
   return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+}
+
+function normalizeDateTimeText(value) {
+  if (!value) return "";
+  if (value instanceof Date) return value.toISOString();
+  const text = String(value).trim();
+  if (/^\d+(?:\.\d+)?$/.test(text)) return normalizeDateText(text);
+  if (/^\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}(?:日)?$/.test(text)) return normalizeDateText(text);
+  return text;
 }
 
 function parseXlsxFirstSheet(buffer) {

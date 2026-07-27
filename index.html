@@ -167,7 +167,7 @@
               <button id="addCustomerBtn" class="primary">单个添加</button>
               <button id="batchImportBtn">批量导入</button>
               <button id="batchAssignBtn" disabled>批量分配</button>
-              <button id="batchChannelBtn" disabled>批量改渠道</button>
+              <button id="batchChannelBtn" disabled>批量纠正阶段</button>
               <button id="allocationAuditBtn" type="button">资源分配对账</button>
             </div>
             <div class="table-wrap">
@@ -425,7 +425,11 @@
         <button id="customerPurchasedBtn" class="danger-outline hidden" type="button">标记为已购</button>
         <button id="customerArchiveBtn" class="danger-outline hidden" type="button">标记为无效或倒闭</button>
         <button id="customerDeleteBtn" class="danger-outline hidden" type="button">删除客户</button>
-        <div class="button-row"><button type="button" data-close-dialog="customerDialog" value="cancel">取消</button><button class="primary" type="submit" value="save">保存</button></div>
+        <div class="button-row">
+          <button type="button" data-close-dialog="customerDialog" value="cancel">取消</button>
+          <button class="primary hidden" id="customerSaveAdvanceBtn" type="submit" value="save-advance">保存并推进</button>
+          <button class="primary" type="submit" value="save">保存</button>
+        </div>
       </form>
     </dialog>
 
@@ -568,12 +572,25 @@
       </form>
     </dialog>
 
-    <dialog id="channelSourceDialog">
-      <form method="dialog" class="dialog-form" id="channelSourceBatchForm">
-        <h2>批量修改渠道来源</h2>
-        <p class="muted" id="channelSourceBatchSummary">已选择 0 个客户</p>
-        <label>新的渠道来源<select name="channelSource" id="batchChannelSourceSelect" required></select></label>
-        <div class="button-row"><button value="cancel">取消</button><button class="primary" value="save">确认修改</button></div>
+    <dialog id="stageCorrectionDialog">
+      <form class="dialog-form" id="stageCorrectionForm">
+        <h2>批量纠正客户阶段</h2>
+        <p class="muted" id="stageCorrectionSummary">已选择 0 个客户</p>
+        <label>纠正到 <span class="required-mark">*</span><select name="targetStage" required><option value="">请选择目标阶段</option><option value="名单">名单</option><option value="线索">线索</option></select></label>
+        <label>纠正原因 <span class="required-mark">*</span><textarea name="reason" rows="3" placeholder="例如：销售误将名单导入线索" required></textarea></label>
+        <p class="field-hint">仅支持线索回到名单、商机回到线索或名单；历史跟进记录会保留。</p>
+        <div class="button-row"><button type="button" data-close-dialog="stageCorrectionDialog">取消</button><button class="primary" type="submit">确认纠正</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="archiveCustomerDialog">
+      <form class="dialog-form" id="archiveCustomerForm">
+        <h2>标记客户为无效</h2>
+        <input type="hidden" name="customerId" />
+        <p class="muted" id="archiveCustomerSummary"></p>
+        <label>无效原因 <span class="required-mark">*</span><select name="reason" required><option value="">请选择原因</option><option value="invalid">确认无效</option><option value="closed">工厂倒闭或停业</option></select></label>
+        <label>补充说明<textarea name="note" rows="3" placeholder="可填写核实情况"></textarea></label>
+        <div class="button-row"><button type="button" data-close-dialog="archiveCustomerDialog">取消</button><button class="danger-outline" type="submit">确认进入无效池</button></div>
       </form>
     </dialog>
 

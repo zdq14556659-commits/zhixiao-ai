@@ -85,6 +85,7 @@ let fieldRequestId = 0;
 let allocationAuditData = null;
 let allocationAuditPage = 1;
 let allocationAuditRequestId = 0;
+let pendingFollowAdvancePayload = null;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -500,7 +501,7 @@ function canSelectCustomerForAssign(customer = {}) {
 }
 
 function canSelectCustomer(customer = {}) {
-  return canSelectCustomerForAssign(customer) || canBulkEditChannelSource();
+  return canSelectCustomerForAssign(customer) || canCorrectCustomerStage(customer);
 }
 
 function rollbackTargetForStage(stage = "") {
@@ -605,11 +606,12 @@ function toast(message) {
 }
 
 function setFormSubmitting(form, submitting, loadingText) {
-  const button = form.querySelector("button[type='submit'], button.primary[value='save'], button.primary:not([type]), button.primary");
-  if (!button) return;
-  if (!button.dataset.label) button.dataset.label = button.textContent;
-  button.disabled = submitting;
-  button.textContent = submitting ? loadingText : button.dataset.label;
+  const buttons = [...form.querySelectorAll("button[type='submit'], button.primary[value='save']")];
+  buttons.forEach((button) => {
+    if (!button.dataset.label) button.dataset.label = button.textContent;
+    button.disabled = submitting;
+    button.textContent = submitting ? loadingText : button.dataset.label;
+  });
 }
 
 function showSuccessFeedback(title, detail) {
@@ -1092,8 +1094,14 @@ function canHardDeleteCustomers() {
   return ["总负责人", "管理员"].includes(roleName);
 }
 
-function canBulkEditChannelSource() {
+function canCorrectStages() {
   return canHardDeleteCustomers();
+}
+
+function canCorrectCustomerStage(customer = {}) {
+  if (!canCorrectStages()) return false;
+  if (isInvalidCustomer(customer) || isPublicPoolCustomer(customer) || isPurchasedCustomer(customer)) return false;
+  return ["线索", "商机"].includes(customer.stage);
 }
 
 function clampPageSize(value) {
@@ -1381,8 +1389,6 @@ function renderCustomers() {
   $("#batchOwnerSelect").innerHTML = ownerOptions.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
   $("#batchOwnerField")?.classList.toggle("hidden", isReadonlyStage());
   if ($("#assignOwnerSelect")) $("#assignOwnerSelect").innerHTML = ownerOptions.map((user) => `<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("");
-  const batchChannelSourceSelect = $("#batchChannelSourceSelect");
-  if (batchChannelSourceSelect) batchChannelSourceSelect.innerHTML = channelSources.map((source) => `<option>${escapeHtml(source)}</option>`).join("");
   $("#customerStageSelect").innerHTML = stages.map((stage) => `<option>${stage}</option>`).join("");
   $("#customerChannelSelect").innerHTML = channelSources.map((source) => `<option>${source}</option>`).join("");
   const productOptions = productOptionsHtml();
@@ -1534,7 +1540,7 @@ function customerRow(item) {
         ? `<button class="primary" data-action="claim" data-id="${item.id}">认领</button>`
         : `<span class="pool-action-hint">${assignable ? "请勾选后分配" : "不在您的分配范围"}</span>`)
     : isInvalid
-      ? `${canHardDeleteCustomers() ? `<button class="danger-outline" data-action="delete-invalid" data-id="${item.id}">删除</button>` : ""}<span class="pool-action-hint">已进入无效库</span>`
+      ? `${canHardDeleteCustomers() ? `<button data-action="restore-invalid" data-id="${item.id}">恢复有效</button><button class="danger-outline" data-action="delete-invalid" data-id="${item.id}">删除</button>` : ""}<span class="pool-action-hint">已进入无效库</span>`
       : isPurchased
         ? `<button data-action="history" data-id="${item.id}">查看历史</button><button class="primary" data-action="new-opportunity" data-id="${item.id}">新增机会</button>`
         : `<button data-action="follow" data-id="${item.id}">跟进</button><button data-action="ai" data-id="${item.id}">小智</button>${item.stage === "成交" ? `<button class="primary" data-action="new-opportunity" data-id="${item.id}">新增机会</button>` : `<button data-action="advance" data-id="${item.id}">推进</button>${rollbackActions}`}`;
@@ -1561,8 +1567,8 @@ function customerRow(item) {
 function updateCustomerSelectionUI() {
   const selectableRows = currentCustomerRows.filter(canSelectCustomer);
   const pageSelectedCount = selectableRows.filter((item) => selectedCustomerIds.has(Number(item.id))).length;
-  const selectedCount = currentFilteredCustomerRows.filter((item) => canSelectCustomer(item) && selectedCustomerIds.has(Number(item.id))).length;
   const assignSelectedCount = currentFilteredCustomerRows.filter((item) => canSelectCustomerForAssign(item) && selectedCustomerIds.has(Number(item.id))).length;
+  const correctionSelectedCount = currentFilteredCustomerRows.filter((item) => canCorrectCustomerStage(item) && selectedCustomerIds.has(Number(item.id))).length;
   const selectAll = $("#selectAllCustomers");
   if (selectAll) {
     selectAll.disabled = selectableRows.length === 0;
@@ -1576,9 +1582,9 @@ function updateCustomerSelectionUI() {
   }
   const channelButton = $("#batchChannelBtn");
   if (channelButton) {
-    channelButton.classList.toggle("hidden", !canBulkEditChannelSource());
-    channelButton.disabled = selectedCount === 0;
-    channelButton.textContent = selectedCount ? `批量改渠道(${selectedCount})` : "批量改渠道";
+    channelButton.classList.toggle("hidden", !canCorrectStages());
+    channelButton.disabled = correctionSelectedCount === 0;
+    channelButton.textContent = correctionSelectedCount ? `批量纠正阶段(${correctionSelectedCount})` : "批量纠正阶段";
   }
 }
 
@@ -1688,48 +1694,62 @@ function selectedCustomerIdsForAssign() {
   return [...selectedCustomerIds].map(Number).filter((id) => selectableIds.has(id));
 }
 
-function selectedCustomerIdsForChannelEdit() {
-  const selectableRowsByOpportunityId = new Map(
+function selectedOpportunityIdsForStageCorrection() {
+  const correctableIds = new Set(
     currentFilteredCustomerRows
-      .filter(canSelectCustomer)
-      .map((item) => [Number(item.id), item])
+      .filter(canCorrectCustomerStage)
+      .map((item) => Number(item.id))
   );
-  return [...new Set(
-    [...selectedCustomerIds]
-      .map(Number)
-      .map((id) => selectableRowsByOpportunityId.get(id))
-      .filter(Boolean)
-      .map((item) => Number(item.customerId || item.id))
-      .filter(Boolean)
-  )];
+  return [...selectedCustomerIds].map(Number).filter((id) => correctableIds.has(id));
 }
 
-function openBatchChannelDialog() {
-  if (!canBulkEditChannelSource()) return toast("仅管理员和总负责人可以批量修改渠道");
-  const ids = selectedCustomerIdsForChannelEdit();
-  if (!ids.length) return toast("请先勾选客户");
-  $("#channelSourceBatchSummary").textContent = `已选择 ${ids.length} 个客户`;
-  $("#batchChannelSourceSelect").innerHTML = channelSources.map((source) => `<option>${escapeHtml(source)}</option>`).join("");
-  const currentChannel = $("#channelFilter")?.value;
-  if (currentChannel && channelSources.includes(currentChannel)) $("#batchChannelSourceSelect").value = currentChannel;
-  $("#channelSourceDialog").showModal();
+function openStageCorrectionDialog() {
+  if (!canCorrectStages()) return toast("仅管理员和总负责人可以批量纠正阶段");
+  const ids = selectedOpportunityIdsForStageCorrection();
+  if (!ids.length) return toast("请先勾选线索或商机客户");
+  const selectedRows = currentFilteredCustomerRows.filter((item) => ids.includes(Number(item.id)));
+  const selectedStages = new Set(selectedRows.map((item) => item.stage));
+  const form = $("#stageCorrectionForm");
+  form.reset();
+  const targetSelect = form.elements.targetStage;
+  const allowedTargets = selectedStages.size > 1 || selectedStages.has("线索")
+    ? ["名单"]
+    : ["线索", "名单"];
+  targetSelect.innerHTML = `<option value="">请选择目标阶段</option>${allowedTargets.map((stage) => `<option value="${stage}">${stage}</option>`).join("")}`;
+  $("#stageCorrectionSummary").textContent = `已选择 ${ids.length} 个客户；历史跟进记录会完整保留。`;
+  $("#stageCorrectionDialog").showModal();
 }
 
-async function batchUpdateChannelSource(event) {
+async function batchCorrectCustomerStage(event) {
   event.preventDefault();
-  if (event.submitter?.value === "cancel") return $("#channelSourceDialog").close();
-  const ids = selectedCustomerIdsForChannelEdit();
-  if (!ids.length) return toast("请先勾选客户");
-  const channelSource = String(new FormData(event.currentTarget).get("channelSource") || "").trim();
-  if (!channelSource) return toast("请选择渠道来源");
-  const result = await api("/customers/channel-source", {
-    method: "POST",
-    body: { customerIds: ids, channelSource }
-  });
-  selectedCustomerIds.clear();
-  $("#channelSourceDialog").close();
-  await refreshCustomersAfterMutation();
-  toast(`已修改${result.updated || ids.length}个客户的渠道来源`);
+  const formNode = event.currentTarget;
+  if (formNode.dataset.submitting === "1") return toast("正在纠正阶段，请稍等");
+  const ids = selectedOpportunityIdsForStageCorrection();
+  if (!ids.length) return toast("请先勾选线索或商机客户");
+  const form = new FormData(formNode);
+  const targetStage = String(form.get("targetStage") || "");
+  const reason = String(form.get("reason") || "").trim();
+  if (!targetStage) return toast("请选择：目标阶段");
+  if (!reason) return toast("请填写：纠正原因");
+  formNode.dataset.submitting = "1";
+  setFormSubmitting(formNode, true, "纠正中...");
+  try {
+    const result = await api("/opportunities/batch-correct-stage", {
+      method: "POST",
+      body: { ids, targetStage, reason }
+    });
+    selectedCustomerIds.clear();
+    $("#stageCorrectionDialog").close();
+    currentStage = targetStage;
+    localStorage.setItem(CUSTOMER_STAGE_KEY, currentStage);
+    customerPage = 1;
+    await refreshCustomersAfterMutation();
+    const failed = Array.isArray(result.failures) ? result.failures.length : 0;
+    toast(failed ? `已纠正${result.updated || 0}个，${failed}个未处理` : `已纠正${result.updated || ids.length}个客户阶段`);
+  } finally {
+    delete formNode.dataset.submitting;
+    setFormSubmitting(formNode, false, "纠正中...");
+  }
 }
 
 function renderContactsEditor(contacts = []) {
@@ -1916,6 +1936,12 @@ function openCustomerDialog(customer = null) {
   $("#customerPurchasedBtn").classList.toggle("hidden", !customer || isPurchasedCustomer(customer) || isPublicPoolCustomer(customer) || customer.stage === "成交" || customer.lifecycleStatus === "archived");
   $("#customerArchiveBtn").classList.toggle("hidden", !customer || customer.lifecycleStatus === "archived");
   $("#customerDeleteBtn").classList.toggle("hidden", !customer || !canHardDeleteCustomers());
+  const canSaveAndAdvance = Boolean(customer)
+    && stages.slice(0, -1).includes(customer.stage)
+    && !isPurchasedCustomer(customer)
+    && !isPublicPoolCustomer(customer)
+    && customer.lifecycleStatus !== "archived";
+  $("#customerSaveAdvanceBtn")?.classList.toggle("hidden", !canSaveAndAdvance);
   $("#customerDialogTitle").textContent = customer ? "客户跟进" : "新增客户";
   $("#customerDialog").showModal();
 }
@@ -2042,6 +2068,7 @@ async function reviewRollback(id, approved) {
 async function saveCustomer(event) {
   event.preventDefault();
   if (event.submitter?.value === "cancel") return $("#customerDialog").close();
+  const saveAndAdvance = event.submitter?.value === "save-advance";
   const formNode = event.currentTarget;
   if (formNode.dataset.submitting === "1") return toast("正在保存，请稍等");
   const form = new FormData(formNode);
@@ -2108,6 +2135,16 @@ async function saveCustomer(event) {
     nextFollow: String(form.get("nextFollow") || ""),
     lastNote: note || (id ? undefined : "新增客户。")
   };
+  if (saveAndAdvance) {
+    if (!id || !opportunityId) return toast("请先保存客户，再使用保存并推进");
+    if (!note) {
+      formNode.elements.note?.focus();
+      return toast("请填写：跟进记录");
+    }
+    pendingFollowAdvancePayload = customer;
+    await advanceCustomer(opportunityId, { payload: customer });
+    return;
+  }
   const shouldKeepCurrentPage = Boolean(id) && customer.stage === currentStage;
   formNode.dataset.submitting = "1";
   setFormSubmitting(formNode, true, "保存中...");
@@ -2231,7 +2268,7 @@ async function submitClaim(event) {
   }
 }
 
-async function advanceCustomer(id) {
+async function advanceCustomer(id, options = {}) {
   const customer = await fetchOpportunityDetail(id, rowByOpportunityId(id));
   if (!customer) return;
   const index = stages.indexOf(customer.stage);
@@ -2239,14 +2276,20 @@ async function advanceCustomer(id) {
   const nextStage = stages[index + 1];
   const form = $("#advanceForm");
   form.reset();
+  const payload = options.payload || null;
+  form.dataset.mode = payload ? "follow-and-advance" : "advance";
+  pendingFollowAdvancePayload = payload;
   form.opportunityId.value = id;
-  form.demoAt.value = customer.demoAt || today;
-  form.contractAmount.value = customer.contractAmount || "";
-  form.paymentAmount.value = customer.paymentAmount || "";
-  form.paymentDate.value = customer.paymentDate || "";
-  form.nextFollow.value = customer.nextFollow || "";
+  form.demoAt.value = payload?.demoAt || customer.demoAt || today;
+  form.contractAmount.value = payload?.contractAmount || customer.contractAmount || "";
+  form.paymentAmount.value = payload?.paymentAmount || customer.paymentAmount || "";
+  form.paymentDate.value = payload?.paymentDate || customer.paymentDate || "";
+  form.note.value = payload?.lastNote || "";
+  form.nextFollow.value = payload?.nextFollow || customer.nextFollow || "";
   $("#advanceDialogTitle").textContent = `推进为${nextStage}`;
-  $("#advanceDialogSummary").textContent = `${customer.name} · ${customer.productName || "待确认产品"}`;
+  $("#advanceDialogSummary").textContent = payload
+    ? `${customer.name} · 保存本次跟进并推进至${nextStage}，只会生成一条跟进记录。`
+    : `${customer.name} · ${customer.productName || "待确认产品"}`;
   $$(".advance-demo-field").forEach((node) => node.classList.toggle("hidden", nextStage !== "商机"));
   $$(".advance-deal-field").forEach((node) => node.classList.toggle("hidden", nextStage !== "成交"));
   $("#advanceNextFollowRequired")?.classList.toggle("hidden", nextStage === "成交");
@@ -2258,9 +2301,11 @@ async function advanceCustomer(id) {
 
 async function submitAdvance(event) {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
+  const formNode = event.currentTarget;
+  if (formNode.dataset.submitting === "1") return toast("正在推进，请稍等");
+  const form = new FormData(formNode);
   const id = Number(form.get("opportunityId"));
-  const opportunity = scopeOpportunityRows().find((item) => Number(item.id) === id);
+  const opportunity = rowByOpportunityId(id);
   if (!opportunity) return toast("销售机会不存在");
   const nextStage = stages[stages.indexOf(opportunity.stage) + 1];
   const note = String(form.get("note") || "").trim();
@@ -2273,23 +2318,37 @@ async function submitAdvance(event) {
   if (nextStage === "成交" && contractAmount <= 0) return toast("请填写：合同金额");
   if (nextStage === "成交" && !paymentOwnerId) return toast("请选择：业绩归属人");
   if (nextStage !== "成交" && !nextFollow) return toast("请选择：下次跟进时间");
-  await api(`/opportunities/${id}/advance`, {
-    method: "POST",
-    body: {
-      demoAt,
-      contractAmount,
-      paymentAmount: Number(form.get("paymentAmount") || 0),
-      paymentDate: String(form.get("paymentDate") || ""),
-      paymentOwnerId: paymentOwnerId || Number(currentUser().id),
-      note,
-      nextFollow
-    }
-  });
-  $("#advanceDialog").close();
-  currentStage = nextStage;
-  customerPage = 1;
-  await refreshCustomersAfterMutation();
-  toast(`已推进至${nextStage}`);
+  const isFollowAndAdvance = formNode.dataset.mode === "follow-and-advance";
+  const body = {
+    ...(isFollowAndAdvance ? pendingFollowAdvancePayload || {} : {}),
+    demoAt,
+    contractAmount,
+    paymentAmount: Number(form.get("paymentAmount") || 0),
+    paymentDate: String(form.get("paymentDate") || ""),
+    paymentOwnerId: paymentOwnerId || Number(currentUser().id),
+    note,
+    nextFollow
+  };
+  formNode.dataset.submitting = "1";
+  setFormSubmitting(formNode, true, "推进中...");
+  try {
+    await api(`/opportunities/${id}/${isFollowAndAdvance ? "follow-and-advance" : "advance"}`, {
+      method: "POST",
+      body
+    });
+    $("#advanceDialog").close();
+    if (isFollowAndAdvance) $("#customerDialog").close();
+    pendingFollowAdvancePayload = null;
+    delete formNode.dataset.mode;
+    currentStage = nextStage;
+    localStorage.setItem(CUSTOMER_STAGE_KEY, currentStage);
+    customerPage = 1;
+    await refreshCustomersAfterMutation();
+    toast(isFollowAndAdvance ? `跟进已保存，并推进至${nextStage}` : `已推进至${nextStage}`);
+  } finally {
+    delete formNode.dataset.submitting;
+    setFormSubmitting(formNode, false, "推进中...");
+  }
 }
 
 function openNewOpportunityDialog(opportunityId, detail = null) {
@@ -2838,7 +2897,7 @@ async function openCustomerFromMap(id) {
     const visits = await api(`/customers/${id}/visits`);
     $("#followHistoryTitle").textContent = customer.name || "工厂详情";
     $("#followHistorySummary").textContent = `${customer.lifecycleStatus === "archived" ? "已归档" : "公海客户"} · ${customer.address || "地址待补充"} · 共${visits.length}次拜访`;
-    const canRestore = customer.lifecycleStatus === "archived" && roleForUser(currentUser()).customerScope !== "self";
+    const canRestore = customer.lifecycleStatus === "archived" && canHardDeleteCustomers();
     $("#followHistoryList").innerHTML = `${canRestore ? `<button class="primary" type="button" data-restore-customer="${customer.id}">恢复为有效客户</button>` : ""}${visits.length ? visits.map((visit) => `
       <article class="follow-history-item">
         <div class="follow-history-meta"><b>${escapeHtml(visit.date || "未记录时间")}</b><small>${escapeHtml(visit.owner || "未记录拜访人")}</small></div>
@@ -2852,14 +2911,41 @@ async function openCustomerFromMap(id) {
   }
 }
 
-async function archiveCustomerFromDialog() {
+function openArchiveCustomerDialog() {
   const id = Number($("#customerForm [name=id]").value || 0);
   if (!id) return;
-  const reason = window.confirm("该工厂是否已经倒闭？\n确定：标记为倒闭；取消：标记为无效客户。") ? "closed" : "invalid";
-  await api(`/customers/${id}/archive`, { method: "POST", body: { reason } });
-  $("#customerDialog").close();
-  await refreshCustomersAfterMutation();
-  toast("客户已归档，并从漏斗和业绩统计中移出");
+  const form = $("#archiveCustomerForm");
+  form.reset();
+  form.customerId.value = String(id);
+  $("#archiveCustomerSummary").textContent = `${$("#customerForm [name=name]").value || "该客户"}。只有确认提交后才会进入无效池，点击取消不会修改任何数据。`;
+  $("#archiveCustomerDialog").showModal();
+}
+
+async function submitArchiveCustomer(event) {
+  event.preventDefault();
+  const formNode = event.currentTarget;
+  if (formNode.dataset.submitting === "1") return toast("正在提交，请稍等");
+  const form = new FormData(formNode);
+  const id = Number(form.get("customerId") || 0);
+  const reason = String(form.get("reason") || "");
+  const note = String(form.get("note") || "").trim();
+  if (!id) return toast("客户编号无效");
+  if (!["invalid", "closed"].includes(reason)) return toast("请选择：无效原因");
+  formNode.dataset.submitting = "1";
+  setFormSubmitting(formNode, true, "提交中...");
+  try {
+    await api(`/customers/${id}/archive`, { method: "POST", body: { reason, note } });
+    $("#archiveCustomerDialog").close();
+    $("#customerDialog").close();
+    currentStage = INVALID_STAGE;
+    localStorage.setItem(CUSTOMER_STAGE_KEY, currentStage);
+    customerPage = 1;
+    await refreshCustomersAfterMutation();
+    toast(reason === "closed" ? "客户已标记为倒闭并进入无效池" : "客户已标记为无效并进入无效池");
+  } finally {
+    delete formNode.dataset.submitting;
+    setFormSubmitting(formNode, false, "提交中...");
+  }
 }
 
 async function deleteCustomerFromDialog() {
@@ -2890,10 +2976,25 @@ async function deleteInvalidCustomerFromRow(opportunityId) {
 }
 
 async function restoreCustomer(id) {
+  if (!canHardDeleteCustomers()) throw new Error("仅总负责人和管理员可以恢复无效客户");
   await api(`/customers/${id}/restore`, { method: "POST", body: {} });
   $("#followHistoryDialog").close();
   await refreshCustomersAfterMutation();
   toast("客户已恢复");
+}
+
+async function restoreInvalidCustomerFromRow(opportunityId) {
+  const item = rowByOpportunityId(opportunityId);
+  if (!item || !isInvalidCustomer(item)) throw new Error("只能恢复无效客户");
+  if (!canHardDeleteCustomers()) throw new Error("仅总负责人和管理员可以恢复无效客户");
+  const customerId = Number(item.customerId || 0);
+  if (!customerId) throw new Error("客户编号无效");
+  if (!window.confirm(`确认将“${item.name || "该客户"}”恢复为有效客户？`)) return;
+  await api(`/customers/${customerId}/restore`, { method: "POST", body: {} });
+  selectedCustomerIds.delete(Number(opportunityId));
+  customerPage = 1;
+  await refreshCustomersAfterMutation();
+  toast("客户已恢复到原销售阶段");
 }
 
 window.openCustomerFromMap = openCustomerFromMap;
@@ -3448,7 +3549,18 @@ function wireEvents() {
     openChangePasswordDialog();
   });
   $("#skipPasswordChangeBtn").addEventListener("click", () => $("#passwordReminderDialog").close());
-  $$("[data-close-dialog]").forEach((button) => button.addEventListener("click", () => $(`#${button.dataset.closeDialog}`).close()));
+  $$("[data-close-dialog]").forEach((button) => button.addEventListener("click", () => {
+    const dialogId = button.dataset.closeDialog;
+    if (dialogId === "advanceDialog") {
+      pendingFollowAdvancePayload = null;
+      delete $("#advanceForm").dataset.mode;
+    }
+    $(`#${dialogId}`).close();
+  }));
+  $("#advanceDialog")?.addEventListener("close", () => {
+    pendingFollowAdvancePayload = null;
+    delete $("#advanceForm").dataset.mode;
+  });
   document.addEventListener("click", (event) => {
     const button = event.target.closest("dialog button[value='cancel']");
     if (!button) return;
@@ -3544,7 +3656,7 @@ function wireEvents() {
   $("#allocationAuditExport")?.addEventListener("click", exportAllocationAudit);
   $("#allocationAuditPrev")?.addEventListener("click", () => loadAllocationAudit(Math.max(1, allocationAuditPage - 1)));
   $("#allocationAuditNext")?.addEventListener("click", () => loadAllocationAudit(allocationAuditPage + 1));
-  $("#batchChannelBtn")?.addEventListener("click", openBatchChannelDialog);
+  $("#batchChannelBtn")?.addEventListener("click", openStageCorrectionDialog);
   $("#assignForm").addEventListener("change", updateAssignPlanHint);
   $("#assignForm").addEventListener("input", updateAssignPlanHint);
   $("#assignUserSearch").addEventListener("input", () => {
@@ -3577,6 +3689,7 @@ function wireEvents() {
       if (button.dataset.action === "rollback-approve") reviewRollback(id, true);
       if (button.dataset.action === "rollback-reject") reviewRollback(id, false);
       if (button.dataset.action === "delete-invalid") await deleteInvalidCustomerFromRow(id);
+      if (button.dataset.action === "restore-invalid") await restoreInvalidCustomerFromRow(id);
       if (button.dataset.action === "assign") {
         const select = button.parentElement.querySelector(`select[data-role="assign-owner"][data-id="${id}"]`);
         assignCustomer(id, select?.value);
@@ -3614,7 +3727,7 @@ function wireEvents() {
   });
   $("#customerAiBtn").addEventListener("click", () => analyzeCustomer(Number($("#customerForm [name=opportunityId]").value)));
   $("#customerPurchasedBtn")?.addEventListener("click", () => openPurchasedDialog(scopeOpportunityRows().find((item) => Number(item.id) === Number($("#customerForm [name=opportunityId]").value))));
-  $("#customerArchiveBtn").addEventListener("click", () => archiveCustomerFromDialog().catch((error) => toast(error.message)));
+  $("#customerArchiveBtn").addEventListener("click", openArchiveCustomerDialog);
   $("#customerDeleteBtn").addEventListener("click", () => deleteCustomerFromDialog().catch((error) => toast(error.message)));
   $("#followHistoryList").addEventListener("click", (event) => {
     const button = event.target.closest("[data-restore-customer]");
@@ -3623,7 +3736,8 @@ function wireEvents() {
   $("#batchForm").addEventListener("submit", batchImport);
   $("#claimForm").addEventListener("submit", submitClaim);
   $("#assignForm").addEventListener("submit", batchAssignCustomers);
-  $("#channelSourceBatchForm")?.addEventListener("submit", batchUpdateChannelSource);
+  $("#stageCorrectionForm")?.addEventListener("submit", (event) => batchCorrectCustomerStage(event).catch((error) => toast(error.message)));
+  $("#archiveCustomerForm")?.addEventListener("submit", (event) => submitArchiveCustomer(event).catch((error) => toast(error.message)));
   $("#businessRulesForm")?.addEventListener("submit", saveBusinessRules);
   $("#targetForm").addEventListener("submit", saveTarget);
   $("#recommendBtn").addEventListener("click", recommend);
