@@ -42,7 +42,10 @@ const seed = {
     { id: 300, name: "自主认领资源", phone: "13800009003", channelSource: "其他", ownerId: 3, owner: "销售乙", unitId: "unit-east", unit: "测试单位", lifecycleStatus: "active", createdAt: today },
     { id: 400, name: "官网手工录入", phone: "13800009004", channelSource: "官网留言", ownerId: 2, owner: "销售甲", unitId: "unit-east", unit: "测试单位", lifecycleStatus: "active", createdAt: today },
     { id: 500, name: "范围外运营资源", phone: "13800009005", channelSource: "自媒体", lifecycleStatus: "active", createdAt: outsideAt.slice(0, 10) },
-    { id: 600, name: "旧数据运营资源", phone: "13800009006", channelSource: "渠道介绍", lifecycleStatus: "active", createdAt: today }
+    { id: 600, name: "旧数据运营资源", phone: "13800009006", channelSource: "渠道介绍", lifecycleStatus: "active", createdAt: today },
+    { id: 700, name: "已标记无效资源", phone: "13800009007", channelSource: "其他", ownerId: 2, owner: "销售甲", unitId: "unit-east", unit: "测试单位", lifecycleStatus: "archived", archiveReason: "invalid", archivedAt: now, archivedBy: "销售甲", createdAt: today },
+    { id: 800, name: "已购其他软件资源", phone: "13800009008", channelSource: "其他", ownerId: 2, owner: "销售甲", unitId: "unit-east", unit: "测试单位", lifecycleStatus: "active", createdAt: today },
+    { id: 900, name: "历史成交资源", phone: "13800009009", channelSource: "其他", ownerId: 3, owner: "销售乙", unitId: "unit-east", unit: "测试单位", lifecycleStatus: "active", createdAt: today }
   ],
   opportunities: [
     {
@@ -64,7 +67,8 @@ const seed = {
     {
       id: 301, customerId: 300, productId: "product-v1", productName: "V1", stage: "商机",
       ownerId: 3, owner: "销售乙", unitId: "unit-east", unit: "测试单位", ownershipStatus: "locked",
-      createdBy: "运营甲", createdAt: today,
+      createdBy: "运营甲", createdAt: today, manualFollowCount: 1, followCount: 1,
+      latestManualFollowAt: now, lastFollow: today, lastNote: "名单文件导入。",
       ownershipHistory: [
         ownership("created", "", "公海", 4, "运营甲", "运营导入公海机会"),
         ownership("claimed_public_pool", 3, "销售乙", 3, "销售乙", "公海销售机会认领")
@@ -87,6 +91,33 @@ const seed = {
       ownerId: "", owner: "公海", unitId: "", unit: "", ownershipStatus: "public_pool",
       publicPoolAt: now, publicPoolReason: "operations_import", createdBy: "运营甲", createdAt: today,
       ownershipHistory: [], followUps: []
+    },
+    {
+      id: 701, customerId: 700, productId: "product-v1", productName: "V1", stage: "名单",
+      ownerId: 2, owner: "销售甲", unitId: "unit-east", unit: "测试单位", ownershipStatus: "locked",
+      createdBy: "运营甲", createdAt: today,
+      ownershipHistory: [
+        ownership("created", "", "公海", 4, "运营甲", "运营导入公海机会"),
+        ownership("assigned", 2, "销售甲", 5, "负责人", "主管分配")
+      ], followUps: []
+    },
+    {
+      id: 801, customerId: 800, productId: "product-v1", productName: "V1", stage: "名单",
+      ownerId: 2, owner: "销售甲", unitId: "unit-east", unit: "测试单位", ownershipStatus: "locked",
+      outcomeStatus: "purchased_existing", createdBy: "运营甲", createdAt: today,
+      ownershipHistory: [
+        ownership("created", "", "公海", 4, "运营甲", "运营导入公海机会"),
+        ownership("assigned", 2, "销售甲", 5, "负责人", "主管分配")
+      ], followUps: []
+    },
+    {
+      id: 901, customerId: 900, productId: "product-v1", productName: "V1", stage: "成交",
+      ownerId: 3, owner: "销售乙", unitId: "unit-east", unit: "测试单位", ownershipStatus: "locked",
+      contractAmount: 10000, createdBy: "运营甲", createdAt: today,
+      ownershipHistory: [
+        ownership("created", "", "公海", 4, "运营甲", "运营导入公海机会"),
+        ownership("assigned", 3, "销售乙", 5, "负责人", "主管分配")
+      ], followUps: []
     }
   ],
   visits: [], activities: [], knowledge: [], resources: [], routes: [], targets: []
@@ -160,10 +191,12 @@ async function run() {
 
   const initial = await request(`/reports/allocation-audit?start=${today}&end=${today}`, { token: ops });
   assert.equal(initial.status, 200, JSON.stringify(initial.data));
-  assert.equal(initial.data.total, 4, "all operations public-pool imports in range should be included regardless of channel");
-  assert.equal(initial.data.totals.followed, 1);
+  assert.equal(initial.data.total, 7, "all operations public-pool imports in range should be included regardless of channel");
+  assert.equal(initial.data.totals.followed, 4);
+  assert.equal(initial.data.totals.pending, 3);
   assert.equal(initial.data.totals.lead, 1);
   assert.equal(initial.data.totals.opportunity, 1);
+  assert.equal(initial.data.totals.deal, 1);
   assert.ok(initial.data.items.some((item) => item.customerName === "地推运营资源"));
   assert.ok(initial.data.items.some((item) => item.customerName === "公众号运营资源"));
   assert.ok(initial.data.items.some((item) => item.customerName === "旧数据运营资源"));
@@ -174,6 +207,17 @@ async function run() {
   const followed = initial.data.items.find((item) => Number(item.opportunityId) === 201);
   assert.equal(followed.followCount, 1);
   assert.equal(followed.followHistory[0].note, "已电话联系客户并确认需求。");
+  const invalid = initial.data.items.find((item) => Number(item.opportunityId) === 701);
+  assert.equal(invalid.followed, true, "marking a customer invalid is an explicit handling result");
+  assert.equal(invalid.followedReason, "已标记无效");
+  assert.equal(invalid.followCount, 0, "terminal handling must not invent a manual follow-up");
+  const purchased = initial.data.items.find((item) => Number(item.opportunityId) === 801);
+  assert.equal(purchased.followed, true);
+  assert.equal(purchased.followedReason, "已标记已购");
+  const deal = initial.data.items.find((item) => Number(item.opportunityId) === 901);
+  assert.equal(deal.followed, true);
+  assert.equal(deal.followedReason, "已成交");
+  assert.equal(claimed.followed, false, "claiming or importing alone must remain pending");
 
   const atomicFailure = await request("/opportunities/assign", {
     method: "POST", token: admin,
@@ -196,7 +240,7 @@ async function run() {
 
   const afterReassignment = await request(`/reports/allocation-audit?start=${today}&end=${today}`, { token: owner });
   assert.equal(afterReassignment.status, 200, JSON.stringify(afterReassignment.data));
-  assert.equal(afterReassignment.data.total, 4, "reassignment must not duplicate imported resources");
+  assert.equal(afterReassignment.data.total, 7, "reassignment must not duplicate imported resources");
   const reassigned = afterReassignment.data.items.find((item) => Number(item.opportunityId) === 101);
   assert.equal(reassigned.owner, "销售甲");
   assert.equal(reassigned.allocator, "管理员");
@@ -219,6 +263,9 @@ async function run() {
   assert.ok(sheetXml.includes("地推运营资源"));
   assert.ok(sheetXml.includes("公众号运营资源"));
   assert.ok(sheetXml.includes("已电话联系客户并确认需求。"));
+  assert.ok(sheetXml.includes("已跟进（已标记无效）"));
+  assert.ok(sheetXml.includes("已跟进（已标记已购）"));
+  assert.ok(sheetXml.includes("已跟进（已成交）"));
   assert.ok(!sheetXml.includes("官网手工录入"));
 
   const salesAudit = await request(`/reports/allocation-audit?start=${today}&end=${today}`, { token: sales });

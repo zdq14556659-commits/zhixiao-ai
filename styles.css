@@ -1104,12 +1104,13 @@ dialog::backdrop { background: rgba(31, 45, 61, 0.38); }
 .allocation-audit-filters { display: grid; grid-template-columns: repeat(5, minmax(130px, 1fr)) auto auto; gap: 10px; align-items: end; }
 .allocation-audit-filters label { margin: 0; }
 .allocation-audit-filters button { min-height: 38px; white-space: nowrap; }
-.allocation-audit-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.allocation-audit-stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
 .allocation-audit-stats article { padding: 10px 12px; border: 1px solid var(--line); border-left-width: 3px; border-radius: 6px; background: #f8fafc; }
 .allocation-audit-stats span { display: block; color: var(--muted); font-size: 12px; }
 .allocation-audit-stats b { display: block; margin-top: 3px; font-size: 20px; }
 .allocation-audit-stat-total { border-left-color: #2563eb !important; background: #f7faff !important; }
 .allocation-audit-stat-followed { border-left-color: #15803d !important; background: #f7fcf8 !important; }
+.allocation-audit-stat-pending { border-left-color: #ea580c !important; background: #fff9f5 !important; }
 .allocation-audit-stat-lead { border-left-color: #ca8a04 !important; background: #fffdf5 !important; }
 .allocation-audit-stat-opportunity { border-left-color: #7c3aed !important; background: #fbf9ff !important; }
 .allocation-audit-stat-deal { border-left-color: #dc2626 !important; background: #fff8f8 !important; }

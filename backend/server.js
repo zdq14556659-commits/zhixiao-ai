@@ -6214,13 +6214,24 @@ function allocationAuditCurrentStatus(state, opportunity = {}, customer = {}) {
   return STAGES.includes(opportunity.stage) ? opportunity.stage : STAGES[0];
 }
 
-function allocationAuditHasFollow(state, opportunity = {}) {
-  if (Number(opportunity.manualFollowCount || opportunity.followCount || 0) > 0) return true;
+function allocationAuditHasManualFollow(state, opportunity = {}) {
   const rules = businessRules(state);
   if (inlineFollowUps(opportunity).some((item) => !item.isSystem && isEffectiveFollowForRules(item, rules))) return true;
   if (!(externalFollowUpIndex instanceof Map)) buildExternalFollowUpIndex();
-  return (externalFollowUpIndex.get(Number(opportunity.id)) || [])
-    .some((item) => !item.isSystem && isEffectiveFollowForRules(item, rules));
+  if ((externalFollowUpIndex.get(Number(opportunity.id)) || [])
+    .some((item) => !item.isSystem && isEffectiveFollowForRules(item, rules))) return true;
+  const summary = summaryFollowUp(opportunity);
+  return Boolean(summary && !summary.isSystem && isEffectiveFollowForRules(summary, rules));
+}
+
+function allocationAuditFollowedReason(state, opportunity = {}, customer = {}) {
+  if (allocationAuditHasManualFollow(state, opportunity)) return "人工有效跟进";
+  if (customer.lifecycleStatus === LIFECYCLE_ARCHIVED) {
+    return customer.archiveReason === "closed" ? "已标记倒闭" : "已标记无效";
+  }
+  if (isPurchasedOpportunity(opportunity)) return "已标记已购";
+  if (opportunity.stage === STAGES[3]) return "已成交";
+  return "";
 }
 
 function buildAllocationAudit(state, viewer, query = {}, options = {}) {
@@ -6245,6 +6256,7 @@ function buildAllocationAudit(state, viewer, query = {}, options = {}) {
     const currentOwnerUser = usersById.get(currentOwnerId) || {};
     const ownerEvent = allocationAuditOwnerEvent(opportunity) || {};
     const allocator = ownerEvent.operator || opportunity.createdBy || "未记录";
+    const followedReason = allocationAuditFollowedReason(state, opportunity, customer);
     return {
       sourceOpportunity: opportunity,
       id: opportunity.id,
@@ -6262,7 +6274,8 @@ function buildAllocationAudit(state, viewer, query = {}, options = {}) {
       unitId: isPublicPool ? "" : currentOwnerUser.unitId || opportunity.unitId || "",
       unit: isPublicPool ? PUBLIC_POOL_STATUS : currentOwnerUser.unit || opportunity.unit || "待分配",
       currentStatus,
-      followed: allocationAuditHasFollow(state, opportunity)
+      followed: Boolean(followedReason),
+      followedReason
     };
   }).filter((row) => {
     if (ownerId && Number(row.ownerId || 0) !== ownerId) return false;
@@ -6279,7 +6292,8 @@ function buildAllocationAudit(state, viewer, query = {}, options = {}) {
     if (row.currentStatus === "商机") result.opportunity += 1;
     if (row.currentStatus === "成交") result.deal += 1;
     return result;
-  }, { total: 0, followed: 0, lead: 0, opportunity: 0, deal: 0 });
+  }, { total: 0, followed: 0, pending: 0, lead: 0, opportunity: 0, deal: 0 });
+  totals.pending = Math.max(0, totals.total - totals.followed);
   const total = rows.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const page = Math.min(requestedPage, totalPages);
@@ -6287,7 +6301,7 @@ function buildAllocationAudit(state, viewer, query = {}, options = {}) {
   const externalFollows = readAllocationAuditFollowUps(new Set(selectedRows.map((item) => Number(item.id)).filter(Boolean)));
   const items = selectedRows.map(({ sourceOpportunity, ...row }) => {
     const followHistory = allocationAuditFollowHistory(state, sourceOpportunity, externalFollows.get(Number(row.id)) || []);
-    return { ...row, followCount: followHistory.length, followed: followHistory.length > 0, followHistory };
+    return { ...row, followCount: followHistory.length, followHistory };
   });
   return { start, end, totals, items, total, page, pageSize, totalPages, computedAt: new Date().toISOString() };
 }
@@ -6321,7 +6335,7 @@ function xlsxInlineCell(value, column, row, style = 0) {
 async function buildAllocationAuditWorkbook(report = {}) {
   const JSZip = resolveOptionalJsZip();
   if (!JSZip) throw new Error("服务器缺少 Excel 导出组件");
-  const headers = ["首次导入时间", "客户名称", "客户电话", "意向产品", "分配人", "当前跟进人", "单位", "当前状态", "跟进次数", "历史跟进记录"];
+  const headers = ["首次导入时间", "客户名称", "客户电话", "意向产品", "分配人", "当前跟进人", "单位", "当前状态", "跟进判定", "跟进次数", "历史跟进记录"];
   const values = (report.items || []).map((item) => [
     item.importedAt,
     item.customerName,
@@ -6331,6 +6345,7 @@ async function buildAllocationAuditWorkbook(report = {}) {
     item.owner,
     item.unit,
     item.currentStatus,
+    item.followed ? `已跟进（${item.followedReason || "已处理"}）` : "待跟进",
     item.followCount,
     allocationAuditHistoryText(item.followHistory)
   ]);
@@ -6347,7 +6362,7 @@ async function buildAllocationAuditWorkbook(report = {}) {
   zip.file("xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="资源分配对账" sheetId="1" r:id="rId1"/></sheets></workbook>`);
   zip.file("xl/_rels/workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`);
   zip.file("xl/styles.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Microsoft YaHei"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Microsoft YaHei"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF2563EB"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border/><border><left style="thin"><color rgb="FFD9E2EC"/></left><right style="thin"><color rgb="FFD9E2EC"/></right><top style="thin"><color rgb="FFD9E2EC"/></top><bottom style="thin"><color rgb="FFD9E2EC"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`);
-  zip.file("xl/worksheets/sheet1.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/><cols><col min="1" max="1" width="21" customWidth="1"/><col min="2" max="2" width="22" customWidth="1"/><col min="3" max="3" width="16" customWidth="1"/><col min="4" max="4" width="18" customWidth="1"/><col min="5" max="7" width="18" customWidth="1"/><col min="8" max="9" width="12" customWidth="1"/><col min="10" max="10" width="70" customWidth="1"/></cols><sheetData>${sheetRows}</sheetData><autoFilter ref="A1:J${lastRow}"/><pageMargins left="0.3" right="0.3" top="0.5" bottom="0.5" header="0.2" footer="0.2"/></worksheet>`);
+  zip.file("xl/worksheets/sheet1.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/><cols><col min="1" max="1" width="21" customWidth="1"/><col min="2" max="2" width="22" customWidth="1"/><col min="3" max="3" width="16" customWidth="1"/><col min="4" max="4" width="18" customWidth="1"/><col min="5" max="7" width="18" customWidth="1"/><col min="8" max="10" width="16" customWidth="1"/><col min="11" max="11" width="70" customWidth="1"/></cols><sheetData>${sheetRows}</sheetData><autoFilter ref="A1:K${lastRow}"/><pageMargins left="0.3" right="0.3" top="0.5" bottom="0.5" header="0.2" footer="0.2"/></worksheet>`);
   return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }
 

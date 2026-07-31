@@ -2458,7 +2458,10 @@ function allocationAuditStatusClass(status = "") {
   return ({ 线索: "lead", 商机: "opportunity", 成交: "deal", 公海: "pool", 已购: "purchased", 无效: "invalid" })[status] || "list";
 }
 
-function allocationAuditHistoryHtml(history = []) {
+function allocationAuditHistoryHtml(history = [], followedReason = "") {
+  if (!history.length && followedReason) {
+    return `<span class="allocation-audit-no-follow">已处理：${escapeHtml(followedReason)}</span>`;
+  }
   if (!history.length) return '<span class="allocation-audit-no-follow">暂无人工跟进</span>';
   return `<div class="allocation-audit-history">${history.map((item) => `
     <article>
@@ -2475,6 +2478,7 @@ function renderAllocationAudit() {
   $("#allocationAuditStats").innerHTML = [
     ["运营导入", totals.total || 0, "total"],
     ["已跟进", totals.followed || 0, "followed"],
+    ["待跟进", totals.pending || 0, "pending"],
     ["线索", totals.lead || 0, "lead"],
     ["商机", totals.opportunity || 0, "opportunity"],
     ["成交", totals.deal || 0, "deal"]
@@ -2488,9 +2492,10 @@ function renderAllocationAudit() {
       <td>${escapeHtml(item.owner || "未分配")}</td>
       <td>${escapeHtml(item.unit || "待分配")}</td>
       <td><span class="allocation-audit-status allocation-audit-status-${allocationAuditStatusClass(item.currentStatus)}">${escapeHtml(item.currentStatus || "名单")}</span></td>
+      <td>${item.followed ? `<b>已跟进</b><br><small>${escapeHtml(item.followedReason || "已处理")}</small>` : '<b class="allocation-audit-no-follow">待跟进</b>'}</td>
       <td>${Number(item.followCount || 0)}</td>
-      <td>${allocationAuditHistoryHtml(item.followHistory || [])}</td>
-    </tr>`).join("") : '<tr><td colspan="9" class="empty">当前条件下没有运营导入的公海资源</td></tr>';
+      <td>${allocationAuditHistoryHtml(item.followHistory || [], item.followedReason || "")}</td>
+    </tr>`).join("") : '<tr><td colspan="10" class="empty">当前条件下没有运营导入的公海资源</td></tr>';
   $("#allocationAuditPageSummary").textContent = `共 ${data.total || 0} 条 · 第 ${data.page || 1} / ${data.totalPages || 1} 页`;
   $("#allocationAuditPrev").disabled = Number(data.page || 1) <= 1;
   $("#allocationAuditNext").disabled = Number(data.page || 1) >= Number(data.totalPages || 1);
@@ -2503,7 +2508,7 @@ async function loadAllocationAudit(page = allocationAuditPage) {
   const params = allocationAuditParams(page);
   queryButton.disabled = true;
   queryButton.textContent = "计算中...";
-  $("#allocationAuditRows").innerHTML = '<tr><td colspan="9" class="empty">正在追踪资源去向...</td></tr>';
+  $("#allocationAuditRows").innerHTML = '<tr><td colspan="10" class="empty">正在追踪资源去向...</td></tr>';
   try {
     const data = await api(`/reports/allocation-audit?${params.toString()}`);
     if (requestId !== allocationAuditRequestId) return;
@@ -2513,7 +2518,7 @@ async function loadAllocationAudit(page = allocationAuditPage) {
   } catch (error) {
     if (requestId !== allocationAuditRequestId) return;
     allocationAuditData = null;
-    $("#allocationAuditRows").innerHTML = `<tr><td colspan="9" class="empty">${escapeHtml(error.message || "对账数据加载失败")}</td></tr>`;
+    $("#allocationAuditRows").innerHTML = `<tr><td colspan="10" class="empty">${escapeHtml(error.message || "对账数据加载失败")}</td></tr>`;
     toast(error.message || "对账数据加载失败");
   } finally {
     if (requestId === allocationAuditRequestId) {
