@@ -1,4 +1,7 @@
 import assert from "assert";
+import fs from "fs";
+import os from "os";
+import path from "path";
 import {
   analyzeMysqlEntityConflicts,
   assertMysqlEntityConflictFree,
@@ -45,5 +48,36 @@ assert.ok(details.some((line) => line.includes("type=customer_phone hash=")));
 assert.ok(details.some((line) => line.includes("type=opportunity_id key=10")));
 assert.ok(!details.some((line) => line.includes("13800000001")));
 assert.ok(formatMysqlEntityConflictSummary(conflicted).includes("projectedCustomers=2"));
+
+const temp = fs.mkdtempSync(path.join(os.tmpdir(), "zhixiao-entity-conflicts-"));
+try {
+  const dataFile = path.join(temp, "db.json");
+  const followDir = path.join(temp, "followups");
+  fs.mkdirSync(followDir, { recursive: true });
+  fs.writeFileSync(dataFile, "{}", "utf8");
+  fs.writeFileSync(path.join(followDir, "2026-08.jsonl"), [
+    JSON.stringify({ opportunityId: 10, note: "conflicted opportunity follow" }),
+    JSON.stringify({ opportunityId: 99, note: "unrelated follow" })
+  ].join("\n"), "utf8");
+  const withExternal = analyzeMysqlEntityConflicts({
+    customers: [{ id: 1, ownerId: 8 }, { id: 1, ownerId: 9 }],
+    opportunities: [
+      { id: 10, customerId: 1, ownerId: 8 },
+      { id: 10, customerId: 1, ownerId: 9 }
+    ]
+  }, { sourceFile: dataFile });
+  assert.equal(withExternal.customerRelations.length, 1);
+  assert.equal(withExternal.customerRelations[0].opportunities.length, 2);
+  assert.notEqual(
+    withExternal.customerRelations[0].customers[0].compatibilityHash,
+    withExternal.customerRelations[0].customers[1].compatibilityHash
+  );
+  assert.equal(withExternal.externalFollowUpConflicts.length, 1);
+  assert.equal(withExternal.externalFollowUpConflicts[0].entries.length, 1);
+  assert.ok(formatMysqlEntityConflictDetails(withExternal).some((line) => line.includes("type=customer_relation")));
+  assert.ok(formatMysqlEntityConflictDetails(withExternal).some((line) => line.includes("type=duplicate_opportunity_external_follows")));
+} finally {
+  fs.rmSync(temp, { recursive: true, force: true });
+}
 
 console.log("mysql entity conflict tests passed");

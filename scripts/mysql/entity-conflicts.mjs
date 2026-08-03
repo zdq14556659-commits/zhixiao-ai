@@ -1,11 +1,18 @@
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 
-export function analyzeMysqlEntityConflicts(source = {}) {
+export function analyzeMysqlEntityConflicts(source = {}, options = {}) {
   const customers = Array.isArray(source.customers) ? source.customers : [];
   const opportunities = Array.isArray(source.opportunities) ? source.opportunities : [];
   const customerIds = groupProjectedIds(customers);
   const opportunityIds = groupProjectedIds(opportunities);
   const customerPhones = groupCustomerPhones(customers);
+  const customerRelations = buildDuplicateCustomerRelations(customers, opportunities, customerIds.duplicates);
+  const externalFollowUpConflicts = findExternalFollowUpConflicts(
+    options.sourceFile || "",
+    opportunityIds.duplicates.map((group) => group.key)
+  );
 
   return {
     customers: customers.length,
@@ -17,9 +24,11 @@ export function analyzeMysqlEntityConflicts(source = {}) {
     customerDuplicatePhones: customerPhones.duplicates,
     customerDuplicatePhoneRows: duplicateRowCount(customerPhones.duplicates),
     invalidCustomerIds: customerIds.invalid,
+    customerRelations,
     opportunityDuplicateIds: opportunityIds.duplicates,
     opportunityDuplicateIdRows: duplicateRowCount(opportunityIds.duplicates),
-    invalidOpportunityIds: opportunityIds.invalid
+    invalidOpportunityIds: opportunityIds.invalid,
+    externalFollowUpConflicts
   };
 }
 
@@ -36,7 +45,8 @@ export function formatMysqlEntityConflictSummary(report = {}) {
     `projectedOpportunities=${report.projectedOpportunities || 0}`,
     `opportunityDuplicateIdGroups=${report.opportunityDuplicateIds?.length || 0}`,
     `opportunityDuplicateIdRows=${report.opportunityDuplicateIdRows || 0}`,
-    `invalidOpportunityIds=${report.invalidOpportunityIds?.length || 0}`
+    `invalidOpportunityIds=${report.invalidOpportunityIds?.length || 0}`,
+    `externalFollowUpsOnDuplicateOpportunities=${(report.externalFollowUpConflicts || []).reduce((sum, group) => sum + group.entries.length, 0)}`
   ].join(" ");
 }
 
@@ -55,6 +65,13 @@ export function formatMysqlEntityConflictDetails(report = {}, limit = 50) {
       + `recordHashes=${group.recordHashes.join(",")}`
     );
   }
+  for (const relation of report.customerRelations || []) {
+    lines.push(
+      `type=customer_relation key=${relation.key} `
+      + `customers=${relation.customers.map((item) => `${item.index}:${item.compatibilityHash}`).join(",")} `
+      + `opportunities=${relation.opportunities.map((item) => `${item.index}:${item.id}:${item.compatibilityHash}`).join(",") || "none"}`
+    );
+  }
   for (const item of report.invalidCustomerIds || []) {
     lines.push(`type=invalid_customer_id value=${safeLogValue(item.value)} index=${item.index}`);
   }
@@ -66,6 +83,13 @@ export function formatMysqlEntityConflictDetails(report = {}, limit = 50) {
   }
   for (const item of report.invalidOpportunityIds || []) {
     lines.push(`type=invalid_opportunity_id value=${safeLogValue(item.value)} index=${item.index}`);
+  }
+  for (const group of report.externalFollowUpConflicts || []) {
+    lines.push(
+      `type=duplicate_opportunity_external_follows key=${group.key} count=${group.entries.length} `
+      + `origins=${group.entries.map((entry) => entry.origin).join(",")} `
+      + `recordHashes=${group.entries.map((entry) => entry.recordHash).join(",")}`
+    );
   }
   return lines.slice(0, Math.max(1, Number(limit) || 50));
 }
@@ -156,6 +180,56 @@ function projectedCustomerCount(customers = []) {
     else byPhone.set(phone, index);
   });
   return new Set(customers.map((_, index) => find(index))).size;
+}
+
+function buildDuplicateCustomerRelations(customers, opportunities, duplicateGroups) {
+  return duplicateGroups.map((group) => ({
+    key: group.key,
+    customers: group.indexes.map((index) => ({
+      index,
+      compatibilityHash: compatibilityHash(customers[index])
+    })),
+    opportunities: opportunities
+      .map((opportunity, index) => ({ opportunity, index }))
+      .filter(({ opportunity }) => projectedNumericId(opportunity?.customerId).key === group.key)
+      .map(({ opportunity, index }) => ({
+        index,
+        id: projectedNumericId(opportunity?.id).key,
+        compatibilityHash: compatibilityHash(opportunity)
+      }))
+  }));
+}
+
+function findExternalFollowUpConflicts(sourceFile, duplicateOpportunityIds) {
+  if (!sourceFile || !duplicateOpportunityIds.length) return [];
+  const wanted = new Set(duplicateOpportunityIds);
+  const found = new Map();
+  const followDir = path.join(path.dirname(sourceFile), "followups");
+  if (!fs.existsSync(followDir)) return [];
+  for (const name of fs.readdirSync(followDir).filter((item) => item.endsWith(".jsonl")).sort()) {
+    const lines = fs.readFileSync(path.join(followDir, name), "utf8").split(/\r?\n/).filter(Boolean);
+    lines.forEach((line, index) => {
+      let entry;
+      try { entry = JSON.parse(line); } catch { return; }
+      const key = projectedNumericId(entry?.opportunityId).key;
+      if (!wanted.has(key)) return;
+      const entries = found.get(key) || [];
+      entries.push({ origin: `${name}:${index + 1}`, recordHash: recordHash(entry) });
+      found.set(key, entries);
+    });
+  }
+  return [...found.entries()].map(([key, entries]) => ({ key, entries }));
+}
+
+function compatibilityHash(value = {}) {
+  const fields = [
+    "stage", "ownerId", "owner", "followPerson", "unitId", "unit", "zone", "orgPath", "region",
+    "createdBy", "createdAt", "assignedAt", "amount", "demoAt", "quoteAmount", "expectedDealDate",
+    "contractAmount", "paymentAmount", "paymentDate", "ownershipStatus", "claimUntil", "effectiveFollowUpAt",
+    "publicPoolAt", "publicPoolReason", "leadAt", "opportunityAt", "dealAt", "nextFollow", "lastFollow", "lastNote"
+  ];
+  const projection = Object.fromEntries(fields.map((field) => [field, value?.[field] ?? ""]));
+  return recordHash(projection);
 }
 
 function projectedNumericId(value) {

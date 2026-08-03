@@ -24,7 +24,7 @@ if (!databaseUrl) {
 }
 
 const state = JSON.parse(fs.readFileSync(dataFile, "utf8"));
-const conflictReport = analyzeMysqlEntityConflicts(state);
+const conflictReport = analyzeMysqlEntityConflicts(state, { sourceFile: dataFile });
 console.log(`MYSQL_ENTITY_VERIFY ${formatMysqlEntityConflictSummary(conflictReport)}`);
 for (const detail of formatMysqlEntityConflictDetails(conflictReport)) {
   console.warn(`MYSQL_ENTITY_CONFLICT ${detail}`);
