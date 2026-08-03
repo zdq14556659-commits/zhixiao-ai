@@ -7,6 +7,11 @@ import {
   collectProjectedFollowUps,
   formatFollowUpProjectionStats
 } from "./followup-projection.mjs";
+import {
+  analyzeMysqlEntityConflicts,
+  formatMysqlEntityConflictDetails,
+  formatMysqlEntityConflictSummary
+} from "./entity-conflicts.mjs";
 
 const root = path.resolve(new URL("../..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
 const defaultDataFile = path.join(root, "backend", "data", "db.json");
@@ -19,6 +24,11 @@ if (!databaseUrl) {
 }
 
 const state = JSON.parse(fs.readFileSync(dataFile, "utf8"));
+const conflictReport = analyzeMysqlEntityConflicts(state);
+console.log(`MYSQL_ENTITY_VERIFY ${formatMysqlEntityConflictSummary(conflictReport)}`);
+for (const detail of formatMysqlEntityConflictDetails(conflictReport)) {
+  console.warn(`MYSQL_ENTITY_CONFLICT ${detail}`);
+}
 const db = await mysql.createConnection(databaseUrl);
 
 try {
