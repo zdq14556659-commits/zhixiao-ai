@@ -55,6 +55,7 @@ let stateDiskSignature = "";
 let stateWriteFailureCount = 0;
 let stateRevision = 0;
 let persistedStateRevision = 0;
+let publicPoolSnapshotCache = null;
 let lastStatePersistAt = "";
 let lastStatePersistDurationMs = 0;
 let lastStatePersistBytes = 0;
@@ -3597,8 +3598,7 @@ function lockOpportunityOwnership(opportunity, actor, reason) {
   opportunity.ownershipHistory = [...(opportunity.ownershipHistory || []), ownershipEvent("locked", opportunity, actor, actor, reason)];
 }
 
-function opportunityPublicPoolInfo(opportunity = {}, at = Date.now(), state = {}) {
-  const rules = businessRules(state);
+function computeOpportunityPublicPoolInfo(opportunity = {}, at = Date.now(), rules = DEFAULT_BUSINESS_RULES) {
   if (isPurchasedOpportunity(opportunity) && !rules.purchasedCustomersEnterPublicPool) return { isPublic: false, at: "", reason: "" };
   if (opportunity.stage === STAGES[3] && !rules.dealCustomersEnterPublicPool) return { isPublic: false, at: "", reason: "" };
   if ([OWNERSHIP_PUBLIC, OWNERSHIP_CLAIMABLE].includes(opportunity.ownershipStatus)) {
@@ -3615,6 +3615,56 @@ function opportunityPublicPoolInfo(opportunity = {}, at = Date.now(), state = {}
     return { isPublic: true, at: new Date(deadline).toISOString(), reason: "protection_expired" };
   }
   return { isPublic: false, at: "", reason: "" };
+}
+
+function publicPoolSnapshotForState(state = {}, at = Date.now()) {
+  const useCache = state === stateCache;
+  if (useCache
+    && publicPoolSnapshotCache?.state === state
+    && publicPoolSnapshotCache.revision === stateRevision
+    && at < publicPoolSnapshotCache.expiresAt) {
+    return publicPoolSnapshotCache;
+  }
+
+  const rules = businessRules(state);
+  const opportunities = [];
+  const ids = new Set();
+  const infoById = new Map();
+  let nextTransitionAt = Number.POSITIVE_INFINITY;
+  for (const opportunity of state.opportunities || []) {
+    const info = computeOpportunityPublicPoolInfo(opportunity, at, rules);
+    infoById.set(Number(opportunity.id), info);
+    if (info.isPublic) {
+      const customer = findCustomer(state.customers || [], opportunity.customerId);
+      if (customer?.lifecycleStatus !== LIFECYCLE_ARCHIVED) {
+        opportunities.push(opportunity);
+        ids.add(Number(opportunity.id));
+      }
+      continue;
+    }
+    const deadline = protectionDeadlineTime(opportunity, rules);
+    if (Number.isFinite(deadline) && deadline > at) nextTransitionAt = Math.min(nextTransitionAt, deadline);
+  }
+  const snapshot = {
+    state,
+    revision: stateRevision,
+    builtAt: at,
+    expiresAt: Number.isFinite(nextTransitionAt) ? Math.max(at + 250, nextTransitionAt + 1) : Number.POSITIVE_INFINITY,
+    opportunities,
+    ids,
+    infoById,
+    count: opportunities.length
+  };
+  if (useCache) publicPoolSnapshotCache = snapshot;
+  return snapshot;
+}
+
+function opportunityPublicPoolInfo(opportunity = {}, at = Date.now(), state = {}) {
+  if (state === stateCache && Math.abs(Date.now() - at) < 1000) {
+    const cached = publicPoolSnapshotForState(state, at).infoById.get(Number(opportunity.id));
+    if (cached) return cached;
+  }
+  return computeOpportunityPublicPoolInfo(opportunity, at, businessRules(state));
 }
 
 function isOpportunityPublicPool(opportunity = {}, at = Date.now(), state = {}) {
@@ -3740,22 +3790,14 @@ function opportunityCandidatesForViewer(state, viewer) {
 
 function visiblePublicPoolOpportunities(state, viewer) {
   return sortPublicPoolOpportunitiesForViewer(
-    (state.opportunities || []).filter((item) => isOpportunityPublicPool(item, Date.now(), state) && (findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED)),
+    publicPoolSnapshotForState(state, Date.now()).opportunities,
     state,
     viewer
   );
 }
 
 function countPublicPoolOpportunities(state = {}) {
-  const now = Date.now();
-  let count = 0;
-  for (const opportunity of state.opportunities || []) {
-    if (!isOpportunityPublicPool(opportunity, now, state)) continue;
-    const customer = findCustomer(state.customers || [], opportunity.customerId);
-    if (customer?.lifecycleStatus === LIFECYCLE_ARCHIVED) continue;
-    count += 1;
-  }
-  return count;
+  return publicPoolSnapshotForState(state, Date.now()).count;
 }
 
 function isArchivedOpportunity(state, opportunity = {}) {
@@ -4729,15 +4771,14 @@ function addDaysToIso(value, days) {
 }
 
 function latestEffectiveFollowTimestamp(record = {}, rules = DEFAULT_BUSINESS_RULES) {
-  const followUps = inlineFollowUps(record);
-  const inlineLatest = followUps
-    .filter((item) => isEffectiveFollowForRules(item, rules))
-    .map((item) => Date.parse(item.createdAt || item.date || ""))
-    .filter(Number.isFinite)
-    .sort((left, right) => right - left)[0] || NaN;
-  const summaryTime = Date.parse(manualSummaryTimestamp(record));
-  if (Number.isFinite(inlineLatest) && Number.isFinite(summaryTime)) return Math.max(inlineLatest, summaryTime);
-  return Number.isFinite(inlineLatest) ? inlineLatest : summaryTime;
+  let latest = Date.parse(manualSummaryTimestamp(record));
+  if (!Number.isFinite(latest)) latest = NaN;
+  for (const item of Array.isArray(record.followUps) ? record.followUps : []) {
+    if (!isEffectiveFollowForRules(item, rules)) continue;
+    const timestamp = Date.parse(item.createdAt || item.date || "");
+    if (Number.isFinite(timestamp) && (!Number.isFinite(latest) || timestamp > latest)) latest = timestamp;
+  }
+  return latest;
 }
 
 function protectionDeadlineTime(record = {}, rules = DEFAULT_BUSINESS_RULES) {
@@ -5124,12 +5165,15 @@ function buildCustomerBoard(state, viewer, query = {}) {
   if (!isPaginatedQuery(query)) return buildCustomerBoardLegacy(state, viewer, query);
   const now = Date.now();
   const stage = query.stage || STAGES[0];
+  const publicPoolSnapshot = publicPoolSnapshotForState(state, now);
   const rawPrivate = opportunityCandidatesForViewer(state, viewer)
-    .filter((item) => !isOpportunityPublicPool(item, now, state) && canViewOpportunity(state, viewer, item))
+    .filter((item) => !publicPoolSnapshot.ids.has(Number(item.id)) && canViewOpportunity(state, viewer, item))
     .filter((item) => findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED);
   const rawPurchased = rawPrivate.filter((item) => isPurchasedOpportunity(item));
   const rawActive = rawPrivate.filter((item) => !isPurchasedOpportunity(item));
-  const rawPublic = stage === PUBLIC_POOL_STATUS ? visiblePublicPoolOpportunities(state, viewer) : [];
+  const rawPublic = stage === PUBLIC_POOL_STATUS
+    ? sortPublicPoolOpportunitiesForViewer(publicPoolSnapshot.opportunities, state, viewer)
+    : [];
   const rawInvalid = (stage === "无效" || stage === "invalid") ? visibleArchivedOpportunities(state, viewer) : [];
   const counts = Object.fromEntries((state.stages || STAGES).map((stage) => [stage, rawActive.filter((item) => item.stage === stage).length]));
   const board = {
@@ -5137,7 +5181,7 @@ function buildCustomerBoard(state, viewer, query = {}) {
     moneyUnit: MONEY_UNIT,
     stages: state.stages || STAGES,
     counts,
-    publicPool: { count: stage === PUBLIC_POOL_STATUS ? rawPublic.length : countPublicPoolOpportunities(state) },
+    publicPool: { count: publicPoolSnapshot.count },
     purchased: { count: rawPurchased.length },
     invalid: { count: (stage === "无效" || stage === "invalid") ? rawInvalid.length : countArchivedOpportunities(state) }
   };
@@ -5160,7 +5204,7 @@ function buildCustomerBoard(state, viewer, query = {}) {
   }
   const projectedRows = rawRows.map((item) => ({
     source: item,
-    row: opportunityBoardFilterProjection(state, item, stage)
+    row: opportunityBoardFilterProjection(state, item, stage, publicPoolSnapshot)
   }));
   const filterOptions = customerBoardFilterOptions(projectedRows.map((item) => item.row));
   const filteredRows = projectedRows.filter((item) => boardProjectionMatchesQuery(item.row, query, stage));
@@ -5194,11 +5238,11 @@ function boardRequestedIds(value = "") {
     .filter(Boolean));
 }
 
-function opportunityBoardFilterProjection(state, opportunity = {}, stage = "") {
+function opportunityBoardFilterProjection(state, opportunity = {}, stage = "", publicPoolSnapshot = null) {
   const customer = findCustomer(state.customers || [], opportunity.customerId) || {};
   const primaryContact = primaryContactForCustomer(customer);
   const publicPool = stage === PUBLIC_POOL_STATUS
-    ? opportunityPublicPoolInfo(opportunity, Date.now(), state)
+    ? publicPoolSnapshot?.infoById.get(Number(opportunity.id)) || opportunityPublicPoolInfo(opportunity, Date.now(), state)
     : { at: opportunity.publicPoolAt || "" };
   const isPublic = stage === PUBLIC_POOL_STATUS;
   return {
@@ -7205,6 +7249,7 @@ function replaceOpportunityInIndexes(state, previous, next) {
 }
 
 function rebuildStateIndexes(state = {}) {
+  publicPoolSnapshotCache = null;
   const indexes = emptyStateIndexes();
   (state.users || []).forEach((user, index) => {
     indexes.usersById.set(Number(user.id), index);
