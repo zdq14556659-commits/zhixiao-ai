@@ -5202,6 +5202,29 @@ function buildCustomerBoard(state, viewer, query = {}) {
   if (requestedIds.size) {
     rawRows = rawRows.filter((item) => requestedIds.has(Number(item.id)) || requestedIds.has(Number(item.customerId)));
   }
+  if (!hasCustomerBoardFilters(query) && !requestedIds.size) {
+    const sortedRows = sortRawBoardRows(rawRows, query, stage);
+    const page = paginateRows(sortedRows, query);
+    const pageCustomerIds = new Set(page.items.map((item) => Number(item.customerId)).filter(Boolean));
+    const visitPhotoMap = buildVisitPhotoMap(state, 12, pageCustomerIds);
+    const items = page.items.map((source) => {
+      const item = opportunityListRow(state, source, { ...rowOptions, includePhotos: false });
+      const customer = findCustomer(state.customers || [], item.customerId) || {};
+      const photos = rowOptions.maskPhone ? [] : customerPhotosForDisplay(state, customer, 6, visitPhotoMap);
+      return { ...item, photoCount: photos.length, photos };
+    });
+    return {
+      ...board,
+      stage,
+      stageCounts: customerBoardStageCounts(board),
+      items,
+      total: page.total,
+      page: page.page,
+      pageSize: page.pageSize,
+      totalPages: page.totalPages,
+      filterOptions: lightweightCustomerBoardFilterOptions(state, items, stage)
+    };
+  }
   const projectedRows = rawRows.map((item) => ({
     source: item,
     row: opportunityBoardFilterProjection(state, item, stage, publicPoolSnapshot)
@@ -5236,6 +5259,29 @@ function boardRequestedIds(value = "") {
     .split(",")
     .map((id) => Number(id))
     .filter(Boolean));
+}
+
+function hasCustomerBoardFilters(query = {}) {
+  const filterKeys = [
+    "keyword",
+    "channelSource",
+    "createdBy",
+    "followPerson",
+    "unit",
+    "city",
+    "followStatus",
+    "createdStart",
+    "createdEnd",
+    "stageStart",
+    "stageEnd",
+    "lastStart",
+    "lastEnd",
+    "nextStart",
+    "nextEnd",
+    "publicPoolStart",
+    "publicPoolEnd"
+  ];
+  return filterKeys.some((key) => String(query[key] || "").trim());
 }
 
 function opportunityBoardFilterProjection(state, opportunity = {}, stage = "", publicPoolSnapshot = null) {
@@ -5350,6 +5396,34 @@ function customerBoardFilterOptions(rows = []) {
     createdBy: uniqueBoardOptionValues(rows.map((row) => row.createdBy)),
     followPerson: uniqueBoardOptionValues(rows.map((row) => row.followPerson || row.owner)),
     units: uniqueBoardOptionValues(rows.map((row) => row.unit)),
+    cities: uniqueBoardOptionValues(rows.map((row) => row.city))
+  };
+}
+
+function lightweightCustomerBoardFilterOptions(state = {}, rows = [], stage = "") {
+  const activeUsers = (state.users || []).filter((user) => {
+    const account = cleanAccount(user.account || user.username || user.phone);
+    const hiddenDemo = HIDDEN_DEMO_USERS.has(account) && ["林晨", "周扬"].includes(String(user.name || ""));
+    return user.status !== "停用" && !hiddenDemo;
+  });
+  const activeUnits = (state.units || []).filter((unit) => unit.active !== false);
+  return {
+    createdBy: uniqueBoardOptionValues([
+      ...activeUsers.map((user) => user.name),
+      ...rows.map((row) => row.createdBy)
+    ]),
+    followPerson: stage === PUBLIC_POOL_STATUS
+      ? []
+      : uniqueBoardOptionValues([
+        ...activeUsers.map((user) => user.name),
+        ...rows.map((row) => row.followPerson || row.owner)
+      ]),
+    units: stage === PUBLIC_POOL_STATUS
+      ? []
+      : uniqueBoardOptionValues([
+        ...activeUnits.map((unit) => unit.name),
+        ...rows.map((row) => row.unit)
+      ]),
     cities: uniqueBoardOptionValues(rows.map((row) => row.city))
   };
 }
@@ -5501,6 +5575,18 @@ function sortBoardRows(rows = [], query = {}, stage = "") {
     return rightStageTime - leftStageTime
       || compareByDate(left, right, "createdAt", "desc");
   });
+}
+
+function sortRawBoardRows(rows = [], query = {}, stage = "") {
+  const sortBy = String(query.sortBy || "");
+  const sortOrder = query.sortOrder === "asc" ? "asc" : "desc";
+  const allowedSorts = new Set(["lastFollow", "createdAt", "nextFollow", "assignedAt", "stageTime"]);
+  if (stage === PUBLIC_POOL_STATUS && !allowedSorts.has(sortBy)) return rows;
+  return sortBoardRows(rows, {
+    ...query,
+    sortBy: allowedSorts.has(sortBy) ? sortBy : "stageTime",
+    sortOrder: allowedSorts.has(sortBy) ? sortOrder : "desc"
+  }, stage);
 }
 
 function paginateRows(rows = [], query = {}) {
