@@ -11,7 +11,10 @@ import {
   analyzeMysqlEntityConflicts,
   assertMysqlEntityConflictFree,
   formatMysqlEntityConflictDetails,
-  formatMysqlEntityConflictSummary
+  formatMysqlEntityConflictSummary,
+  formatMysqlEntityRepairDetails,
+  formatMysqlEntityRepairSummary,
+  repairMysqlEntityConflicts
 } from "./entity-conflicts.mjs";
 
 const root = path.resolve(new URL("../..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
@@ -20,6 +23,8 @@ const dataFile = path.resolve(process.env.DATA_FILE || defaultDataFile);
 const databaseUrl = process.env.MYSQL_URL || "";
 const reset = process.argv.includes("--reset");
 const snapshot = process.argv.includes("--snapshot");
+const repairEntityConflicts = process.argv.includes("--repair-entity-conflicts");
+const repairedOutput = argumentValue("--repaired-output");
 const projectionWarnings = [];
 
 if (!databaseUrl) {
@@ -30,13 +35,27 @@ if (!fs.existsSync(dataFile)) {
   fail(`DATA_FILE not found: ${dataFile}`);
 }
 
-const state = JSON.parse(fs.readFileSync(dataFile, "utf8"));
-const conflictReport = analyzeMysqlEntityConflicts(state, { sourceFile: dataFile });
+const sourceState = JSON.parse(fs.readFileSync(dataFile, "utf8"));
+const conflictReport = analyzeMysqlEntityConflicts(sourceState, { sourceFile: dataFile });
 console.log(`MYSQL_ENTITY_PREFLIGHT ${formatMysqlEntityConflictSummary(conflictReport)}`);
 for (const detail of formatMysqlEntityConflictDetails(conflictReport)) {
   console.warn(`MYSQL_ENTITY_CONFLICT ${detail}`);
 }
-assertMysqlEntityConflictFree(conflictReport);
+let state = sourceState;
+if (repairEntityConflicts) {
+  if (!repairedOutput) fail("--repair-entity-conflicts requires --repaired-output <path>");
+  if (path.resolve(repairedOutput) === dataFile) fail("--repaired-output must not overwrite DATA_FILE");
+  const repairResult = repairMysqlEntityConflicts(sourceState, { sourceFile: dataFile });
+  state = repairResult.state;
+  console.log(`MYSQL_ENTITY_REPAIR ${formatMysqlEntityRepairSummary(repairResult)}`);
+  for (const detail of formatMysqlEntityRepairDetails(repairResult)) console.log(`MYSQL_ENTITY_REKEY ${detail}`);
+  const repairedConflictReport = analyzeMysqlEntityConflicts(state);
+  assertMysqlEntityConflictFree(repairedConflictReport);
+  writeJsonAtomically(path.resolve(repairedOutput), state);
+  console.log(`MYSQL_REPAIRED_DATA_FILE=${path.resolve(repairedOutput)}`);
+} else {
+  assertMysqlEntityConflictFree(conflictReport);
+}
 const connection = await mysql.createConnection(databaseUrl);
 
 try {
@@ -548,4 +567,20 @@ function hash(value) {
 function fail(message) {
   console.error(message);
   process.exit(1);
+}
+
+function argumentValue(name) {
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? String(process.argv[index + 1] || "").trim() : "";
+}
+
+function writeJsonAtomically(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tempFile = `${file}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tempFile, JSON.stringify(value), "utf8");
+    fs.renameSync(tempFile, file);
+  } finally {
+    if (fs.existsSync(tempFile)) fs.rmSync(tempFile, { force: true });
+  }
 }

@@ -108,6 +108,117 @@ export function assertMysqlEntityConflictFree(report = {}) {
   );
 }
 
+export function repairMysqlEntityConflicts(source = {}, options = {}) {
+  const before = analyzeMysqlEntityConflicts(source, options);
+  if (before.customerDuplicatePhones.length) {
+    throw new Error("MySQL entity repair does not merge duplicate customer phones");
+  }
+  if (before.invalidCustomerIds.length || before.invalidOpportunityIds.length) {
+    throw new Error("MySQL entity repair requires valid positive integer IDs");
+  }
+  if (before.externalFollowUpConflicts.length) {
+    throw new Error("MySQL entity repair cannot safely remap duplicate opportunities referenced by external follow-ups");
+  }
+
+  const state = cloneValue(source);
+  const repairs = {
+    customersRekeyed: [],
+    opportunitiesRekeyed: [],
+    opportunityCustomerLinksRepaired: 0,
+    visitReferencesRepaired: 0,
+    activityReferencesRepaired: 0
+  };
+  let nextCustomerId = nextAvailableId(state.customers || []);
+  let nextOpportunityId = nextAvailableId(state.opportunities || []);
+
+  for (const group of before.customerDuplicateIds) {
+    const compatibilityHashes = group.indexes.map((index) => compatibilityHash(state.customers[index]));
+    if (new Set(compatibilityHashes).size !== compatibilityHashes.length) {
+      throw new Error(`Duplicate customer id=${group.key} cannot be distinguished by compatibility fields`);
+    }
+    // Customer lookups currently fall back to Array.find when duplicate IDs
+    // exist, so the first array occurrence is the canonical legacy record.
+    for (const index of group.indexes.slice(1)) {
+      const customer = state.customers[index];
+      const oldId = projectedNumericId(customer.id).key;
+      const newId = nextCustomerId++;
+      const targetHash = compatibilityHash(customer);
+      const matchedOpportunityIndexes = [];
+      (state.opportunities || []).forEach((opportunity, opportunityIndex) => {
+        if (projectedNumericId(opportunity.customerId).key !== oldId) return;
+        if (compatibilityHash(opportunity) !== targetHash) return;
+        opportunity.customerId = newId;
+        setInlineFollowReferences(opportunity);
+        matchedOpportunityIndexes.push(opportunityIndex);
+      });
+      if (!matchedOpportunityIndexes.length) {
+        throw new Error(`Duplicate customer id=${oldId} index=${index} has no unambiguous opportunity match`);
+      }
+      rekeyCustomer(customer, oldId, newId);
+      repairs.customersRekeyed.push({ oldId, newId, index, matchedOpportunityIndexes });
+      repairs.opportunityCustomerLinksRepaired += matchedOpportunityIndexes.length;
+    }
+  }
+
+  repairCustomerReferences(state, repairs.customersRekeyed, repairs);
+
+  for (const group of before.opportunityDuplicateIds) {
+    // Opportunity indexes use Map#set without a duplicate-size guard, so the
+    // last array occurrence is the canonical legacy record.
+    const relatedCustomerIds = group.indexes.map((index) => (
+      projectedNumericId(state.opportunities[index]?.customerId).key
+    ));
+    if (new Set(relatedCustomerIds).size !== relatedCustomerIds.length) {
+      throw new Error(`Duplicate opportunity id=${group.key} cannot be distinguished by customer relation`);
+    }
+    const canonicalIndex = group.indexes[group.indexes.length - 1];
+    for (const index of group.indexes) {
+      if (index === canonicalIndex) continue;
+      const opportunity = state.opportunities[index];
+      const oldId = projectedNumericId(opportunity.id).key;
+      const newId = nextOpportunityId++;
+      opportunity.id = newId;
+      setInlineFollowReferences(opportunity);
+      const referenceChanges = repairOpportunityReferences(state, oldId, newId, opportunity.customerId);
+      repairs.visitReferencesRepaired += referenceChanges.visits;
+      repairs.activityReferencesRepaired += referenceChanges.activities;
+      repairs.opportunitiesRekeyed.push({ oldId, newId, index, customerId: opportunity.customerId });
+    }
+  }
+
+  for (const customer of state.customers || []) setCustomerFollowReferences(customer);
+  for (const opportunity of state.opportunities || []) setInlineFollowReferences(opportunity);
+
+  const after = analyzeMysqlEntityConflicts(state);
+  assertMysqlEntityConflictFree(after);
+  assertRepairIntegrity(source, state);
+  return { state, before, after, repairs };
+}
+
+export function formatMysqlEntityRepairSummary(result = {}) {
+  const repairs = result.repairs || {};
+  return [
+    `customersRekeyed=${repairs.customersRekeyed?.length || 0}`,
+    `opportunitiesRekeyed=${repairs.opportunitiesRekeyed?.length || 0}`,
+    `opportunityCustomerLinksRepaired=${repairs.opportunityCustomerLinksRepaired || 0}`,
+    `visitReferencesRepaired=${repairs.visitReferencesRepaired || 0}`,
+    `activityReferencesRepaired=${repairs.activityReferencesRepaired || 0}`
+  ].join(" ");
+}
+
+export function formatMysqlEntityRepairDetails(result = {}) {
+  const repairs = result.repairs || {};
+  return [
+    ...(repairs.customersRekeyed || []).map((item) => (
+      `type=customer oldId=${item.oldId} newId=${item.newId} index=${item.index} `
+      + `opportunityIndexes=${item.matchedOpportunityIndexes.join(",")}`
+    )),
+    ...(repairs.opportunitiesRekeyed || []).map((item) => (
+      `type=opportunity oldId=${item.oldId} newId=${item.newId} index=${item.index} customerId=${item.customerId}`
+    ))
+  ];
+}
+
 function groupProjectedIds(items = []) {
   const groups = new Map();
   const invalid = [];
@@ -236,6 +347,114 @@ function projectedNumericId(value) {
   const numberValue = Number(value || 0);
   const valid = Number.isSafeInteger(numberValue) && numberValue > 0;
   return { key: Number.isFinite(numberValue) ? String(numberValue) : "0", valid };
+}
+
+function rekeyCustomer(customer, oldId, newId) {
+  customer.id = newId;
+  for (const contact of customer.contacts || []) {
+    const contactId = String(contact?.id || "");
+    if (contactId.startsWith(`${oldId}-`)) contact.id = `${newId}${contactId.slice(oldId.length)}`;
+  }
+  setCustomerFollowReferences(customer);
+}
+
+function setCustomerFollowReferences(customer = {}) {
+  for (const follow of customer.followUps || []) follow.customerId = customer.id;
+}
+
+function setInlineFollowReferences(opportunity = {}) {
+  for (const follow of opportunity.followUps || []) {
+    follow.customerId = opportunity.customerId;
+    follow.opportunityId = opportunity.id;
+  }
+}
+
+function repairCustomerReferences(state, customerRepairs, repairs) {
+  for (const repair of customerRepairs) {
+    const customer = (state.customers || [])[repair.index] || {};
+    const phone = normalizePhone(customer.phoneNormalized || customer.phone);
+    if (phone) {
+      for (const visit of state.visits || []) {
+        if (projectedNumericId(visit.customerId).key !== repair.oldId) continue;
+        if (normalizePhone(visit.phone) !== phone) continue;
+        visit.customerId = repair.newId;
+        repairs.visitReferencesRepaired += 1;
+      }
+    }
+    for (const activity of state.activities || []) {
+      if (projectedNumericId(activity.customerId).key !== repair.oldId) continue;
+      const sameOwnerId = customer.ownerId !== undefined && customer.ownerId !== null
+        && String(activity.ownerId ?? "") === String(customer.ownerId);
+      const sameOwner = Boolean(customer.owner)
+        && String(activity.owner ?? "") === String(customer.owner);
+      if (!sameOwnerId && !sameOwner) continue;
+      activity.customerId = repair.newId;
+      repairs.activityReferencesRepaired += 1;
+    }
+  }
+}
+
+function repairOpportunityReferences(state, oldId, newId, customerId) {
+  let visits = 0;
+  let activities = 0;
+  for (const visit of state.visits || []) {
+    if (projectedNumericId(visit.opportunityId).key !== oldId) continue;
+    if (projectedNumericId(visit.customerId).key !== projectedNumericId(customerId).key) continue;
+    visit.opportunityId = newId;
+    visits += 1;
+  }
+  for (const activity of state.activities || []) {
+    if (projectedNumericId(activity.opportunityId).key !== oldId) continue;
+    if (projectedNumericId(activity.customerId).key !== projectedNumericId(customerId).key) continue;
+    activity.opportunityId = newId;
+    activities += 1;
+  }
+  for (const customer of state.customers || []) {
+    if (projectedNumericId(customer.opportunityId).key !== oldId) continue;
+    if (projectedNumericId(customer.id).key !== projectedNumericId(customerId).key) continue;
+    customer.opportunityId = newId;
+  }
+  return { visits, activities };
+}
+
+function assertRepairIntegrity(before, after) {
+  for (const key of ["customers", "opportunities", "visits", "activities"]) {
+    if ((before[key] || []).length !== (after[key] || []).length) {
+      throw new Error(`MySQL entity repair changed ${key} count`);
+    }
+  }
+  const customerIds = new Set((after.customers || []).map((item) => projectedNumericId(item.id).key));
+  const opportunityIds = new Set((after.opportunities || []).map((item) => projectedNumericId(item.id).key));
+  for (const opportunity of after.opportunities || []) {
+    if (!customerIds.has(projectedNumericId(opportunity.customerId).key)) {
+      throw new Error(`MySQL entity repair left orphan opportunity id=${opportunity.id}`);
+    }
+  }
+  for (const visit of after.visits || []) {
+    if (visit.customerId && !customerIds.has(projectedNumericId(visit.customerId).key)) {
+      throw new Error(`MySQL entity repair left orphan visit customer id=${visit.customerId}`);
+    }
+    if (visit.opportunityId && !opportunityIds.has(projectedNumericId(visit.opportunityId).key)) {
+      throw new Error(`MySQL entity repair left orphan visit opportunity id=${visit.opportunityId}`);
+    }
+  }
+  const beforeFollows = (before.opportunities || []).reduce((sum, item) => sum + (item.followUps || []).length, 0);
+  const afterFollows = (after.opportunities || []).reduce((sum, item) => sum + (item.followUps || []).length, 0);
+  if (beforeFollows !== afterFollows) throw new Error("MySQL entity repair changed inline follow-up count");
+}
+
+function nextAvailableId(items = []) {
+  const maximum = items.reduce((max, item) => {
+    const value = Number(item?.id || 0);
+    return Number.isSafeInteger(value) ? Math.max(max, value) : max;
+  }, 0);
+  if (!Number.isSafeInteger(maximum + 1)) throw new Error("No safe numeric IDs remain for MySQL entity repair");
+  return maximum + 1;
+}
+
+function cloneValue(value) {
+  if (typeof structuredClone === "function") return structuredClone(value);
+  return JSON.parse(JSON.stringify(value));
 }
 
 function projectedPhone(customer = {}) {

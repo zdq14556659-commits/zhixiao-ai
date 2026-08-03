@@ -72,13 +72,27 @@ jobs:
           }
 
           import_and_verify() {
-            local snapshot="$1"
+            local snapshot="$1" repaired
+            repaired="$snapshot/db.mysql-repaired.json"
             cd "$APP_DIR"
             node -e "require('mysql2/promise'); console.log('MYSQL_RUNTIME_DRIVER_OK')"
             DATA_FILE="$snapshot/db.json" MYSQL_URL="$MYSQL_URL" \
-              node scripts/mysql/migrate-json-to-mysql.mjs --reset
-            DATA_FILE="$snapshot/db.json" MYSQL_URL="$MYSQL_URL" \
+              node scripts/mysql/migrate-json-to-mysql.mjs --reset \
+                --repair-entity-conflicts --repaired-output "$repaired"
+            test -s "$repaired" || { echo "Missing repaired JSON snapshot: $repaired" >&2; exit 1; }
+            DATA_FILE="$repaired" MYSQL_URL="$MYSQL_URL" \
               node scripts/mysql/verify-mysql-migration.mjs
+          }
+
+          install_repaired_json_fallback() {
+            local repaired="$1" temp
+            test -s "$repaired" || { echo "Missing repaired JSON fallback: $repaired" >&2; exit 1; }
+            temp="$DATA_FILE.mysql-cutover.$$"
+            cp "$repaired" "$temp"
+            chown --reference="$DATA_FILE" "$temp"
+            chmod --reference="$DATA_FILE" "$temp"
+            mv "$temp" "$DATA_FILE"
+            echo "Repaired JSON fallback installed: $DATA_FILE"
           }
 
           write_storage_mode() {
@@ -150,6 +164,7 @@ jobs:
               systemctl stop zhixiao-ai
               snapshot="$(snapshot_live_data)"
               import_and_verify "$snapshot"
+              install_repaired_json_fallback "$snapshot/db.mysql-repaired.json"
               rm -f "$DATA_DIR/.mysql-runtime-disabled"
               write_storage_mode mysql
               systemctl daemon-reload

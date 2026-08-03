@@ -100,10 +100,12 @@ Use GitHub Actions -> `MySQL Runtime Cutover`. It provides four manual actions:
 
 - `status`: show the current runtime storage and health response.
 - `sync_verify`: copy the latest production JSON/follow-up files into a temporary
-  snapshot, reset/import MySQL and verify counts. Runtime remains unchanged.
+  snapshot, repair duplicate entity IDs inside that temporary snapshot only,
+  reset/import MySQL and verify counts. Runtime and the live JSON remain unchanged.
 - `cutover_mysql`: stop the CRM briefly, snapshot and back up the latest JSON,
-  import and verify MySQL again, then enable MySQL and require a successful
-  `/api/health` response before completing.
+  repair duplicate IDs in the snapshot, import and verify MySQL again, install
+  the verified repaired JSON as the rollback baseline, then enable MySQL and
+  require a successful `/api/health` response before completing.
 - `rollback_json`: switch the runtime back to JSON and restart the CRM.
 
 Run `sync_verify` first. Only run `cutover_mysql` after it succeeds. The cutover
@@ -122,6 +124,14 @@ write fails, it falls back to JSON and writes this marker:
 
 That marker prevents a later restart from silently loading stale MySQL data.
 Only a successful fresh `cutover_mysql` removes it.
+
+Entity conflict repair never drops rows. The first duplicate customer keeps its
+legacy ID because customer lookup historically resolved the first array entry;
+later duplicates receive new IDs. The last duplicate opportunity keeps its
+legacy ID because opportunity lookup historically resolved the last indexed
+entry. Related opportunities and inline follow-ups are re-keyed together. The
+migration refuses repair if duplicate opportunities are referenced by external
+follow-up logs or if a customer relation cannot be matched unambiguously.
 
 ## 9. Runtime environment
 
