@@ -132,8 +132,10 @@ The service optionally reads:
 /opt/zhixiao-ai/shared/storage.env
 ```
 
-`mysql.env` contains `MYSQL_URL`. `storage.env` contains `STORAGE_MODE=json` or
-`STORAGE_MODE=mysql`. Never commit either file or the database password to Git.
+`mysql.env` contains `MYSQL_URL`. `storage.env` contains `DATA_BACKEND=json` or
+`DATA_BACKEND=mysql`. `STORAGE_MODE` remains a backward-compatible alias for
+older releases; if both are set, `DATA_BACKEND` wins. Never commit either file
+or the database password to Git.
 
 ## Notes
 

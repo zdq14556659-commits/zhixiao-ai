@@ -85,6 +85,8 @@ jobs:
             local mode="$1"
             mkdir -p "$(dirname "$STORAGE_ENV")"
             cat > "$STORAGE_ENV" <<ENV
+          DATA_BACKEND=$mode
+          # Backward compatibility for releases deployed before DATA_BACKEND.
           STORAGE_MODE=$mode
           MYSQL_FALLBACK_TO_JSON=1
           MYSQL_MIN_COUNT_RATIO=0.98
@@ -126,7 +128,7 @@ jobs:
           case "$STORAGE_ACTION" in
             status)
               echo "===== storage env ====="
-              if [ -f "$STORAGE_ENV" ]; then sed -E 's#(MYSQL_URL=).*#\1***#' "$STORAGE_ENV"; else echo "STORAGE_MODE=json (default)"; fi
+              if [ -f "$STORAGE_ENV" ]; then sed -E 's#(MYSQL_URL=).*#\1***#' "$STORAGE_ENV"; else echo "DATA_BACKEND=json (default)"; fi
               echo "===== mysql ====="
               systemctl is-active mysql 2>/dev/null || systemctl is-active mysqld 2>/dev/null || systemctl is-active mariadb 2>/dev/null || true
               echo "===== health ====="

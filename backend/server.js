@@ -19,7 +19,10 @@ const BACKUP_FILE = path.join(DATA_DIR, "db.backup.json");
 const SEED_FILE = path.join(DATA_DIR, "seed.json");
 const FOLLOWUP_DIR = path.join(DATA_DIR, "followups");
 const MYSQL_DISABLE_MARKER = path.join(DATA_DIR, ".mysql-runtime-disabled");
-const REQUESTED_STORAGE_MODE = String(process.env.STORAGE_MODE || "json").trim().toLowerCase();
+// DATA_BACKEND is the public runtime switch. STORAGE_MODE remains supported so
+// existing production environment files keep working during a rolling deploy.
+const REQUESTED_STORAGE_MODE = String(process.env.DATA_BACKEND || process.env.STORAGE_MODE || "json").trim().toLowerCase();
+const STORAGE_MODE_SOURCE = process.env.DATA_BACKEND ? "DATA_BACKEND" : process.env.STORAGE_MODE ? "STORAGE_MODE" : "default";
 const MYSQL_FALLBACK_TO_JSON = String(process.env.MYSQL_FALLBACK_TO_JSON || "1") !== "0";
 const MYSQL_MIN_COUNT_RATIO = Math.max(0, Math.min(1, Number(process.env.MYSQL_MIN_COUNT_RATIO || 0.98)));
 const UPLOAD_DIR = process.env.UPLOAD_DIR ? path.resolve(process.env.UPLOAD_DIR) : path.join(__dirname, "uploads");
@@ -348,6 +351,7 @@ async function routeApi(req, res, url) {
       },
       storage: {
         requested: REQUESTED_STORAGE_MODE,
+        configuredBy: STORAGE_MODE_SOURCE,
         active: activeStorageMode,
         mysqlDisabled: fs.existsSync(MYSQL_DISABLE_MARKER),
         fallbackEnabled: MYSQL_FALLBACK_TO_JSON,

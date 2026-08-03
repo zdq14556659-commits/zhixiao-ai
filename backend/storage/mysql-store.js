@@ -3,7 +3,7 @@ const crypto = require("crypto");
 function createMysqlStore(options = {}) {
   const url = String(options.url || process.env.MYSQL_URL || "").trim();
   if (!url) throw new Error("MYSQL_URL is required when STORAGE_MODE=mysql");
-  const mysql = loadMysqlClient();
+  const mysql = options.mysqlClient || loadMysqlClient();
   const connection = parseMysqlUrl(url);
 
   const pool = mysql.createPool({
@@ -20,6 +20,8 @@ function createMysqlStore(options = {}) {
   let lastError = "";
   let lastWriteAt = "";
   let lastWriteDurationMs = 0;
+  let pendingWrites = 0;
+  let writeQueue = Promise.resolve();
 
   async function connect() {
     const connection = await pool.getConnection();
@@ -32,6 +34,7 @@ function createMysqlStore(options = {}) {
   }
 
   async function close() {
+    await writeQueue;
     await pool.end();
   }
 
@@ -100,7 +103,19 @@ function createMysqlStore(options = {}) {
     }
   }
 
-  async function persistChanges(changes = {}) {
+  function persistChanges(changes = {}) {
+    const snapshot = snapshotChanges(changes);
+    pendingWrites += 1;
+    const operation = writeQueue.then(() => persistChangesTransaction(snapshot));
+    // Keep the queue usable after a failed transaction. The caller still
+    // receives the original rejection and can activate the JSON fallback.
+    writeQueue = operation.catch(() => {});
+    return operation.finally(() => {
+      pendingWrites = Math.max(0, pendingWrites - 1);
+    });
+  }
+
+  async function persistChangesTransaction(changes = {}) {
     const startedAt = Date.now();
     const connection = await pool.getConnection();
     try {
@@ -137,10 +152,27 @@ function createMysqlStore(options = {}) {
   }
 
   function status() {
-    return { lastError, lastWriteAt, lastWriteDurationMs };
+    return { lastError, lastWriteAt, lastWriteDurationMs, pendingWrites };
   }
 
   return { connect, close, counts, loadCoreState, persistChanges, status };
+}
+
+function snapshotChanges(changes = {}) {
+  const clone = (value) => {
+    if (value === undefined) return undefined;
+    if (typeof structuredClone === "function") return structuredClone(value);
+    return JSON.parse(JSON.stringify(value));
+  };
+  return {
+    customers: clone(changes.customers || []),
+    opportunities: clone(changes.opportunities || []),
+    followUps: clone(changes.followUps || []),
+    visits: clone(changes.visits || []),
+    deletedCustomerIds: [...(changes.deletedCustomerIds || [])],
+    deletedOpportunityIds: [...(changes.deletedOpportunityIds || [])],
+    deletedVisitIds: [...(changes.deletedVisitIds || [])]
+  };
 }
 
 function loadMysqlClient() {

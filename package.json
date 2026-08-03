@@ -22,7 +22,9 @@
     "test:allocation-audit": "node backend/allocation-audit.test.js",
     "test:performance-stability": "node backend/performance-stability.test.js",
     "test:mysql-fallback": "node backend/mysql-runtime-fallback.test.js",
-    "test": "npm run test:password && npm run test:customers && npm run test:v6 && npm run test:v7 && npm run test:v8 && npm run test:v9 && npm run test:channels && npm run test:import-counts && npm run test:follow-persistence && npm run test:dashboard-actions && npm run test:metadata-state && npm run test:allocation-audit && npm run test:performance-stability && npm run test:mysql-fallback"
+    "test:mysql-store-queue": "node backend/mysql-store-queue.test.js",
+    "test:mysql-followup-projection": "node backend/mysql-followup-projection.test.mjs",
+    "test": "npm run test:password && npm run test:customers && npm run test:v6 && npm run test:v7 && npm run test:v8 && npm run test:v9 && npm run test:channels && npm run test:import-counts && npm run test:follow-persistence && npm run test:dashboard-actions && npm run test:metadata-state && npm run test:allocation-audit && npm run test:performance-stability && npm run test:mysql-fallback && npm run test:mysql-store-queue && npm run test:mysql-followup-projection"
   },
   "dependencies": {
     "jszip": "^3.10.1",

@@ -2,6 +2,11 @@
 import path from "path";
 import process from "process";
 import mysql from "mysql2/promise";
+import {
+  assertFollowUpProjectionComplete,
+  collectProjectedFollowUps,
+  formatFollowUpProjectionStats
+} from "./followup-projection.mjs";
 
 const root = path.resolve(new URL("../..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
 const defaultDataFile = path.join(root, "backend", "data", "db.json");
@@ -68,7 +73,12 @@ async function importState(db, source) {
   for (const user of source.users || []) await upsertUser(db, user);
   for (const customer of source.customers || []) await upsertCustomer(db, customer);
   for (const opportunity of source.opportunities || []) await upsertOpportunity(db, opportunity);
-  for (const follow of collectFollowUps(source, dataFile)) await upsertFollowUp(db, follow);
+  const followProjection = collectProjectedFollowUps(source, dataFile, {
+    warn: (warning) => projectionWarnings.push(warning)
+  });
+  console.log(`MYSQL_FOLLOWUPS_COLLECTED ${formatFollowUpProjectionStats(followProjection.stats)}`);
+  assertFollowUpProjectionComplete(followProjection.stats);
+  for (const follow of followProjection.entries) await upsertFollowUp(db, follow);
   for (const visit of source.visits || []) await upsertVisit(db, visit);
   for (const activity of source.activities || []) await upsertAudit(db, "activity", activity);
   for (const log of source.securityLogs || []) await upsertAudit(db, "securityLog", log);
@@ -251,49 +261,6 @@ async function upsertFollowUp(db, follow) {
       JSON.stringify(follow)
     ]
   );
-}
-
-function collectFollowUps(source, sourceFile) {
-  const opportunityById = new Map((source.opportunities || []).map((item) => [Number(item.id), item]));
-  const collected = new Map();
-  const add = (raw = {}, fallback = {}) => {
-    const opportunityId = nullableNumber(raw.opportunityId ?? fallback.opportunityId);
-    if (!opportunityId || !opportunityById.has(opportunityId)) return;
-    const opportunity = opportunityById.get(opportunityId) || {};
-    const customerId = nullableNumber(raw.customerId ?? fallback.customerId ?? opportunity.customerId);
-    const identity = raw.id || hash([
-      raw.createdAt || raw.date || "",
-      raw.author || raw.owner || raw.followPerson || "",
-      raw.note || "",
-      raw.nextFollow || ""
-    ].join("|"));
-    const sourceKey = `follow:${opportunityId}:${identity}`;
-    if (collected.has(sourceKey)) return;
-    collected.set(sourceKey, { ...raw, opportunityId, customerId, sourceKey });
-  };
-
-  for (const opportunity of source.opportunities || []) {
-    for (const follow of opportunity.followUps || []) {
-      add(follow, { opportunityId: opportunity.id, customerId: opportunity.customerId });
-    }
-  }
-
-  const followDir = path.join(path.dirname(sourceFile), "followups");
-  if (fs.existsSync(followDir)) {
-    for (const name of fs.readdirSync(followDir).filter((item) => item.endsWith(".jsonl")).sort()) {
-      const file = path.join(followDir, name);
-      const lines = fs.readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean);
-      lines.forEach((line, index) => {
-        try {
-          add(JSON.parse(line), { sourceKey: `${name}:${index + 1}` });
-        } catch {
-          projectionWarnings.push(`followup file=${name} line=${index + 1} malformed and skipped`);
-        }
-      });
-    }
-  }
-  console.log(`MYSQL_FOLLOWUPS_COLLECTED count=${collected.size}`);
-  return [...collected.values()];
 }
 
 async function upsertVisit(db, visit) {

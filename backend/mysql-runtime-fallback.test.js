@@ -60,7 +60,8 @@ async function run() {
       DATA_DIR: tempDir,
       UPLOAD_DIR: path.join(tempDir, "uploads"),
       AUTH_TOKEN_SECRET: "mysql-runtime-fallback-test-secret",
-      STORAGE_MODE: "mysql",
+      DATA_BACKEND: "mysql",
+      STORAGE_MODE: "json",
       MYSQL_URL: "",
       MYSQL_FALLBACK_TO_JSON: "1"
     },
@@ -71,6 +72,7 @@ async function run() {
 
   const health = await waitForServer();
   assert.equal(health.storage.requested, "mysql");
+  assert.equal(health.storage.configuredBy, "DATA_BACKEND");
   assert.equal(health.storage.active, "json");
   assert.equal(health.storage.mysqlDisabled, true);
   assert.ok(health.storage.startupError.includes("MYSQL_URL"));
