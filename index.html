@@ -168,12 +168,13 @@
               <button id="batchImportBtn">批量导入</button>
               <button id="batchAssignBtn" disabled>批量分配</button>
               <button id="batchChannelBtn" disabled>批量纠正阶段</button>
+              <button id="batchDeleteInvalidBtn" class="danger-outline hidden" disabled>批量永久删除</button>
               <button id="allocationAuditBtn" type="button">资源分配对账</button>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr><th class="select-cell"><input type="checkbox" id="selectAllCustomers" /></th><th>客户</th><th>意向产品</th><th>客户电话</th><th>城市</th><th>渠道来源</th><th>录入人</th><th>跟进人</th><th id="stageTimeHeader">录入时间</th><th>跟进记录</th><th>最新跟进时间</th><th>下次跟进时间</th><th>单位</th><th>客户地址</th><th>操作</th></tr>
+                  <tr><th class="select-cell"><input type="checkbox" id="selectAllCustomers" /></th><th>客户</th><th>意向产品</th><th>客户电话</th><th>城市</th><th id="channelSourceHeader">渠道来源</th><th>录入人</th><th>跟进人</th><th id="publicCreatedAtHeader" class="hidden">录入时间</th><th id="stageTimeHeader">录入时间</th><th>跟进记录</th><th>最新跟进时间</th><th>下次跟进时间</th><th>单位</th><th>客户地址</th><th>操作</th></tr>
                 </thead>
                 <tbody id="customerRows"></tbody>
               </table>
@@ -327,7 +328,6 @@
                 <label>长期未跟进入公海（天）<input name="inactivePublicPoolDays" type="number" min="0" step="1" /></label>
                 <label>公海排序方式
                   <select name="publicPoolSortMode">
-                    <option value="daily_spread">每日分流排序</option>
                     <option value="created_at">按进入公海时间</option>
                   </select>
                 </label>
@@ -519,13 +519,14 @@
         <div class="dialog-heading-row">
           <div>
             <h2>资源分配对账</h2>
-            <p class="muted">按首次导入时间追踪运营导入公海的全部资源，每条资源只统计一次。</p>
+            <p class="muted">按首次导入时间追踪所有账号导入公海的资源，每条资源只统计一次。</p>
           </div>
           <button value="cancel" type="submit">关闭</button>
         </div>
         <div class="allocation-audit-filters">
           <label>导入开始日期<input name="start" type="date" /></label>
           <label>导入结束日期<input name="end" type="date" /></label>
+          <label>导入人<select name="importer" id="allocationAuditImporter"><option value="">全部导入人</option></select></label>
           <label>跟进人<select name="ownerId" id="allocationAuditOwner"><option value="">全部跟进人</option></select></label>
           <label>分配人<select name="allocatorId" id="allocationAuditAllocator"><option value="">全部分配人</option></select></label>
           <label>单位<select name="unitId" id="allocationAuditUnit"><option value="">全部单位</option></select></label>
@@ -535,8 +536,8 @@
         <div class="allocation-audit-stats" id="allocationAuditStats"></div>
         <div class="table-wrap allocation-audit-table-wrap">
           <table>
-            <thead><tr><th>首次导入时间</th><th>客户</th><th>意向产品</th><th>分配人</th><th>当前跟进人</th><th>单位</th><th>当前状态</th><th>跟进判定</th><th>跟进次数</th><th>历史跟进记录</th></tr></thead>
-            <tbody id="allocationAuditRows"><tr><td colspan="10" class="empty">点击“查询”加载对账数据</td></tr></tbody>
+            <thead><tr><th>首次导入时间</th><th>导入人</th><th>客户</th><th>意向产品</th><th>分配人</th><th>当前跟进人</th><th>单位</th><th>当前状态</th><th>跟进判定</th><th>跟进次数</th><th>历史跟进记录</th></tr></thead>
+            <tbody id="allocationAuditRows"><tr><td colspan="11" class="empty">点击“查询”加载对账数据</td></tr></tbody>
           </table>
         </div>
         <div class="customer-pager allocation-audit-pager">
@@ -663,7 +664,7 @@
         <p class="muted" id="editUserSummary"></p>
         <input name="userId" type="hidden" />
         <label>员工姓名<input name="name" required /></label>
-        <label>登录账号<input name="account" disabled /></label>
+        <label>登录手机号<input name="account" inputmode="numeric" autocomplete="tel" pattern="1[0-9]{10}" maxlength="11" required /></label>
         <label>角色<select name="roleId" id="editUserRoleSelect"></select></label>
         <label>单位<select name="unitId" id="editUserUnitSelect"></select></label>
         <label>账号状态
@@ -672,8 +673,20 @@
             <option value="停用">停用</option>
           </select>
         </label>
-        <p class="muted">修改角色或单位后，该员工需要重新登录才能获得新权限；客户、跟进、地推和业绩记录不会丢失。</p>
+        <p class="muted">登录手机号必须为中国大陆11位手机号且不能重复。保存后旧手机号和现有登录立即失效，员工需使用新手机号重新登录；客户、跟进、地推和业绩记录不会丢失。</p>
         <div class="button-row"><button type="button" data-close-dialog="editUserDialog">取消</button><button class="primary" type="submit">保存修改</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="bulkDeleteInvalidDialog">
+      <form class="dialog-form" id="bulkDeleteInvalidForm">
+        <h2>批量永久删除无效客户</h2>
+        <p class="muted" id="bulkDeleteInvalidSummary"></p>
+        <div class="danger-confirm-card">
+          <b>此操作不可恢复</b>
+          <p>将同步删除所选客户及关联销售机会、跟进记录、拜访记录、活动、路线停靠点和定位任务。</p>
+        </div>
+        <div class="button-row"><button type="button" data-close-dialog="bulkDeleteInvalidDialog">取消</button><button class="danger-outline" type="submit">确认永久删除</button></div>
       </form>
     </dialog>
 

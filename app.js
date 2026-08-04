@@ -65,6 +65,7 @@ let fieldCluster = null;
 let geocodeProgressTimer = null;
 let currentCustomerRows = [];
 let currentFilteredCustomerRows = [];
+let pendingInvalidDeleteCustomerIds = [];
 let selectedCustomerIds = new Set();
 let customerPage = 1;
 let customerPageSize = 20;
@@ -399,7 +400,7 @@ function isReadonlyStage(stage = currentStage) {
 
 function stageTimeConfig(stage = currentStage) {
   if (stage === "全部") return { label: "阶段时间", field: "createdAt" };
-  if (stage === PUBLIC_POOL_STAGE) return { label: "进入公海", field: "publicPoolAt" };
+  if (stage === PUBLIC_POOL_STAGE) return { label: "进入公海时间", field: "publicPoolAt" };
   if (stage === PURCHASED_STAGE) return { label: "标记已购", field: "purchasedAt" };
   if (stage === INVALID_STAGE) return { label: "归档时间", field: "archivedAt" };
   if (stage === "名单") return { label: "录入时间", field: "createdAt" };
@@ -501,7 +502,9 @@ function canSelectCustomerForAssign(customer = {}) {
 }
 
 function canSelectCustomer(customer = {}) {
-  return canSelectCustomerForAssign(customer) || canCorrectCustomerStage(customer);
+  return (currentStage === INVALID_STAGE && canViewInvalidCustomers() && isInvalidCustomer(customer))
+    || canSelectCustomerForAssign(customer)
+    || canCorrectCustomerStage(customer);
 }
 
 function rollbackTargetForStage(stage = "") {
@@ -628,6 +631,7 @@ function showImportFeedback(result, entityLabel = "客户") {
   const duplicates = normalized.duplicates;
   const duplicateCustomers = normalized.duplicateCustomers;
   const duplicateOpportunities = normalized.duplicateOpportunities;
+  const fileDuplicates = normalized.fileDuplicates;
   const failed = normalized.failed;
   const pendingLocation = normalized.pendingLocation;
   const channelUnrecognized = normalized.channelUnrecognized;
@@ -642,13 +646,15 @@ function showImportFeedback(result, entityLabel = "客户") {
       ? `重复${entityLabel}未导入`
       : `${entityLabel}导入完成`;
   $("#importResultStats").innerHTML = [
-    ["总行数", total, ""],
-    ["成功", imported, "success"],
-    ["重复客户", duplicateCustomers, "warning"],
-    ["重复机会", duplicateOpportunities, "warning"],
-    ...(duplicates && !duplicateCustomers && !duplicateOpportunities ? [["跳过", duplicates, "warning"]] : []),
+    ["原始数据", total, ""],
+    ["成功新增", imported, "success"],
+    ["系统已有客户", duplicateCustomers, "warning"],
+    ["系统已有机会", duplicateOpportunities, "warning"],
+    ["文件内重复", fileDuplicates, "warning"],
+    ...(duplicates > duplicateCustomers + duplicateOpportunities + fileDuplicates ? [["其他跳过", duplicates - duplicateCustomers - duplicateOpportunities - fileDuplicates, "warning"]] : []),
     ["失败", failed, "danger"],
     ...(channelUnrecognized ? [["渠道未识别", channelUnrecognized, "warning"]] : []),
+    ...(normalized.cityUnrecognized ? [["城市待识别", normalized.cityUnrecognized, "warning"]] : []),
     ...(pendingLocation ? [["待定位", pendingLocation, "warning"]] : [])
   ].map(([label, value, className]) => `<div class="${className}"><span>${label}</span><b>${value}</b></div>`).join("");
   $("#importResultDetails").innerHTML = details.length
@@ -703,14 +709,17 @@ function normalizeImportResult(result = {}) {
   const warnings = Array.isArray(result.warnings) ? result.warnings : [];
   const duplicateCustomerRows = Array.isArray(result.duplicateCustomerRows) ? result.duplicateCustomerRows : [];
   const duplicateOpportunityRows = Array.isArray(result.duplicateOpportunityRows) ? result.duplicateOpportunityRows : [];
+  const fileDuplicateRows = Array.isArray(result.fileDuplicateRows) ? result.fileDuplicateRows : [];
   return {
     total: Number(result.total || 0),
     imported: Number(result.imported || 0),
     duplicates: Number(result.duplicates ?? skipped.length ?? 0),
     duplicateCustomers: Number(result.duplicateCustomers ?? duplicateCustomerRows.length ?? 0),
     duplicateOpportunities: Number(result.duplicateOpportunities ?? duplicateOpportunityRows.length ?? 0),
+    fileDuplicates: Number(result.fileDuplicates ?? fileDuplicateRows.length ?? skipped.filter((item) => item.code === "FILE_DUPLICATE_OPPORTUNITY").length ?? 0),
     failed: Number(result.failed ?? failures.length ?? 0),
     channelUnrecognized: Number(result.channelUnrecognized ?? warnings.length ?? 0),
+    cityUnrecognized: Number(result.cityUnrecognized ?? warnings.filter((item) => item.code === "CITY_UNRECOGNIZED").length ?? 0),
     pendingLocation: Number(result.pendingLocation || 0),
     pendingGeocode: Number(result.pendingGeocode || 0),
     reportUrl: result.reportUrl || "",
@@ -733,8 +742,10 @@ function importErrorResult(error) {
     duplicates: Number(data.duplicates || skipped.length || 0),
     duplicateCustomers: Number(data.duplicateCustomers || 0),
     duplicateOpportunities: Number(data.duplicateOpportunities || 0),
+    fileDuplicates: Number(data.fileDuplicates || skipped.filter((item) => item.code === "FILE_DUPLICATE_OPPORTUNITY").length || 0),
     failed: Number(data.failed || failures.length || 1),
     channelUnrecognized: Number(data.channelUnrecognized || 0),
+    cityUnrecognized: Number(data.cityUnrecognized || 0),
     pendingLocation: Number(data.pendingLocation || 0),
     reportUrl: data.reportUrl || "",
     skipped,
@@ -790,6 +801,10 @@ function isPublicPoolLoaded() {
 }
 
 function customerBoardQuery() {
+  if (currentStage === INVALID_STAGE && !canViewInvalidCustomers()) {
+    currentStage = stages[0];
+    localStorage.setItem(CUSTOMER_STAGE_KEY, currentStage);
+  }
   sanitizeCustomerFiltersForStage(currentStage);
   const params = new URLSearchParams({
     paginated: "1",
@@ -799,7 +814,9 @@ function customerBoardQuery() {
   });
   const values = {
     keyword: $("#customerKeyword")?.value?.trim() || "",
-    channelSource: $("#channelFilter")?.value || "",
+    channelSource: currentStage === PUBLIC_POOL_STAGE && !canViewPublicPoolChannelSource()
+      ? ""
+      : $("#channelFilter")?.value || "",
     createdBy: $("#createdByFilter")?.value?.trim() || "",
     followPerson: $("#followPersonFilter")?.value?.trim() || "",
     unit: $("#unitFilter")?.value || "",
@@ -976,6 +993,7 @@ async function resetPassword(event) {
 }
 
 function openEditUserDialog(id) {
+  if (!canHardDeleteCustomers()) return toast("仅总负责人和管理员可以修改员工信息");
   const user = state.users.find((item) => Number(item.id) === Number(id));
   if (!user) return;
   const form = $("#editUserForm");
@@ -1000,7 +1018,9 @@ async function submitEditUser(event) {
   const role = roles().find((item) => item.id === form.get("roleId"));
   const unit = (state.units || []).find((item) => item.id === form.get("unitId"));
   const name = String(form.get("name") || "").trim();
+  const account = String(form.get("account") || "").trim();
   if (!name) return toast("请填写员工姓名");
+  if (!/^1\d{10}$/.test(account)) return toast("登录手机号必须是中国大陆11位手机号");
   if (!role) return toast("请选择角色");
   if (!unit) return toast("请选择单位");
   setFormSubmitting(formNode, true, "保存中...");
@@ -1009,6 +1029,7 @@ async function submitEditUser(event) {
       method: "PUT",
       body: {
         name,
+        account,
         roleId: role.id,
         role: role.name,
         unitId: unit.id,
@@ -1018,7 +1039,7 @@ async function submitEditUser(event) {
     });
     $("#editUserDialog").close();
     await loadState();
-    showSuccessFeedback("员工信息已更新", `${name} 的角色、单位和权限已更新；该员工重新登录后生效。`);
+    showSuccessFeedback("员工信息已更新", `${name} 的登录手机号、角色和单位已更新；旧登录已失效，请通知员工重新登录。`);
   } catch (error) {
     toast(error.message || "员工信息保存失败");
   } finally {
@@ -1089,12 +1110,20 @@ function canViewFullPoolInfo() {
   return role.customerScope === "all" || canAdmin() || hasPermission(user, "publicPoolImport");
 }
 
+function canViewPublicPoolChannelSource() {
+  return canHardDeleteCustomers();
+}
+
 function canHardDeleteCustomers() {
   const roleName = roleForUser(currentUser()).name || currentUser().role || "";
   return ["总负责人", "管理员"].includes(roleName);
 }
 
 function canCorrectStages() {
+  return canHardDeleteCustomers();
+}
+
+function canViewInvalidCustomers() {
   return canHardDeleteCustomers();
 }
 
@@ -1326,9 +1355,13 @@ function renderDashboardSummary(data) {
 }
 
 function renderCustomers() {
+  if (currentStage === INVALID_STAGE && !canViewInvalidCustomers()) {
+    currentStage = stages[0];
+    localStorage.setItem(CUSTOMER_STAGE_KEY, currentStage);
+  }
   const customers = scopeOpportunityRows();
   const stageTime = stageTimeConfig();
-  const customerTabs = [...stages, PUBLIC_POOL_STAGE, PURCHASED_STAGE, INVALID_STAGE];
+  const customerTabs = [...stages, PUBLIC_POOL_STAGE, PURCHASED_STAGE, ...(canViewInvalidCustomers() ? [INVALID_STAGE] : [])];
   const publicPoolLoaded = isPublicPoolLoaded();
   const serverBoard = customerBoardData;
   const currentFilters = {
@@ -1367,14 +1400,20 @@ function renderCustomers() {
     ...ownerOptions.map((user) => user.name)
   ];
   const unitOptions = filterOptions.units || customers.map((item) => item.unit);
-  const cityOptions = filterOptions.cities || customers.map((item) => item.city);
+  const cityOptions = (filterOptions.cities || customers.map((item) => item.city))
+    .filter((city) => city && city !== "待识别" && !/^\d+$/.test(String(city)) && !/战区|区域|片区|大区/.test(String(city)));
   $("#channelFilter").innerHTML = optionList("全部渠道来源", channelSources);
+  const hidePublicPoolChannel = currentStage === PUBLIC_POOL_STAGE && !canViewPublicPoolChannelSource();
+  $("#channelFilter").classList.toggle("hidden", hidePublicPoolChannel);
+  $("#channelSourceHeader")?.classList.toggle("hidden", hidePublicPoolChannel);
+  $("#publicCreatedAtHeader")?.classList.toggle("hidden", currentStage !== PUBLIC_POOL_STAGE);
+  if (hidePublicPoolChannel) $("#channelFilter").value = "";
   $("#createdByFilterOptions").innerHTML = datalistOptions(createdByOptions);
   $("#followPersonFilterOptions").innerHTML = datalistOptions(followPersonOptions);
   $("#createdByFilter").placeholder = "全部录入人";
   $("#followPersonFilter").placeholder = roleForUser(currentUser()).customerScope === "self" ? "当前仅本人" : "全部跟进人";
   $("#cityFilter").innerHTML = optionList("全部城市", cityOptions);
-  $("#channelFilter").value = currentFilters.channel;
+  $("#channelFilter").value = hidePublicPoolChannel ? "" : currentFilters.channel;
   $("#unitFilter").innerHTML = optionListItems("全部单位", customerUnitFilterOptions(unitOptions));
   $("#createdByFilter").value = currentFilters.createdBy;
   $("#followPersonFilter").value = currentFilters.followPerson;
@@ -1395,6 +1434,7 @@ function renderCustomers() {
   $("#customerProductSelect").innerHTML = productOptions;
   $("#newOpportunityProductSelect").innerHTML = productOptions;
   $("#batchAssignBtn").classList.toggle("hidden", currentStage === INVALID_STAGE || currentStage === PURCHASED_STAGE || !canAssignCustomers());
+  $("#batchDeleteInvalidBtn")?.classList.toggle("hidden", currentStage !== INVALID_STAGE || !canViewInvalidCustomers());
   $("#allocationAuditBtn")?.classList.toggle("hidden", currentStage !== PUBLIC_POOL_STAGE || !canViewAllocationAudit());
   $("#addCustomerBtn").classList.toggle("hidden", isReadonlyStage());
   $("#batchImportBtn").classList.toggle("hidden", currentStage === INVALID_STAGE || currentStage === PURCHASED_STAGE || (currentStage === PUBLIC_POOL_STAGE && !canImportPublicPool()));
@@ -1406,7 +1446,7 @@ function renderCustomers() {
     currentFilteredCustomerRows = [];
     currentCustomerRows = [];
     $("#customerResultCount").textContent = `当前${currentStage}：加载中...`;
-    $("#customerRows").innerHTML = `<tr><td colspan="15" class="empty">客户列表加载中，请稍候...</td></tr>`;
+    $("#customerRows").innerHTML = `<tr><td colspan="${customerTableColumnCount()}" class="empty">客户列表加载中，请稍候...</td></tr>`;
     updateCustomerSelectionUI();
     return;
   }
@@ -1432,7 +1472,7 @@ function renderCustomers() {
     currentCustomerRows = [];
     selectedCustomerIds.clear();
     $("#customerResultCount").textContent = `当前公海：${total}条，正在加载明细...`;
-    $("#customerRows").innerHTML = `<tr><td colspan="15" class="empty">公海明细正在加载，请稍候...</td></tr>`;
+    $("#customerRows").innerHTML = `<tr><td colspan="${customerTableColumnCount()}" class="empty">公海明细正在加载，请稍候...</td></tr>`;
     updateCustomerSelectionUI();
     return;
   }
@@ -1479,7 +1519,7 @@ function renderCustomers() {
   selectedCustomerIds = new Set([...selectedCustomerIds].filter((id) => selectableIds.has(Number(id))));
   $("#customerRows").innerHTML = rows.length
     ? rows.map(customerRow).join("")
-    : `<tr><td colspan="15" class="empty">暂无销售机会</td></tr>`;
+    : `<tr><td colspan="${customerTableColumnCount()}" class="empty">暂无销售机会</td></tr>`;
   updateCustomerSelectionUI();
   const sizeSelect = $("#customerPageSize");
   if (sizeSelect) sizeSelect.value = String(customerPageSize);
@@ -1491,6 +1531,12 @@ function renderCustomers() {
   $("#customerPageSummary").textContent = `共 ${totalRows} 条 · 第 ${customerPage} / ${totalPages} 页`;
   $("#customerPrevPage").disabled = customerPage <= 1;
   $("#customerNextPage").disabled = customerPage >= totalPages;
+}
+
+function customerTableColumnCount() {
+  const publicCreatedAtColumn = currentStage === PUBLIC_POOL_STAGE ? 1 : 0;
+  const hiddenChannelColumn = currentStage === PUBLIC_POOL_STAGE && !canViewPublicPoolChannelSource() ? 1 : 0;
+  return 15 + publicCreatedAtColumn - hiddenChannelColumn;
 }
 
 function photoStripHtml(photos = [], label = "客户图片", limit = 4, linked = false) {
@@ -1509,6 +1555,7 @@ function customerRow(item) {
   const isInvalid = isInvalidCustomer(item);
   const isPublicPool = isPublicPoolCustomer(item);
   const shouldMaskPublicPool = isPublicPool && !canViewFullPoolInfo();
+  const hidePublicPoolChannel = currentStage === PUBLIC_POOL_STAGE && (!canViewPublicPoolChannelSource() || item.channelSourceHidden === true);
   const isPurchased = isPurchasedCustomer(item);
   const assignable = canSelectCustomerForAssign(item);
   const selectable = canSelectCustomer(item);
@@ -1527,7 +1574,7 @@ function customerRow(item) {
   const followHtml = shouldMaskPublicPool
     ? `<small class="pool-private-value">认领后可查看跟进历史</small>`
     : isInvalid
-      ? `<small class="pool-private-value">${escapeHtml(item.archiveReason === "closed" ? "已标记倒闭" : "已标记无效")}${item.archivedAt ? ` · ${escapeHtml(String(item.archivedAt).slice(0, 10))}` : ""}</small>${followCount ? `<button class="history-link" data-action="history" data-id="${item.id}">查看历史(${followCount})</button>` : ""}`
+      ? `<small class="pool-private-value"><b>${escapeHtml(item.archiveReason === "closed" ? "倒闭/停业" : "确认无效")}</b>${item.archiveNote ? ` · ${escapeHtml(item.archiveNote)}` : " · 未填写补充原因"}</small><button class="history-link" data-action="history" data-id="${item.id}">查看历史(${followCount})</button>`
     : (followCount ? `${lastNote ? `<small>${escapeHtml(lastNote)}</small>` : ""}<button class="history-link" data-action="history" data-id="${item.id}">查看历史(${followCount})</button>${photoHtml}` : `<small class="pool-private-value">未跟进</small>${photoHtml}`);
   const pendingRollback = latestPendingRollback(item);
   const rollbackActions = pendingRollback
@@ -1544,6 +1591,11 @@ function customerRow(item) {
       : isPurchased
         ? `<button data-action="history" data-id="${item.id}">查看历史</button><button class="primary" data-action="new-opportunity" data-id="${item.id}">新增机会</button>`
         : `<button data-action="follow" data-id="${item.id}">跟进</button><button data-action="ai" data-id="${item.id}">小智</button>${item.stage === "成交" ? `<button class="primary" data-action="new-opportunity" data-id="${item.id}">新增机会</button>` : `<button data-action="advance" data-id="${item.id}">推进</button>${rollbackActions}`}`;
+  const publicCreatedAtCell = currentStage === PUBLIC_POOL_STAGE ? `<td>${escapeHtml(String(item.createdAt || "").slice(0, 10) || "-")}</td>` : "";
+  const channelCell = hidePublicPoolChannel ? "" : `<td>${escapeHtml(normalizeChannelSource(item.channelSource))}</td>`;
+  const stageTimeCell = isInvalid
+    ? `<td>${escapeHtml(customerStageTime(item) || "-")}<small>操作人：${escapeHtml(item.archivedBy || "未记录")}</small></td>`
+    : `<td>${escapeHtml(customerStageTime(item) || "-")}</td>`;
   return `
     <tr>
       <td class="select-cell"><input type="checkbox" class="customer-select" data-id="${item.id}" ${checked} ${disabled} title="${title}" /></td>
@@ -1551,10 +1603,11 @@ function customerRow(item) {
       <td><span class="tag">${escapeHtml(item.productName || "待确认产品")}</span></td>
       <td>${phoneHtml}</td>
       <td>${escapeHtml(item.city || "待识别")}</td>
-      <td>${escapeHtml(normalizeChannelSource(item.channelSource))}</td>
+      ${channelCell}
       <td>${escapeHtml(item.createdBy || "未记录")}</td>
       <td>${escapeHtml(item.followPersonDisplay || item.followPerson || item.owner || "未分配")}</td>
-      <td>${escapeHtml(customerStageTime(item) || "-")}</td>
+      ${publicCreatedAtCell}
+      ${stageTimeCell}
       <td>${followHtml}</td>
       <td>${latestManualFollowDate(item) || "-"}</td>
       <td class="${dueClass}">${item.nextFollow || "未设置"}</td>
@@ -1569,6 +1622,7 @@ function updateCustomerSelectionUI() {
   const pageSelectedCount = selectableRows.filter((item) => selectedCustomerIds.has(Number(item.id))).length;
   const assignSelectedCount = currentFilteredCustomerRows.filter((item) => canSelectCustomerForAssign(item) && selectedCustomerIds.has(Number(item.id))).length;
   const correctionSelectedCount = currentFilteredCustomerRows.filter((item) => canCorrectCustomerStage(item) && selectedCustomerIds.has(Number(item.id))).length;
+  const invalidSelectedCount = currentFilteredCustomerRows.filter((item) => isInvalidCustomer(item) && selectedCustomerIds.has(Number(item.id))).length;
   const selectAll = $("#selectAllCustomers");
   if (selectAll) {
     selectAll.disabled = selectableRows.length === 0;
@@ -1585,6 +1639,11 @@ function updateCustomerSelectionUI() {
     channelButton.classList.toggle("hidden", !canCorrectStages());
     channelButton.disabled = correctionSelectedCount === 0;
     channelButton.textContent = correctionSelectedCount ? `批量纠正阶段(${correctionSelectedCount})` : "批量纠正阶段";
+  }
+  const invalidDeleteButton = $("#batchDeleteInvalidBtn");
+  if (invalidDeleteButton) {
+    invalidDeleteButton.disabled = invalidSelectedCount === 0;
+    invalidDeleteButton.textContent = invalidSelectedCount ? `批量永久删除(${invalidSelectedCount})` : "批量永久删除";
   }
 }
 
@@ -1855,7 +1914,7 @@ function renderUserOrgTree() {
     return `<article class="user-card">
       <b>${escapeHtml(user.name)}</b><span>${user.status || "启用"}</span>
       <p>${escapeHtml(meta)}</p>
-      <div class="user-actions">${Number(user.id) === Number(currentUser().id) ? "" : `<button data-action="edit-user" data-id="${user.id}">编辑员工</button><button data-action="reset-password" data-id="${user.id}">重置密码</button><button data-action="offboard-user" data-id="${user.id}">离职交接</button><button data-action="delete-user" data-id="${user.id}">删除员工</button>`}</div>
+      <div class="user-actions">${Number(user.id) === Number(currentUser().id) ? "" : `${canHardDeleteCustomers() ? `<button data-action="edit-user" data-id="${user.id}">编辑员工</button>` : ""}<button data-action="reset-password" data-id="${user.id}">重置密码</button><button data-action="offboard-user" data-id="${user.id}">离职交接</button><button data-action="delete-user" data-id="${user.id}">删除员工</button>`}</div>
     </article>`;
   };
   const renderNode = (unit) => {
@@ -1962,7 +2021,10 @@ async function openFollowHistory(customer) {
       || (Array.isArray(visit.photos) && visit.photos.length);
   });
   $("#followHistoryTitle").textContent = `${customer.name} · 跟进历史`;
-  $("#followHistorySummary").textContent = `共 ${history.length} 条跟进记录${visitRows.length ? ` · ${visitRows.length} 次地推拜访` : ""}`;
+  const archiveSummary = isInvalidCustomer(customer)
+    ? `${customer.archiveReason === "closed" ? "倒闭/停业" : "确认无效"}${customer.archiveNote ? `：${customer.archiveNote}` : "（未填写补充原因）"} · 归档时间 ${String(customer.archivedAt || "-").slice(0, 10)} · 操作人 ${customer.archivedBy || "未记录"} · `
+    : "";
+  $("#followHistorySummary").textContent = `${archiveSummary}共 ${history.length} 条跟进记录${visitRows.length ? ` · ${visitRows.length} 次地推拜访` : ""}`;
   const historyHtml = history.map((item) => `
         <article class="follow-history-item">
           <div class="follow-history-meta"><b>${escapeHtml(formatFollowTime(item))}</b><span>${escapeHtml(item.author || "历史数据")}</span></div>
@@ -2447,7 +2509,7 @@ function allocationAuditParams(page = allocationAuditPage, includePaging = true)
     params.set("page", String(page));
     params.set("pageSize", "100");
   }
-  ["start", "end", "ownerId", "allocatorId", "unitId"].forEach((key) => {
+  ["start", "end", "importer", "ownerId", "allocatorId", "unitId"].forEach((key) => {
     const value = String(formData.get(key) || "").trim();
     if (value) params.set(key, value);
   });
@@ -2476,7 +2538,7 @@ function renderAllocationAudit() {
   if (!data) return;
   const totals = data.totals || {};
   $("#allocationAuditStats").innerHTML = [
-    ["运营导入", totals.total || 0, "total"],
+    ["公海导入", totals.total || 0, "total"],
     ["已跟进", totals.followed || 0, "followed"],
     ["待跟进", totals.pending || 0, "pending"],
     ["线索", totals.lead || 0, "lead"],
@@ -2486,6 +2548,7 @@ function renderAllocationAudit() {
   $("#allocationAuditRows").innerHTML = (data.items || []).length ? data.items.map((item) => `
     <tr>
       <td>${escapeHtml(formatFollowTime({ createdAt: item.importedAt }))}</td>
+      <td>${escapeHtml(item.importer || "未记录")}</td>
       <td><b>${escapeHtml(item.customerName)}</b><br><small>${escapeHtml(item.phone || "电话未记录")}</small></td>
       <td>${escapeHtml(item.productName || "待确认产品")}</td>
       <td>${escapeHtml(item.allocatorDisplay || "未记录")}</td>
@@ -2495,7 +2558,7 @@ function renderAllocationAudit() {
       <td>${item.followed ? `<b>已跟进</b><br><small>${escapeHtml(item.followedReason || "已处理")}</small>` : '<b class="allocation-audit-no-follow">待跟进</b>'}</td>
       <td>${Number(item.followCount || 0)}</td>
       <td>${allocationAuditHistoryHtml(item.followHistory || [], item.followedReason || "")}</td>
-    </tr>`).join("") : '<tr><td colspan="10" class="empty">当前条件下没有运营导入的公海资源</td></tr>';
+    </tr>`).join("") : '<tr><td colspan="11" class="empty">当前条件下没有导入公海的资源</td></tr>';
   $("#allocationAuditPageSummary").textContent = `共 ${data.total || 0} 条 · 第 ${data.page || 1} / ${data.totalPages || 1} 页`;
   $("#allocationAuditPrev").disabled = Number(data.page || 1) <= 1;
   $("#allocationAuditNext").disabled = Number(data.page || 1) >= Number(data.totalPages || 1);
@@ -2508,17 +2571,22 @@ async function loadAllocationAudit(page = allocationAuditPage) {
   const params = allocationAuditParams(page);
   queryButton.disabled = true;
   queryButton.textContent = "计算中...";
-  $("#allocationAuditRows").innerHTML = '<tr><td colspan="10" class="empty">正在追踪资源去向...</td></tr>';
+  $("#allocationAuditRows").innerHTML = '<tr><td colspan="11" class="empty">正在追踪资源去向...</td></tr>';
   try {
     const data = await api(`/reports/allocation-audit?${params.toString()}`);
     if (requestId !== allocationAuditRequestId) return;
     allocationAuditData = data;
+    const importerSelect = $("#allocationAuditImporter");
+    const selectedImporter = importerSelect.value;
+    const importers = data.filterOptions?.importers || [];
+    importerSelect.innerHTML = '<option value="">全部导入人</option>' + importers.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("");
+    importerSelect.value = importers.includes(selectedImporter) ? selectedImporter : "";
     allocationAuditPage = Number(data.page || page || 1);
     renderAllocationAudit();
   } catch (error) {
     if (requestId !== allocationAuditRequestId) return;
     allocationAuditData = null;
-    $("#allocationAuditRows").innerHTML = `<tr><td colspan="10" class="empty">${escapeHtml(error.message || "对账数据加载失败")}</td></tr>`;
+    $("#allocationAuditRows").innerHTML = `<tr><td colspan="11" class="empty">${escapeHtml(error.message || "对账数据加载失败")}</td></tr>`;
     toast(error.message || "对账数据加载失败");
   } finally {
     if (requestId === allocationAuditRequestId) {
@@ -2980,6 +3048,42 @@ async function deleteInvalidCustomerFromRow(opportunityId) {
   toast("无效客户已永久删除");
 }
 
+async function openBulkDeleteInvalidDialog() {
+  if (!canViewInvalidCustomers() || currentStage !== INVALID_STAGE) throw new Error("仅总负责人和管理员可以批量删除无效客户");
+  const selectedRows = currentFilteredCustomerRows.filter((item) => isInvalidCustomer(item) && selectedCustomerIds.has(Number(item.id)));
+  const customerIds = [...new Set(selectedRows.map((item) => Number(item.customerId)).filter(Boolean))];
+  if (!customerIds.length) throw new Error("请先勾选需要永久删除的无效客户");
+  if (customerIds.length > 200) throw new Error("每次最多永久删除200个无效客户");
+  const preview = await api("/customers/bulk-delete-invalid", {
+    method: "POST",
+    body: { customerIds, confirm: false }
+  });
+  pendingInvalidDeleteCustomerIds = customerIds;
+  $("#bulkDeleteInvalidSummary").textContent = `将永久删除：客户 ${preview.deletedCustomers || 0} 个、销售机会 ${preview.deletedOpportunities || 0} 个、跟进记录 ${preview.deletedFollowUps || 0} 条、拜访记录 ${preview.deletedVisits || 0} 条。`;
+  $("#bulkDeleteInvalidDialog").showModal();
+}
+
+async function submitBulkDeleteInvalid(event) {
+  event.preventDefault();
+  const formNode = event.currentTarget;
+  if (!pendingInvalidDeleteCustomerIds.length) return toast("删除清单已失效，请重新勾选");
+  setFormSubmitting(formNode, true, "删除中...");
+  try {
+    const result = await api("/customers/bulk-delete-invalid", {
+      method: "POST",
+      body: { customerIds: pendingInvalidDeleteCustomerIds, confirm: true }
+    });
+    $("#bulkDeleteInvalidDialog").close();
+    pendingInvalidDeleteCustomerIds = [];
+    selectedCustomerIds.clear();
+    customerPage = 1;
+    await refreshCustomersAfterMutation();
+    toast(`已永久删除${result.deletedCustomers || 0}个客户、${result.deletedOpportunities || 0}个机会、${result.deletedFollowUps || 0}条跟进、${result.deletedVisits || 0}条拜访`);
+  } finally {
+    setFormSubmitting(formNode, false, "删除中...");
+  }
+}
+
 async function restoreCustomer(id) {
   if (!canHardDeleteCustomers()) throw new Error("仅总负责人和管理员可以恢复无效客户");
   await api(`/customers/${id}/restore`, { method: "POST", body: {} });
@@ -3424,7 +3528,9 @@ async function deleteUnit(id) {
 
 function sanitizeCustomerFiltersForStage(stage = currentStage) {
   if (stage !== PUBLIC_POOL_STAGE) return;
-  ["followPersonFilter", "unitFilter", "followStatusFilter", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"].forEach((id) => {
+  const hiddenFilters = ["followPersonFilter", "unitFilter", "followStatusFilter", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"];
+  if (!canViewPublicPoolChannelSource()) hiddenFilters.push("channelFilter");
+  hiddenFilters.forEach((id) => {
     const node = $(`#${id}`);
     if (node) node.value = "";
   });
@@ -3549,6 +3655,7 @@ function wireEvents() {
   $("#changePasswordForm").addEventListener("submit", changePassword);
   $("#resetPasswordForm").addEventListener("submit", resetPassword);
   $("#editUserForm").addEventListener("submit", submitEditUser);
+  $("#bulkDeleteInvalidForm")?.addEventListener("submit", submitBulkDeleteInvalid);
   $("#changePasswordNowBtn").addEventListener("click", () => {
     $("#passwordReminderDialog").close();
     openChangePasswordDialog();
@@ -3565,6 +3672,9 @@ function wireEvents() {
   $("#advanceDialog")?.addEventListener("close", () => {
     pendingFollowAdvancePayload = null;
     delete $("#advanceForm").dataset.mode;
+  });
+  $("#bulkDeleteInvalidDialog")?.addEventListener("close", () => {
+    pendingInvalidDeleteCustomerIds = [];
   });
   document.addEventListener("click", (event) => {
     const button = event.target.closest("dialog button[value='cancel']");
@@ -3653,6 +3763,7 @@ function wireEvents() {
   $("#addCustomerBtn").addEventListener("click", () => openCustomerDialog());
   $("#batchImportBtn").addEventListener("click", () => $("#batchDialog").showModal());
   $("#batchAssignBtn").addEventListener("click", openBatchAssignDialog);
+  $("#batchDeleteInvalidBtn")?.addEventListener("click", () => openBulkDeleteInvalidDialog().catch((error) => toast(error.message)));
   $("#allocationAuditBtn")?.addEventListener("click", openAllocationAuditDialog);
   $("#allocationAuditQuery")?.addEventListener("click", () => {
     allocationAuditPage = 1;

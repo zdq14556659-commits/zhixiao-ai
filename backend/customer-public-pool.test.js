@@ -19,6 +19,7 @@ function customer(id, overrides = {}) {
     name: `测试客户${id}`,
     phone: `1380000${String(id).padStart(4, "0")}`,
     phoneNormalized: `1380000${String(id).padStart(4, "0")}`,
+    channelSource: "企查查",
     stage: "线索",
     ownerId: 1,
     owner: "销售甲",
@@ -123,6 +124,7 @@ const legacyState = {
   knowledge: [],
   resources: []
 };
+legacyState.businessRules = { publicPoolSortMode: "daily_spread" };
 
 fs.mkdirSync(uploadDir, { recursive: true });
 legacyState.users.push({ id: 4, name: "Ops", account: "ops", password: "123456", roleId: "role-ops", unitId: "unit-east", unit: "Ops", zone: "" });
@@ -177,6 +179,9 @@ async function run() {
   const tokenA = await login("sales-a");
   const tokenB = await login("sales-b");
   const tokenOps = await login("ops");
+  const adminLogin = await request("/auth/login", { method: "POST", body: { account: "admin", password: "778899" } });
+  assert.equal(adminLogin.status, 200, JSON.stringify(adminLogin.data));
+  const tokenAdmin = adminLogin.data.token;
 
   const stateA = await request("/state?client=mini&full=1", { token: tokenA });
   const stateB = await request("/state?client=mini&full=1", { token: tokenB });
@@ -189,6 +194,13 @@ async function run() {
   assert.ok([2, 4, 5].every((id) => publicPoolA.data.items.some((item) => item.customerId === id)));
   assert.ok(!publicPoolA.data.items.some((item) => [7, 8].includes(item.customerId)));
   assert.ok(publicPoolA.data.items.every((item) => item.phone === "认领后可见"));
+  assert.ok(publicPoolA.data.items.every((item) => item.channelSource === "" && item.channelSourceHidden === true));
+  const ignoredChannelFilter = await request(`/public-pool?channelSource=${encodeURIComponent("企查查")}`, { token: tokenA });
+  assert.equal(ignoredChannelFilter.data.total, publicPoolA.data.total);
+  assert.deepEqual(ignoredChannelFilter.data.items.map((item) => item.id), publicPoolA.data.items.map((item) => item.id));
+  const adminPublicPool = await request("/public-pool", { token: tokenAdmin });
+  assert.ok(adminPublicPool.data.items.every((item) => item.channelSource === "企查查"));
+  assert.ok(adminPublicPool.data.items.every((item) => item.channelSourceHidden === false));
   const pollutedUnitRow = publicPoolA.data.items.find((item) => item.customerId === 9);
   assert.ok(pollutedUnitRow);
   assert.equal(pollutedUnitRow.address, "湖北省武汉市洪山区关山大道1号");
@@ -216,6 +228,7 @@ async function run() {
   assert.equal(publicPoolB.status, 200);
   assert.ok(publicPoolB.data.items.some((item) => item.customerId === 2));
   assert.equal(publicPoolB.data.items.find((item) => item.customerId === 2).phone, "认领后可见");
+  assert.deepEqual(publicPoolB.data.items.map((item) => item.id), publicPoolA.data.items.map((item) => item.id));
   assert.ok(!stateB.data.customers.some((item) => item.id === 1));
   assert.ok(!stateB.data.customers.some((item) => item.id === 3));
 
@@ -238,6 +251,7 @@ async function run() {
   assert.equal(claimedDetail.status, 200);
   assert.deepEqual(claimedDetail.data.photos, ["/uploads/customer-2.jpg"]);
   assert.ok(claimedDetail.data.followUps.length > 0);
+  assert.equal(claimedDetail.data.channelSource, "企查查");
   const secondClaim = await request("/customers/2/claim", { method: "POST", token: tokenA });
   assert.equal(secondClaim.status, 409);
 
@@ -304,6 +318,8 @@ async function run() {
   const publicBoardOps = await request(`/customer-board?paginated=1&stage=${encodeURIComponent("\u516c\u6d77")}&pageSize=5`, { token: tokenOps });
   assert.equal(publicBoardOps.status, 200, JSON.stringify(publicBoardOps.data));
   assert.equal(publicBoardOps.data.items[0].phone, "13988889999");
+  assert.equal(publicBoardOps.data.items[0].channelSource, "");
+  assert.equal(publicBoardOps.data.items[0].channelSourceHidden, true);
   assert.ok((publicBoardOps.data.filterOptions?.createdBy || []).includes("Ops"));
 
   const blockedPublicImport = await request("/import/customers?target=public_pool", {

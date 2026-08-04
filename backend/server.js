@@ -87,7 +87,6 @@ const OWNERSHIP_CLAIMABLE = "claimable";
 const OWNERSHIP_PUBLIC = "public_pool";
 const PUBLIC_POOL_DAYS = 30;
 const UNKNOWN_SOFTWARE = "未知";
-const PUBLIC_POOL_SORT_DAILY_SPREAD = "daily_spread";
 const PUBLIC_POOL_SORT_CREATED_AT = "created_at";
 const DEFAULT_BUSINESS_RULES = {
   newCustomerProtectionDays: SELF_DEVELOPED_CLAIM_DAYS,
@@ -98,7 +97,7 @@ const DEFAULT_BUSINESS_RULES = {
   systemFollowCounts: false,
   importFollowCounts: true,
   selfImportCountsAssignedUnfollowed: false,
-  publicPoolSortMode: PUBLIC_POOL_SORT_DAILY_SPREAD
+  publicPoolSortMode: PUBLIC_POOL_SORT_CREATED_AT
 };
 const LIFECYCLE_ACTIVE = "active";
 const LIFECYCLE_ARCHIVED = "archived";
@@ -695,10 +694,16 @@ async function routeApi(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/public-pool") {
     const query = Object.fromEntries(url.searchParams.entries());
+    const canViewChannelSource = canViewPublicPoolChannelSource(authState, authUser);
+    if (!canViewChannelSource) delete query.channelSource;
     const rawItems = visiblePublicPoolOpportunities(authState, authUser);
     if (query.full !== "1") {
       const maskPhone = !canViewFullPublicPoolInfo(authState, authUser);
-      const rows = rawItems.map((opportunity) => opportunityListRow(authState, opportunity, { maskPhone, includePhotos: false }));
+      const rows = rawItems.map((opportunity) => opportunityListRow(authState, opportunity, {
+        maskPhone,
+        maskChannelSource: !canViewChannelSource,
+        includePhotos: false
+      }));
       const result = paginatePublicPoolItems(rows, query);
       const customerIds = new Set(result.items.map((item) => Number(item.customerId)).filter(Boolean));
       const visitPhotoMap = buildVisitPhotoMap(authState, 12, customerIds);
@@ -718,6 +723,13 @@ async function routeApi(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/customer-board") {
     const query = Object.fromEntries(url.searchParams.entries());
+    const requestedStage = query.stage || STAGES[0];
+    if ((requestedStage === "无效" || requestedStage === "invalid") && !canViewInvalidCustomers(authState, authUser)) {
+      return sendJson(res, 403, { error: "仅总负责人和管理员可以查看无效客户" });
+    }
+    if (requestedStage === PUBLIC_POOL_STATUS && !canViewPublicPoolChannelSource(authState, authUser)) {
+      delete query.channelSource;
+    }
     if (!isPaginatedQuery(query) && query.full !== "1") {
       query.paginated = "1";
       query.page = "1";
@@ -744,7 +756,10 @@ async function routeApi(req, res, url) {
     if (isArchived && !visibleArchivedOpportunities(authState, authUser).some((item) => Number(item.id) === Number(opportunity.id))) {
       return sendJson(res, 403, { error: "无权查看该销售机会" });
     }
-    const view = opportunityView(authState, opportunity, { includeExternalFollowUps: true });
+    const rawView = opportunityView(authState, opportunity, { includeExternalFollowUps: true });
+    const view = isPublic && !canViewPublicPoolChannelSource(authState, authUser)
+      ? { ...rawView, channelSource: "", channelSourceHidden: true }
+      : rawView;
     const detailDuration = Date.now() - detailStartedAt;
     if (detailDuration >= DETAIL_API_WARN_MS) {
       console.warn(`[detail-api] opportunity=${opportunity.id} duration=${detailDuration}ms follows=${view.followUps?.length || 0}`);
@@ -1366,6 +1381,53 @@ async function routeApi(req, res, url) {
     return sendJson(res, 200, { ok: true, state: publicState(nextState, viewer) });
   }
 
+  if (req.method === "POST" && url.pathname === "/api/admin/customer-cities/normalize") {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!viewer) return sendJson(res, 401, { error: "请先登录" });
+    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "仅总负责人和管理员可以执行城市治理" });
+    const plan = buildCustomerCityNormalizationPlan(state);
+    const result = {
+      scanned: plan.scanned,
+      corrected: plan.corrected,
+      recovered: plan.recovered,
+      pendingRecognition: plan.pendingRecognition,
+      samples: plan.samples
+    };
+    if (body.confirm !== "NORMALIZE_CUSTOMER_CITIES") {
+      return sendJson(res, 200, { ok: true, dryRun: true, ...result });
+    }
+    const backupPath = await backupStateBeforeCityNormalization(state);
+    const storageModeBefore = activeStorageMode;
+    const securityLogCount = Array.isArray(state.securityLogs) ? state.securityLogs.length : 0;
+    applyCustomerCityNormalizationPlan(plan);
+    appendSecurityLog(state, {
+      type: "normalize_customer_cities",
+      actorId: viewer.id,
+      actorName: viewer.name,
+      targetId: plan.corrected,
+      targetName: `扫描${plan.scanned}条，修正${plan.corrected}条，恢复${plan.recovered}条，待识别${plan.pendingRecognition}条`,
+      sourceIp: getRequestIp(req)
+    });
+    try {
+      await commitCoreState(state, {
+        reason: "normalize-customer-cities",
+        customerIds: plan.changes.map((change) => change.customer.id)
+      }, { immediate: true, reason: "normalize-customer-cities" });
+      if (storageModeBefore === "mysql" && activeStorageMode !== "mysql") {
+        throw new Error(`MySQL 城市修复写入失败，运行时已回退到 ${activeStorageMode}`);
+      }
+    } catch (error) {
+      restoreCustomerCityNormalizationPlan(plan);
+      if (Array.isArray(state.securityLogs)) state.securityLogs = state.securityLogs.slice(0, securityLogCount);
+      rebuildStateIndexes(state);
+      await writeState(state, { immediate: true, reason: "city-normalization-rollback" }).catch(() => {});
+      throw error;
+    }
+    return sendJson(res, 200, { ok: true, dryRun: false, backupPath, ...result });
+  }
+
   if (req.method === "POST" && url.pathname === "/api/customers") {
     const body = await readBody(req);
     const state = readState();
@@ -1392,6 +1454,7 @@ async function routeApi(req, res, url) {
       return sendJson(res, 409, { error: "发现同城名称相似的客户，请确认后继续录入", code: "SIMILAR_CUSTOMER_WARNING" });
     }
     const now = new Date().toISOString();
+    const cityResolution = resolveCustomerCity({ ...body, location: body.location || {} });
     const candidate = {
       id: Date.now(),
       ...body,
@@ -1405,7 +1468,8 @@ async function routeApi(req, res, url) {
       unitId: owner.unitId,
       unit: owner.unit,
       zone: owner.zone,
-      city: body.city || extractCity(body.address || body.region) || "待识别",
+      city: cityResolution.city,
+      location: { ...(body.location || {}), city: cityResolution.city },
       ownershipStatus: OWNERSHIP_LOCKED,
       claimUntil: "",
       effectiveFollowUpAt: "",
@@ -1455,7 +1519,13 @@ async function routeApi(req, res, url) {
       opportunityIds: [opportunity.id],
       followUps: opportunity.followUps || []
     });
-    return sendJson(res, 201, opportunityView(state, opportunity));
+    return sendJson(res, 201, {
+      ...opportunityView(state, opportunity),
+      cityUnrecognized: cityResolution.city === UNKNOWN_CITY ? 1 : 0,
+      warnings: cityResolution.city === UNKNOWN_CITY
+        ? [{ code: "CITY_UNRECOGNIZED", reason: "城市无法可靠识别，已保存为待识别" }]
+        : []
+    });
   }
 
   if (req.method === "POST" && url.pathname === "/api/customers/claim") {
@@ -1526,6 +1596,50 @@ async function routeApi(req, res, url) {
       return sendJson(res, 409, { error: "公海客户认领后方可查看拜访记录", code: "CUSTOMER_CLAIM_REQUIRED" });
     }
     return sendJson(res, 200, visibleVisitsForCustomer(state, viewer, customer.id).sort(sortByNewest));
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/customers/bulk-delete-invalid") {
+    const body = await readBody(req);
+    const state = readState();
+    const viewer = getAuthUser(req, state);
+    if (!canHardDeleteCustomer(state, viewer)) {
+      return sendJson(res, 403, { error: "仅总负责人和管理员可以永久删除无效客户" });
+    }
+    const requestedCustomerIds = Array.isArray(body.customerIds) ? body.customerIds : [];
+    const parsedCustomerIds = requestedCustomerIds.map(Number);
+    if (parsedCustomerIds.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+      return sendJson(res, 400, { error: "客户编号格式不正确，整批未删除", code: "INVALID_BULK_DELETE_IDS" });
+    }
+    const customerIds = [...new Set(parsedCustomerIds)];
+    if (!customerIds.length) return sendJson(res, 400, { error: "请至少选择一个无效客户" });
+    if (customerIds.length > 200) return sendJson(res, 400, { error: "每次最多永久删除200个无效客户", code: "BULK_DELETE_LIMIT_EXCEEDED" });
+    const invalidCustomers = customerIds.map((id) => findCustomer(state.customers || [], id));
+    if (invalidCustomers.some((customer) => !customer || customer.lifecycleStatus !== LIFECYCLE_ARCHIVED)) {
+      return sendJson(res, 409, {
+        error: "所选记录中包含不存在或仍有效的客户，整批未删除",
+        code: "INVALID_BULK_DELETE_SELECTION"
+      });
+    }
+    const plan = permanentCustomerDeletePlan(state, customerIds);
+    if (body.confirm !== true) return sendJson(res, 200, { ok: true, preview: true, ...plan.counts });
+    applyPermanentCustomerDeletion(state, plan);
+    appendSecurityLog(state, {
+      type: "bulk_delete_invalid_customers",
+      actorId: viewer.id,
+      actorName: viewer.name,
+      targetId: customerIds.join(","),
+      targetName: invalidCustomers.map((customer) => customer.name || customer.id).join("、").slice(0, 1000),
+      sourceIp: getRequestIp(req),
+      ...plan.counts
+    });
+    await commitCoreState(state, {
+      reason: "invalid-customer-bulk-delete",
+      deletedCustomerIds: customerIds,
+      deletedOpportunityIds: [...plan.opportunityIds],
+      deletedVisitIds: [...plan.visitIds]
+    }, { immediate: true, reason: "invalid-customer-bulk-delete" });
+    removeExternalFollowUpsForOpportunities(plan.opportunityIds);
+    return sendJson(res, 200, { ok: true, ...plan.counts });
   }
 
   const customerDelete = url.pathname.match(/^\/api\/customers\/(\d+)$/);
@@ -1827,7 +1941,13 @@ async function routeApi(req, res, url) {
     const salesFields = ["productId", "productName", "stage", "owner", "ownerId", "followPerson", "unitId", "unit", "zone", "region", "amount", "demoAt", "quoteAmount", "expectedDealDate", "contractAmount", "paymentAmount", "paymentDate", "paymentOwnerId", "paymentOwner", "lossReason", "lossReasonDetail", "ownershipStatus", "claimUntil", "effectiveFollowUpAt", "publicPoolAt", "publicPoolReason", "ownershipHistory", "leadAt", "opportunityAt", "dealAt", "followUps", "lastNote", "note", "lastFollow", "nextFollow"];
     const customerBody = { ...body };
     salesFields.forEach((field) => delete customerBody[field]);
-    customerBody.city = body.city || (body.address !== undefined ? extractCity(body.address) || "待识别" : previous.city);
+    if (body.city !== undefined || body.address !== undefined || body.location !== undefined) {
+      const cityResolution = resolveCustomerCity({ ...previous, ...body, location: body.location || previous.location || {} });
+      customerBody.city = cityResolution.city;
+      customerBody.location = { ...(body.location || previous.location || {}), city: cityResolution.city };
+    } else {
+      customerBody.city = previous.city;
+    }
     const next = normalizeCustomer({ ...previous, ...customerBody, id: previous.id }, state);
     state.customers[index] = next;
     const opportunity = requestedOpportunity || primaryOpportunity(state, previous.id);
@@ -2021,7 +2141,7 @@ async function routeApi(req, res, url) {
     const body = await readBody(req);
     const state = readState();
     const viewer = getAuthUser(req, state);
-    if (!canUseAdmin(state, viewer)) return sendJson(res, 403, { error: "无员工编辑权限" });
+    if (!canHardDeleteCustomer(state, viewer)) return sendJson(res, 403, { error: "仅总负责人和管理员可以修改员工信息" });
     const id = Number(userUpdate[1]);
     if (Number(viewer.id) === id) return sendJson(res, 400, { error: "不能在这里修改当前登录账号" });
     const index = state.users.findIndex((user) => Number(user.id) === id);
@@ -2037,11 +2157,21 @@ async function routeApi(req, res, url) {
     if (!unit?.id) return sendJson(res, 400, { error: "请选择有效单位" });
     const nextName = String(body.name || target.name || "").trim();
     if (!nextName) return sendJson(res, 400, { error: "员工姓名必填" });
+    const accountRequested = body.account !== undefined;
+    const nextAccount = cleanAccount(accountRequested ? body.account : target.account ?? target.username ?? target.phone);
+    if (accountRequested && !/^1\d{10}$/.test(nextAccount)) {
+      return sendJson(res, 400, { error: "登录手机号必须是中国大陆11位手机号", code: "INVALID_USER_ACCOUNT" });
+    }
+    const duplicateAccount = accountRequested && state.users.some((user) => Number(user.id) !== id && [user.account, user.username, user.phone]
+      .some((value) => cleanAccount(value) === nextAccount));
+    if (duplicateAccount) return sendJson(res, 409, { error: "该登录手机号已被其他员工使用", code: "DUPLICATE_USER_ACCOUNT" });
     const nextStatus = ["启用", "停用"].includes(String(body.status || "")) ? String(body.status) : (target.status || "启用");
     const before = publicUser(target);
+    const accountChanged = accountRequested && cleanAccount(target.account || target.username || target.phone) !== nextAccount;
     const next = applyUnitToUser({
       ...target,
       name: nextName,
+      ...(accountRequested ? { account: nextAccount, username: nextAccount, phone: nextAccount } : {}),
       role: role.name,
       roleId: role.id,
       status: nextStatus,
@@ -2049,16 +2179,18 @@ async function routeApi(req, res, url) {
     }, unit);
     state.users[index] = next;
     appendSecurityLog(state, {
-      type: "update_user",
+      type: accountChanged ? "update_user_account" : "update_user",
       actorId: viewer.id,
       actorName: viewer.name,
       targetId: next.id,
       targetName: next.name,
       sourceIp: getRequestIp(req),
       beforeRole: before.role,
-      afterRole: next.role
+      afterRole: next.role,
+      beforeAccount: before.account || before.username || before.phone || "",
+      afterAccount: nextAccount
     });
-    writeState(state);
+    await writeState(state, { immediate: true, reason: accountChanged ? "user-account-update" : "user-update" });
     return sendJson(res, 200, { ok: true, user: publicUser(next) });
   }
 
@@ -2442,7 +2574,6 @@ function normalizeBusinessRules(input = {}) {
     if (!Number.isFinite(value) || value <= 0) return fallback;
     return Math.max(1, Math.round(value));
   };
-  const sortMode = String(source.publicPoolSortMode || DEFAULT_BUSINESS_RULES.publicPoolSortMode);
   return {
     newCustomerProtectionDays: positiveDays("newCustomerProtectionDays", DEFAULT_BUSINESS_RULES.newCustomerProtectionDays),
     publicPoolClaimProtectionDays: positiveDays("publicPoolClaimProtectionDays", DEFAULT_BUSINESS_RULES.publicPoolClaimProtectionDays),
@@ -2452,9 +2583,9 @@ function normalizeBusinessRules(input = {}) {
     systemFollowCounts: Boolean(source.systemFollowCounts),
     importFollowCounts: source.importFollowCounts !== false,
     selfImportCountsAssignedUnfollowed: Boolean(source.selfImportCountsAssignedUnfollowed),
-    publicPoolSortMode: [PUBLIC_POOL_SORT_DAILY_SPREAD, PUBLIC_POOL_SORT_CREATED_AT].includes(sortMode)
-      ? sortMode
-      : DEFAULT_BUSINESS_RULES.publicPoolSortMode
+    // daily_spread was a viewer-specific shuffle. Normalize every legacy value
+    // to the single deterministic public-pool order.
+    publicPoolSortMode: PUBLIC_POOL_SORT_CREATED_AT
   };
 }
 
@@ -3158,6 +3289,12 @@ function normalizeZone(value) {
   return "中部战区";
 }
 
+function isUsableStoredCity(value) {
+  const text = String(value || "").normalize("NFKC").replace(/\s+/g, "").trim();
+  if (!text || /^\d+$/.test(text) || /战区|片区|大区|区域/.test(text) || /省$|自治区$|特别行政区$/.test(text)) return false;
+  return /^[\u4e00-\u9fa5]{2,16}(?:市|自治州|地区|盟)?$/.test(text);
+}
+
 function normalizeCustomer(customer, context = {}) {
   const ownerUser = findUser(context.users || [], customer.ownerId, customer.owner);
   const unit = findUnit(context.units || [], customer.unitId || ownerUser.unitId, customer.unit || ownerUser.unit || customer.region);
@@ -3183,7 +3320,7 @@ function normalizeCustomer(customer, context = {}) {
   const competitorProfiles = normalizeCompetitorProfiles(customer.competitorProfiles || [], context.competitors || DEFAULT_COMPETITORS, customer.software);
   const primarySoftware = displaySoftwareName((competitorProfiles.find((item) => item.isPrimary) || competitorProfiles[0] || {}).brand || customer.software);
   const location = normalizeLocation(customer.location || {}, customer);
-  const city = location.city || customer.city || extractCity(customer.address) || "待识别";
+  const city = isUsableStoredCity(location.city) ? location.city : customer.city || location.city || extractCity(customer.address) || "待识别";
   return {
     id: Number(customer.id || Date.now()),
     name: customer.name || "",
@@ -3402,7 +3539,7 @@ function opportunityView(state, opportunity, options = {}) {
     contacts: customer.contacts || [],
     channelSource: customer.channelSource || "其他",
     address: customer.address || "",
-    city: customer.city || customer.location?.city || extractCity(customer.address) || "待识别",
+    city: customerDisplayCity(customer),
     unitId: opportunity.unitId || customer.unitId || "",
     unit: displayUnitName(state, opportunity, customer),
     software: displaySoftwareName(primaryCompetitorName(customer) || customer.software),
@@ -3447,6 +3584,7 @@ function opportunityListRow(state, opportunity = {}, options = {}) {
   const latestManual = latestOpportunityManualFollow(state, opportunity);
   const latestAny = (opportunity.followUps || [])[opportunity.followUps.length - 1] || {};
   const maskPhone = Boolean(options.maskPhone);
+  const maskChannelSource = Boolean(options.maskChannelSource);
   const archived = Boolean(options.archived);
   const phone = primaryContact.phone || customer.phone || "";
   const photos = maskPhone || options.includePhotos === false
@@ -3465,15 +3603,17 @@ function opportunityListRow(state, opportunity = {}, options = {}) {
       position: primaryContact.position || ""
     },
     contactCount: Array.isArray(customer.contacts) ? customer.contacts.length : 0,
-    channelSource: customer.channelSource || "其他",
+    channelSource: maskChannelSource ? "" : customer.channelSource || "其他",
+    channelSourceHidden: maskChannelSource,
     address: customer.address || "",
-    city: customer.city || customer.location?.city || extractCity(customer.address) || "待识别",
+    city: customerDisplayCity(customer),
     unitId: opportunity.unitId || customer.unitId || "",
     unit: displayUnitName(state, opportunity, customer),
     software: displaySoftwareName(primaryCompetitorName(customer) || customer.software),
     competitor: primaryCompetitorName(customer),
     lifecycleStatus: archived ? LIFECYCLE_ARCHIVED : customer.lifecycleStatus || LIFECYCLE_ACTIVE,
     archiveReason: customer.archiveReason || "",
+    archiveNote: customer.archiveNote || "",
     archivedAt: normalizeDateTimeText(customer.archivedAt),
     archivedBy: customer.archivedBy || "",
     productId: opportunity.productId || "",
@@ -3810,7 +3950,7 @@ function isArchivedOpportunity(state, opportunity = {}) {
 }
 
 function visibleArchivedOpportunities(state, viewer) {
-  if (!viewer) return [];
+  if (!canViewInvalidCustomers(state, viewer)) return [];
   if (state === stateCache && Array.isArray(stateIndexes.archivedOpportunities)) {
     return [...stateIndexes.archivedOpportunities];
   }
@@ -3828,37 +3968,33 @@ function canViewFullPublicPoolInfo(state, viewer) {
   return role.customerScope === "all" || canUseAdmin(state, viewer) || canImportPublicPool(state, viewer);
 }
 
-function stablePublicPoolScore(viewer = {}, opportunity = {}, date = today()) {
-  const seed = `${viewer.id || viewer.account || viewer.name || "viewer"}|${opportunity.id || opportunity.customerId}|${date}`;
-  return crypto.createHash("sha1").update(seed).digest("hex");
+function canViewPublicPoolChannelSource(state, viewer) {
+  return canHardDeleteCustomer(state, viewer);
 }
 
 function sortPublicPoolOpportunitiesForViewer(items = [], state = {}, viewer = {}) {
-  const rules = businessRules(state);
-  const managementView = canViewFullPublicPoolInfo(state, viewer);
-  const list = [...items];
-  if (managementView || rules.publicPoolSortMode === PUBLIC_POOL_SORT_CREATED_AT) {
-    return list.sort((a, b) => String(b.publicPoolAt || b.createdAt || "").localeCompare(String(a.publicPoolAt || a.createdAt || "")) || Number(b.id || 0) - Number(a.id || 0));
-  }
-  // Decorate once before sorting. Calculating SHA1 inside the comparator makes a
-  // large public pool hash the same records tens of thousands of times.
-  return list
-    .map((item) => ({ item, score: stablePublicPoolScore(viewer, item) }))
-    .sort((left, right) => left.score.localeCompare(right.score) || Number(right.item.id || 0) - Number(left.item.id || 0))
-    .map(({ item }) => item);
+  return [...items].sort((a, b) => String(b.publicPoolAt || b.createdAt || "").localeCompare(String(a.publicPoolAt || a.createdAt || "")) || Number(b.id || 0) - Number(a.id || 0));
 }
 
 function sanitizePublicPoolOpportunity(customer = {}, opportunity = {}, state = {}, viewer = null) {
-  if (canViewFullPublicPoolInfo(state, viewer)) return opportunityView(state, opportunity);
+  const maskChannelSource = !canViewPublicPoolChannelSource(state, viewer);
+  if (canViewFullPublicPoolInfo(state, viewer)) {
+    return {
+      ...opportunityView(state, opportunity),
+      channelSource: maskChannelSource ? "" : customer.channelSource || "其他",
+      channelSourceHidden: maskChannelSource
+    };
+  }
   const pool = opportunityPublicPoolInfo(opportunity, Date.now(), state);
   return {
     id: opportunity.id,
     opportunityId: opportunity.id,
     customerId: customer.id,
     name: customer.name || "",
-    city: customer.city || customer.location?.city || extractCity(customer.address) || "待识别",
+    city: customerDisplayCity(customer),
     address: customer.address || "",
-    channelSource: customer.channelSource || "其他",
+    channelSource: maskChannelSource ? "" : customer.channelSource || "其他",
+    channelSourceHidden: maskChannelSource,
     productId: opportunity.productId,
     productName: opportunity.productName,
     stage: opportunity.stage,
@@ -3874,14 +4010,15 @@ function sanitizePublicPoolOpportunity(customer = {}, opportunity = {}, state = 
 }
 
 function sanitizeArchivedOpportunity(customer = {}, opportunity = {}) {
-  const latest = (opportunity.followUps || [])[opportunity.followUps.length - 1] || {};
+  const followUps = mergedFollowUpsForOpportunity(opportunity, { includeExternal: true });
+  const latest = followUps[0] || {};
   const primaryContact = primaryContactForCustomer(customer);
   return {
     id: opportunity.id,
     opportunityId: opportunity.id,
     customerId: customer.id,
     name: customer.name || "",
-    city: customer.city || customer.location?.city || extractCity(customer.address) || "待识别",
+    city: customerDisplayCity(customer),
     address: customer.address || "",
     channelSource: customer.channelSource || "其他",
     productId: opportunity.productId,
@@ -3889,12 +4026,13 @@ function sanitizeArchivedOpportunity(customer = {}, opportunity = {}) {
     stage: opportunity.stage || "名单",
     lifecycleStatus: LIFECYCLE_ARCHIVED,
     archiveReason: customer.archiveReason || "invalid",
+    archiveNote: customer.archiveNote || "",
     archivedAt: customer.archivedAt || "",
     archivedBy: customer.archivedBy || "",
     ownershipStatus: "archived",
     phone: customer.phone || primaryContact.phone || "",
     contacts: customer.contacts || [],
-    followUps: (opportunity.followUps || []).map((item) => normalizeFollowUp(item, opportunity)),
+    followUps,
     lastFollow: latest.date || "",
     nextFollow: latest.nextFollow || opportunity.nextFollow || "",
     lastNote: latest.note || ""
@@ -4283,16 +4421,89 @@ function reconcileExternalFollowUpSummaries(state = {}) {
 }
 
 function removeExternalFollowUpsForOpportunities(opportunityIds = []) {
-  if (!(externalFollowUpIndex instanceof Map)) return 0;
+  const ids = new Set([...opportunityIds].map(Number).filter(Number.isFinite));
+  if (!ids.size) return 0;
   let removed = 0;
-  opportunityIds.forEach((opportunityId) => {
-    const entries = externalFollowUpIndex.get(Number(opportunityId));
-    if (!entries) return;
-    removed += entries.length;
-    externalFollowUpIndex.delete(Number(opportunityId));
-  });
-  externalFollowUpIndexEntryCount = Math.max(0, externalFollowUpIndexEntryCount - removed);
+  if (externalFollowUpIndex instanceof Map) {
+    ids.forEach((opportunityId) => {
+      const entries = externalFollowUpIndex.get(Number(opportunityId));
+      if (!entries) return;
+      removed += entries.length;
+      externalFollowUpIndex.delete(Number(opportunityId));
+    });
+    externalFollowUpIndexEntryCount = Math.max(0, externalFollowUpIndexEntryCount - removed);
+  }
+  purgeExternalFollowUpFiles(ids);
   return removed;
+}
+
+function purgeExternalFollowUpFiles(opportunityIds = new Set()) {
+  if (!fs.existsSync(FOLLOWUP_DIR) || !opportunityIds.size) return;
+  fs.readdirSync(FOLLOWUP_DIR)
+    .filter((name) => name.endsWith(".jsonl"))
+    .forEach((name) => {
+      const file = path.join(FOLLOWUP_DIR, name);
+      let content;
+      try {
+        content = fs.readFileSync(file, "utf8");
+      } catch (error) {
+        console.error(`[follow-delete] skipped unreadable file=${name}`, error);
+        return;
+      }
+      const lines = content.split(/\r?\n/).filter(Boolean);
+      const kept = lines.filter((line) => {
+        try {
+          return !opportunityIds.has(Number(JSON.parse(line).opportunityId));
+        } catch {
+          return true;
+        }
+      });
+      if (kept.length === lines.length) return;
+      const temp = `${file}.${process.pid}.tmp`;
+      try {
+        fs.writeFileSync(temp, kept.length ? `${kept.join("\n")}\n` : "", "utf8");
+        fs.renameSync(temp, file);
+      } catch (error) {
+        try { if (fs.existsSync(temp)) fs.unlinkSync(temp); } catch {}
+        console.error(`[follow-delete] failed to rewrite file=${name}`, error);
+      }
+    });
+}
+
+function permanentCustomerDeletePlan(state = {}, customerIds = []) {
+  const customerIdSet = new Set(customerIds.map(Number));
+  const opportunities = (state.opportunities || []).filter((item) => customerIdSet.has(Number(item.customerId)));
+  const opportunityIds = new Set(opportunities.map((item) => Number(item.id)));
+  const visits = (state.visits || []).filter((item) => customerIdSet.has(Number(item.customerId)) || opportunityIds.has(Number(item.opportunityId)));
+  const visitIds = new Set(visits.map((item) => Number(item.id)).filter(Number.isFinite));
+  const deletedFollowUps = opportunities.reduce((count, opportunity) => {
+    return count + mergedFollowUpsForOpportunity(opportunity, { includeExternal: true }).length;
+  }, 0);
+  return {
+    customerIds: customerIdSet,
+    opportunityIds,
+    visitIds,
+    counts: {
+      deletedCustomers: customerIdSet.size,
+      deletedOpportunities: opportunityIds.size,
+      deletedFollowUps,
+      deletedVisits: visits.length
+    }
+  };
+}
+
+function applyPermanentCustomerDeletion(state = {}, plan = {}) {
+  const customerIds = plan.customerIds || new Set();
+  const opportunityIds = plan.opportunityIds || new Set();
+  state.customers = (state.customers || []).filter((item) => !customerIds.has(Number(item.id)));
+  state.opportunities = (state.opportunities || []).filter((item) => !opportunityIds.has(Number(item.id)));
+  state.activities = (state.activities || []).filter((item) => !customerIds.has(Number(item.customerId)) && !opportunityIds.has(Number(item.opportunityId)));
+  state.visits = (state.visits || []).filter((item) => !customerIds.has(Number(item.customerId)) && !opportunityIds.has(Number(item.opportunityId)));
+  state.geocodeJobs = (state.geocodeJobs || []).filter((item) => !customerIds.has(Number(item.customerId)));
+  state.routes = (state.routes || []).map((route) => normalizeRoute({
+    ...route,
+    stops: (route.stops || []).filter((stop) => !customerIds.has(Number(stop.customerId)))
+  }));
 }
 
 function readExternalFollowUpsForOpportunity(opportunityId) {
@@ -4739,6 +4950,167 @@ function extractCity(value) {
   return match ? match[1] : cleanText(text).replace(/\s/g, "");
 }
 
+const UNKNOWN_CITY = "待识别";
+const CITY_PROVINCE_NAMES = new Set([
+  "北京", "北京市", "天津", "天津市", "上海", "上海市", "重庆", "重庆市",
+  "河北", "河北省", "山西", "山西省", "辽宁", "辽宁省", "吉林", "吉林省", "黑龙江", "黑龙江省",
+  "江苏", "江苏省", "浙江", "浙江省", "安徽", "安徽省", "福建", "福建省", "江西", "江西省",
+  "山东", "山东省", "河南", "河南省", "湖北", "湖北省", "湖南", "湖南省", "广东", "广东省",
+  "海南", "海南省", "四川", "四川省", "贵州", "贵州省", "云南", "云南省", "陕西", "陕西省",
+  "甘肃", "甘肃省", "青海", "青海省", "台湾", "台湾省", "内蒙古", "内蒙古自治区",
+  "广西", "广西壮族自治区", "西藏", "西藏自治区", "宁夏", "宁夏回族自治区", "新疆", "新疆维吾尔自治区",
+  "香港", "香港特别行政区", "澳门", "澳门特别行政区"
+]);
+const MUNICIPALITY_CITY_NAMES = new Map([["北京", "北京市"], ["天津", "天津市"], ["上海", "上海市"], ["重庆", "重庆市"]]);
+const CITY_INVALID_NAMES = new Set([
+  "中国", "国内", "国外", "美国", "日本", "韩国", "英国", "法国", "德国", "加拿大", "澳大利亚", "新加坡",
+  "东部", "南部", "西部", "北部", "中部", "华东", "华南", "华西", "华北", "华中", "东北", "西南", "西北",
+  "东部战区", "南部战区", "西部战区", "北部战区", "中部战区", "区域", "地区", "城市", "市区", "全国",
+  "其他", "未知", "未识别", "待识别", "待确认", "无", "暂无", "空"
+]);
+const KNOWN_SUFFIXLESS_CITIES = new Set([
+  "广州", "深圳", "佛山", "东莞", "珠海", "中山", "惠州", "江门", "肇庆", "汕头", "湛江", "茂名", "清远", "韶关",
+  "杭州", "宁波", "温州", "嘉兴", "湖州", "绍兴", "金华", "衢州", "舟山", "台州", "丽水",
+  "南京", "苏州", "无锡", "常州", "南通", "扬州", "镇江", "泰州", "徐州", "盐城", "淮安", "宿迁", "连云港",
+  "合肥", "芜湖", "福州", "厦门", "泉州", "漳州", "南昌", "济南", "青岛", "郑州", "武汉", "长沙",
+  "成都", "贵阳", "昆明", "西安", "兰州", "西宁", "银川", "乌鲁木齐", "海口", "三亚",
+  "石家庄", "太原", "沈阳", "大连", "长春", "哈尔滨", "南宁", "桂林", "拉萨", "呼和浩特"
+]);
+
+function compactCityText(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/[\s,，。.;；、·_()（）【】\[\]]+/g, "")
+    .trim();
+}
+
+function stripCityProvincePrefix(value) {
+  let text = compactCityText(value);
+  const prefixes = [...CITY_PROVINCE_NAMES]
+    .filter((name) => !name.endsWith("市"))
+    .sort((left, right) => right.length - left.length);
+  for (const prefix of prefixes) {
+    if (text.startsWith(prefix) && text.length > prefix.length) {
+      text = text.slice(prefix.length);
+      break;
+    }
+  }
+  return text;
+}
+
+function normalizeCityName(value, options = {}) {
+  const original = compactCityText(value);
+  if (!original || /^\d+$/.test(original) || CITY_INVALID_NAMES.has(original)) return "";
+  if (/战区|片区|大区|区域|省份|国家/.test(original)) return "";
+  const municipality = MUNICIPALITY_CITY_NAMES.get(original.replace(/市$/, ""));
+  if (municipality) return municipality;
+  if (CITY_PROVINCE_NAMES.has(original)) return "";
+  const text = stripCityProvincePrefix(original);
+  if (!text || CITY_PROVINCE_NAMES.has(text) || CITY_INVALID_NAMES.has(text)) return "";
+  const explicit = text.match(/^([\u4e00-\u9fa5]{2,12}(?:自治州|地区|盟|市))/);
+  if (explicit) {
+    const city = explicit[1];
+    if (CITY_PROVINCE_NAMES.has(city) || CITY_INVALID_NAMES.has(city)) return "";
+    return city;
+  }
+  if (options.fromAddress) {
+    const addressMatch = original.match(/(?:省|自治区|特别行政区)?([\u4e00-\u9fa5]{2,12}(?:自治州|地区|盟|市))/);
+    if (addressMatch && !CITY_PROVINCE_NAMES.has(addressMatch[1])) return addressMatch[1];
+    const known = [...KNOWN_SUFFIXLESS_CITIES].find((name) => original.includes(name));
+    return known ? `${known}市` : "";
+  }
+  if (/^[\u4e00-\u9fa5]{2,8}$/.test(text) && KNOWN_SUFFIXLESS_CITIES.has(text)) return `${text}市`;
+  return "";
+}
+
+function resolveCustomerCity(customer = {}) {
+  const locationCity = normalizeCityName(customer.location?.city);
+  if (locationCity) return { city: locationCity, source: "location" };
+  const customerCity = normalizeCityName(customer.city);
+  if (customerCity) return { city: customerCity, source: "customer" };
+  const addressCity = normalizeCityName(customer.address || customer.location?.address, { fromAddress: true });
+  if (addressCity) return { city: addressCity, source: "address" };
+  return { city: UNKNOWN_CITY, source: "unresolved" };
+}
+
+function customerDisplayCity(customer = {}) {
+  return resolveCustomerCity(customer).city;
+}
+
+function buildCustomerCityNormalizationPlan(state = {}) {
+  const changes = [];
+  let recovered = 0;
+  let pendingRecognition = 0;
+  for (const customer of state.customers || []) {
+    const beforeCity = String(customer.city || "");
+    const beforeLocationCity = String(customer.location?.city || "");
+    const resolution = resolveCustomerCity(customer);
+    const city = resolution.city;
+    const hasLocation = Boolean(customer.location && typeof customer.location === "object");
+    const locationCity = hasLocation ? city : beforeLocationCity;
+    const changed = beforeCity !== city || (hasLocation && beforeLocationCity !== locationCity);
+    if (city === UNKNOWN_CITY) pendingRecognition += 1;
+    if (city !== UNKNOWN_CITY && !normalizeCityName(beforeCity)) recovered += 1;
+    if (changed) {
+      changes.push({
+        customer,
+        beforeCity,
+        beforeLocationCity,
+        city,
+        locationCity,
+        hasLocation,
+        source: resolution.source
+      });
+    }
+  }
+  return {
+    scanned: (state.customers || []).length,
+    corrected: changes.length,
+    recovered,
+    pendingRecognition,
+    changes,
+    samples: changes.slice(0, 20).map((change) => ({
+      id: change.customer.id,
+      name: change.customer.name || "",
+      beforeCity: change.beforeCity,
+      beforeLocationCity: change.beforeLocationCity,
+      afterCity: change.city,
+      source: change.source
+    }))
+  };
+}
+
+function applyCustomerCityNormalizationPlan(plan = {}) {
+  for (const change of plan.changes || []) {
+    change.customer.city = change.city;
+    if (change.hasLocation) change.customer.location.city = change.locationCity;
+  }
+}
+
+function restoreCustomerCityNormalizationPlan(plan = {}) {
+  for (const change of plan.changes || []) {
+    change.customer.city = change.beforeCity;
+    if (change.hasLocation) change.customer.location.city = change.beforeLocationCity;
+  }
+}
+
+function cityNormalizationBackupPath() {
+  const timestamp = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString()
+    .replace(/[-:]/g, "")
+    .replace("T", "-")
+    .replace("Z", "")
+    .replace(".", "-");
+  return path.join(DATA_DIR, "manual-backups", `db-before-city-normalization-${timestamp}.json`);
+}
+
+async function backupStateBeforeCityNormalization(state) {
+  await writeState(state, { immediate: true, reason: "city-normalization-pre-backup" });
+  const backupPath = cityNormalizationBackupPath();
+  await fs.promises.mkdir(path.dirname(backupPath), { recursive: true });
+  await fs.promises.copyFile(DATA_FILE, backupPath);
+  return backupPath;
+}
+
 function stringSimilarity(left, right) {
   if (!left || !right) return 0;
   if (left === right) return 1;
@@ -5169,6 +5541,10 @@ function buildCustomerBoard(state, viewer, query = {}) {
   if (!isPaginatedQuery(query)) return buildCustomerBoardLegacy(state, viewer, query);
   const now = Date.now();
   const stage = query.stage || STAGES[0];
+  const effectiveQuery = { ...query };
+  if (stage === PUBLIC_POOL_STATUS && !canViewPublicPoolChannelSource(state, viewer)) {
+    delete effectiveQuery.channelSource;
+  }
   const publicPoolSnapshot = publicPoolSnapshotForState(state, now);
   const rawPrivate = opportunityCandidatesForViewer(state, viewer)
     .filter((item) => !publicPoolSnapshot.ids.has(Number(item.id)) && canViewOpportunity(state, viewer, item))
@@ -5187,14 +5563,19 @@ function buildCustomerBoard(state, viewer, query = {}) {
     counts,
     publicPool: { count: publicPoolSnapshot.count },
     purchased: { count: rawPurchased.length },
-    invalid: { count: (stage === "无效" || stage === "invalid") ? rawInvalid.length : countArchivedOpportunities(state) }
+    invalid: { count: canViewInvalidCustomers(state, viewer)
+      ? ((stage === "无效" || stage === "invalid") ? rawInvalid.length : countArchivedOpportunities(state))
+      : 0 }
   };
   let rawRows = rawActive;
   let rowOptions = {};
   if (stage === "全部") rawRows = rawActive;
   else if (stage === PUBLIC_POOL_STATUS) {
     rawRows = rawPublic;
-    rowOptions = { maskPhone: !canViewFullPublicPoolInfo(state, viewer) };
+    rowOptions = {
+      maskPhone: !canViewFullPublicPoolInfo(state, viewer),
+      maskChannelSource: !canViewPublicPoolChannelSource(state, viewer)
+    };
   } else if (stage === PURCHASED_STATUS) rawRows = rawPurchased;
   else if (stage === "无效" || stage === "invalid") {
     rawRows = rawInvalid;
@@ -5202,13 +5583,13 @@ function buildCustomerBoard(state, viewer, query = {}) {
   } else {
     rawRows = rawActive.filter((item) => item.stage === stage);
   }
-  const requestedIds = boardRequestedIds(query.ids);
+  const requestedIds = boardRequestedIds(effectiveQuery.ids);
   if (requestedIds.size) {
     rawRows = rawRows.filter((item) => requestedIds.has(Number(item.id)) || requestedIds.has(Number(item.customerId)));
   }
-  if (!hasCustomerBoardFilters(query) && !requestedIds.size) {
-    const sortedRows = sortRawBoardRows(rawRows, query, stage);
-    const page = paginateRows(sortedRows, query);
+  if (!hasCustomerBoardFilters(effectiveQuery) && !requestedIds.size) {
+    const sortedRows = sortRawBoardRows(rawRows, effectiveQuery, stage);
+    const page = paginateRows(sortedRows, effectiveQuery);
     const pageCustomerIds = new Set(page.items.map((item) => Number(item.customerId)).filter(Boolean));
     const visitPhotoMap = buildVisitPhotoMap(state, 12, pageCustomerIds);
     const items = page.items.map((source) => {
@@ -5234,9 +5615,9 @@ function buildCustomerBoard(state, viewer, query = {}) {
     row: opportunityBoardFilterProjection(state, item, stage, publicPoolSnapshot)
   }));
   const filterOptions = customerBoardFilterOptions(projectedRows.map((item) => item.row));
-  const filteredRows = projectedRows.filter((item) => boardProjectionMatchesQuery(item.row, query, stage));
-  const sortedRows = sortBoardProjectionRows(filteredRows, query, stage);
-  const page = paginateRows(sortedRows, query);
+  const filteredRows = projectedRows.filter((item) => boardProjectionMatchesQuery(item.row, effectiveQuery, stage));
+  const sortedRows = sortBoardProjectionRows(filteredRows, effectiveQuery, stage);
+  const page = paginateRows(sortedRows, effectiveQuery);
   const pageCustomerIds = new Set(page.items.map((item) => Number(item.row.customerId)).filter(Boolean));
   const visitPhotoMap = buildVisitPhotoMap(state, 12, pageCustomerIds);
   const items = page.items.map(({ source }) => {
@@ -5307,7 +5688,7 @@ function opportunityBoardFilterProjection(state, opportunity = {}, stage = "", p
     unitId: opportunity.unitId || customer.unitId || "",
     unit: displayUnitName(state, opportunity, customer),
     orgPath: opportunity.orgPath || customer.orgPath || "",
-    city: customer.city || customer.location?.city || extractCity(customer.address) || "",
+    city: customerDisplayCity(customer),
     stage: opportunity.stage || STAGES[0],
     createdAt: opportunity.createdAt || customer.createdAt || "",
     leadAt: opportunity.leadAt || "",
@@ -5395,12 +5776,16 @@ function uniqueBoardOptionValues(values = []) {
   return [...map.values()].sort((left, right) => String(left).localeCompare(String(right), "zh-Hans-CN"));
 }
 
+function uniqueCityFilterValues(values = []) {
+  return uniqueBoardOptionValues(values.map((value) => normalizeCityName(value)).filter(Boolean));
+}
+
 function customerBoardFilterOptions(rows = []) {
   return {
     createdBy: uniqueBoardOptionValues(rows.map((row) => row.createdBy)),
     followPerson: uniqueBoardOptionValues(rows.map((row) => row.followPerson || row.owner)),
     units: uniqueBoardOptionValues(rows.map((row) => row.unit)),
-    cities: uniqueBoardOptionValues(rows.map((row) => row.city))
+    cities: uniqueCityFilterValues(rows.map((row) => row.city))
   };
 }
 
@@ -5428,7 +5813,7 @@ function lightweightCustomerBoardFilterOptions(state = {}, rows = [], stage = ""
         ...activeUnits.map((unit) => unit.name),
         ...rows.map((row) => row.unit)
       ]),
-    cities: uniqueBoardOptionValues(rows.map((row) => row.city))
+    cities: uniqueCityFilterValues(rows.map((row) => row.city))
   };
 }
 
@@ -5568,11 +5953,14 @@ function compareByDate(left, right, sortBy, order = "desc", tieBreak = true) {
 }
 
 function sortBoardRows(rows = [], query = {}, stage = "") {
+  if (stage === PUBLIC_POOL_STATUS) {
+    return [...rows].sort((left, right) => rowDateMs(right.publicPoolAt || right.createdAt) - rowDateMs(left.publicPoolAt || left.createdAt)
+      || Number(right.id || 0) - Number(left.id || 0));
+  }
   const sortBy = String(query.sortBy || "");
   const sortOrder = query.sortOrder === "asc" ? "asc" : "desc";
   const allowedSorts = new Set(["lastFollow", "createdAt", "nextFollow", "assignedAt", "stageTime"]);
   if (allowedSorts.has(sortBy)) return [...rows].sort((left, right) => compareByDate(left, right, sortBy, sortOrder));
-  if (stage === PUBLIC_POOL_STATUS) return rows;
   return [...rows].sort((left, right) => {
     const leftStageTime = rowDateMs(stageDateForBoardRow(left, stage || left.stage), 0);
     const rightStageTime = rowDateMs(stageDateForBoardRow(right, stage || right.stage), 0);
@@ -5585,7 +5973,7 @@ function sortRawBoardRows(rows = [], query = {}, stage = "") {
   const sortBy = String(query.sortBy || "");
   const sortOrder = query.sortOrder === "asc" ? "asc" : "desc";
   const allowedSorts = new Set(["lastFollow", "createdAt", "nextFollow", "assignedAt", "stageTime"]);
-  if (stage === PUBLIC_POOL_STATUS && !allowedSorts.has(sortBy)) return rows;
+  if (stage === PUBLIC_POOL_STATUS) return sortBoardRows(rows, {}, stage);
   return sortBoardRows(rows, {
     ...query,
     sortBy: allowedSorts.has(sortBy) ? sortBy : "stageTime",
@@ -5780,6 +6168,10 @@ function canHardDeleteCustomer(state, user) {
   if (!user) return false;
   const roleName = findRole(state.roles, user.roleId, user.role).name || user.role || "";
   return ["总负责人", "管理员"].includes(roleName);
+}
+
+function canViewInvalidCustomers(state, user) {
+  return canHardDeleteCustomer(state, user);
 }
 
 function canManageTargets(state, user) {
@@ -6263,7 +6655,7 @@ function isAssignedTodayUnfollowed(state, item = {}) {
   return !hasManualFollowOnOrAfter(item, assignment.createdAt);
 }
 
-const ALLOCATION_AUDIT_OWNER_TYPES = new Set(["created", "assigned", "claimed_public_pool", "offboard_transfer"]);
+const ALLOCATION_AUDIT_OWNER_TYPES = new Set(["assigned", "claimed_public_pool", "offboard_transfer"]);
 
 function canViewAllocationAudit(state, viewer) {
   if (!viewer) return false;
@@ -6281,12 +6673,16 @@ function allocationAuditImportEvent(opportunity = {}) {
   return sortedOwnershipHistory(opportunity).find((event) => event.type === "created") || null;
 }
 
-function isOperationsPublicPoolImport(opportunity = {}) {
+function isPublicPoolImport(opportunity = {}) {
   const event = allocationAuditImportEvent(opportunity);
   if (!event) return opportunity.publicPoolReason === "operations_import";
   const reason = String(event.reason || "");
-  const importedToPool = !Number(event.toOwnerId || 0) && cleanText(event.toOwner) === cleanText("公海");
-  return reason.includes("运营导入公海") || importedToPool;
+  return opportunity.publicPoolReason === "operations_import" || reason.includes("导入公海");
+}
+
+function allocationAuditImporter(opportunity = {}) {
+  const event = allocationAuditImportEvent(opportunity) || {};
+  return String(event.operator || opportunity.createdBy || "").trim() || "未记录";
 }
 
 function allocationAuditImportAt(opportunity = {}, customer = {}) {
@@ -6374,11 +6770,12 @@ function buildAllocationAudit(state, viewer, query = {}, options = {}) {
   const ownerId = Number(query.ownerId || 0);
   const allocatorId = Number(query.allocatorId || query.operatorId || 0);
   const unitId = String(query.unitId || "").trim();
+  const importer = String(query.importer || "").trim();
   const pageSize = Math.min(500, Math.max(20, Math.floor(Number(query.pageSize || 100))));
   const requestedPage = Math.max(1, Math.floor(Number(query.page || 1)));
   const usersById = new Map((state.users || []).map((user) => [Number(user.id), user]));
   const candidates = (state.opportunities || []).filter((opportunity) => {
-    if (!isOperationsPublicPoolImport(opportunity)) return false;
+    if (!isPublicPoolImport(opportunity)) return false;
     const customer = findCustomer(state.customers || [], opportunity.customerId) || {};
     return dateMatchesOptionalRange(allocationAuditImportAt(opportunity, customer), start, end);
   });
@@ -6389,7 +6786,8 @@ function buildAllocationAudit(state, viewer, query = {}, options = {}) {
     const currentOwnerId = isPublicPool ? 0 : Number(opportunity.ownerId || 0);
     const currentOwnerUser = usersById.get(currentOwnerId) || {};
     const ownerEvent = allocationAuditOwnerEvent(opportunity) || {};
-    const allocator = ownerEvent.operator || opportunity.createdBy || "未记录";
+    const allocator = ownerEvent.operator || "未分配";
+    const importedBy = allocationAuditImporter(opportunity);
     const followedReason = allocationAuditFollowedReason(state, opportunity, customer);
     return {
       sourceOpportunity: opportunity,
@@ -6397,6 +6795,7 @@ function buildAllocationAudit(state, viewer, query = {}, options = {}) {
       opportunityId: opportunity.id,
       customerId: opportunity.customerId,
       importedAt: allocationAuditImportAt(opportunity, customer),
+      importer: importedBy,
       customerName: customer.name || opportunity.name || "未命名客户",
       phone: primaryContactForCustomer(customer).phone || customer.phone || "",
       productName: opportunity.productName || "待确认产品",
@@ -6415,6 +6814,7 @@ function buildAllocationAudit(state, viewer, query = {}, options = {}) {
     if (ownerId && Number(row.ownerId || 0) !== ownerId) return false;
     if (allocatorId && Number(row.allocatorId || 0) !== allocatorId) return false;
     if (unitId && String(row.unitId || "") !== unitId) return false;
+    if (importer && cleanText(row.importer) !== importer) return false;
     return true;
   });
 
@@ -6437,7 +6837,20 @@ function buildAllocationAudit(state, viewer, query = {}, options = {}) {
     const followHistory = allocationAuditFollowHistory(state, sourceOpportunity, externalFollows.get(Number(row.id)) || []);
     return { ...row, followCount: followHistory.length, followHistory };
   });
-  return { start, end, totals, items, total, page, pageSize, totalPages, computedAt: new Date().toISOString() };
+  const importers = Array.from(new Set(candidates.map((opportunity) => allocationAuditImporter(opportunity)).filter(Boolean)))
+    .sort((left, right) => left.localeCompare(right, "zh-CN"));
+  return {
+    start,
+    end,
+    totals,
+    items,
+    total,
+    page,
+    pageSize,
+    totalPages,
+    filterOptions: { importers },
+    computedAt: new Date().toISOString()
+  };
 }
 
 function allocationAuditHistoryText(history = []) {
@@ -6469,9 +6882,10 @@ function xlsxInlineCell(value, column, row, style = 0) {
 async function buildAllocationAuditWorkbook(report = {}) {
   const JSZip = resolveOptionalJsZip();
   if (!JSZip) throw new Error("服务器缺少 Excel 导出组件");
-  const headers = ["首次导入时间", "客户名称", "客户电话", "意向产品", "分配人", "当前跟进人", "单位", "当前状态", "跟进判定", "跟进次数", "历史跟进记录"];
+  const headers = ["首次导入时间", "导入人", "客户名称", "客户电话", "意向产品", "分配人", "当前跟进人", "单位", "当前状态", "跟进判定", "跟进次数", "历史跟进记录"];
   const values = (report.items || []).map((item) => [
     item.importedAt,
+    item.importer,
     item.customerName,
     item.phone,
     item.productName,
@@ -6496,7 +6910,7 @@ async function buildAllocationAuditWorkbook(report = {}) {
   zip.file("xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="资源分配对账" sheetId="1" r:id="rId1"/></sheets></workbook>`);
   zip.file("xl/_rels/workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`);
   zip.file("xl/styles.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Microsoft YaHei"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Microsoft YaHei"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF2563EB"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border/><border><left style="thin"><color rgb="FFD9E2EC"/></left><right style="thin"><color rgb="FFD9E2EC"/></right><top style="thin"><color rgb="FFD9E2EC"/></top><bottom style="thin"><color rgb="FFD9E2EC"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`);
-  zip.file("xl/worksheets/sheet1.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/><cols><col min="1" max="1" width="21" customWidth="1"/><col min="2" max="2" width="22" customWidth="1"/><col min="3" max="3" width="16" customWidth="1"/><col min="4" max="4" width="18" customWidth="1"/><col min="5" max="7" width="18" customWidth="1"/><col min="8" max="10" width="16" customWidth="1"/><col min="11" max="11" width="70" customWidth="1"/></cols><sheetData>${sheetRows}</sheetData><autoFilter ref="A1:K${lastRow}"/><pageMargins left="0.3" right="0.3" top="0.5" bottom="0.5" header="0.2" footer="0.2"/></worksheet>`);
+  zip.file("xl/worksheets/sheet1.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/><cols><col min="1" max="1" width="21" customWidth="1"/><col min="2" max="2" width="16" customWidth="1"/><col min="3" max="3" width="22" customWidth="1"/><col min="4" max="4" width="16" customWidth="1"/><col min="5" max="5" width="18" customWidth="1"/><col min="6" max="8" width="18" customWidth="1"/><col min="9" max="11" width="16" customWidth="1"/><col min="12" max="12" width="70" customWidth="1"/></cols><sheetData>${sheetRows}</sheetData><autoFilter ref="A1:L${lastRow}"/><pageMargins left="0.3" right="0.3" top="0.5" bottom="0.5" header="0.2" footer="0.2"/></worksheet>`);
   return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }
 
@@ -7001,6 +7415,7 @@ function shouldPersistMigratedState(raw = {}) {
   if (raw.version !== BACKEND_VERSION) return true;
   if (raw.moneyUnit !== MONEY_UNIT) return true;
   if (!raw.excelDateSerialsNormalizedAt) return true;
+  if (raw.businessRules?.publicPoolSortMode !== PUBLIC_POOL_SORT_CREATED_AT) return true;
   return ["roles", "units", "users", "customers", "opportunities", "products", "channelSources", "lossReasons", "businessRules"].some((key) => raw[key] === undefined);
 }
 
@@ -7514,8 +7929,8 @@ async function sendCustomerTemplate(res) {
     if (!sheetFile) return fallback();
     const xml = await sheetFile.async("string");
     zip.file(sheetPath, upsertSheetListValidations(xml, [
-      { range: "C2:C1000", values: IMPORT_STATUSES },
-      { range: "F2:F1000", values: channels.length ? channels : CHANNEL_SOURCES }
+      { range: "C2:C1000", values: channels.length ? channels : CHANNEL_SOURCES },
+      { range: "D2:D1000", values: IMPORT_STATUSES }
     ]));
     const output = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
     return sendBuffer(res, output, contentType, downloadName);
@@ -7865,8 +8280,11 @@ async function importCustomers(req, viewer, target = "") {
   const skipped = [];
   const failed = [];
   const warnings = [];
+  const channelWarningRows = [];
+  const cityWarningRows = [];
   const duplicateCustomers = [];
   const duplicateOpportunities = [];
+  const fileDuplicateRows = [];
   const fileOpportunityKeys = new Set();
   const rules = businessRules(state);
   if (hasPrivateRows && !canOwnCustomerUser(state, ownerUser)) {
@@ -7876,7 +8294,7 @@ async function importCustomers(req, viewer, target = "") {
     const rowImportToPublicPool = importToPublicPool || row.importToPublicPool;
     const rowNumber = Number(row.rowNumber || index + 1);
     if (row.channelSourceUnrecognized) {
-      warnings.push({
+      const warning = {
         rowNumber,
         name: row.name || "",
         phone: row.phone || "",
@@ -7884,7 +8302,23 @@ async function importCustomers(req, viewer, target = "") {
         status: rowImportToPublicPool ? PUBLIC_POOL_STATUS : row.stage,
         code: "CHANNEL_SOURCE_UNRECOGNIZED",
         reason: `渠道来源“${row.channelSourceRaw || ""}”未识别，已按其他处理`
-      });
+      };
+      warnings.push(warning);
+      channelWarningRows.push(warning);
+    }
+    const rowCityResolution = resolveCustomerCity({ city: row.city, address: row.address, location: {} });
+    if (rowCityResolution.city === UNKNOWN_CITY) {
+      const warning = {
+        rowNumber,
+        name: row.name || "",
+        phone: row.phone || "",
+        productName: row.productName || "",
+        status: rowImportToPublicPool ? PUBLIC_POOL_STATUS : row.stage,
+        code: "CITY_UNRECOGNIZED",
+        reason: "城市无法可靠识别，已保存为待识别"
+      };
+      warnings.push(warning);
+      cityWarningRows.push(warning);
     }
     const phoneNormalized = normalizePhone(row.phone);
     if (!phoneNormalized) {
@@ -7896,7 +8330,9 @@ async function importCustomers(req, viewer, target = "") {
     const product = resolveProduct(state, row.productId, explicitProductName) || normalizeProduct({ id: stableId("product", explicitProductName || "待确认产品"), name: explicitProductName || "待确认产品" });
     const fileKey = `${phoneNormalized}|${cleanText(product.name)}`;
     if (fileOpportunityKeys.has(fileKey)) {
-      skipped.push({ rowNumber, name: row.name || "", phone: row.phone || "", productName: product.name, status: rowImportToPublicPool ? PUBLIC_POOL_STATUS : row.stage, reason: "文件内手机号和意向产品重复，已按首次出现处理", code: "FILE_DUPLICATE_OPPORTUNITY" });
+      const item = { rowNumber, name: row.name || "", phone: row.phone || "", productName: product.name, status: rowImportToPublicPool ? PUBLIC_POOL_STATUS : row.stage, reason: "文件内手机号和意向产品重复，已按首次出现处理", code: "FILE_DUPLICATE_OPPORTUNITY" };
+      skipped.push(item);
+      fileDuplicateRows.push(item);
       return;
     }
     fileOpportunityKeys.add(fileKey);
@@ -7923,6 +8359,7 @@ async function importCustomers(req, viewer, target = "") {
     }
     const now = new Date().toISOString();
     if (!customer) {
+      const cityResolution = resolveCustomerCity({ city: row.city, address: row.address, location: {} });
       customer = normalizeCustomer({
         id: Date.now() + index * 10,
         name: row.name,
@@ -7937,11 +8374,11 @@ async function importCustomers(req, viewer, target = "") {
         unit: rowImportToPublicPool ? "" : ownerUser.unit || "",
         zone: rowImportToPublicPool ? "" : ownerUser.zone || "",
         address: row.address,
-        city: row.city || extractCity(row.address) || "",
+        city: cityResolution.city,
         region: rowImportToPublicPool ? "" : row.region,
         competitorProfiles: normalizeCompetitorProfiles([], state.competitors, row.software),
         createdAt: today(),
-        location: { latitude: 0, longitude: 0, province: "", city: row.city || extractCity(row.address) || "", district: "", address: row.address || "", status: row.address ? "pending" : "unknown" },
+        location: { latitude: 0, longitude: 0, province: "", city: cityResolution.city, district: "", address: row.address || "", status: row.address ? "pending" : "unknown" },
         followUps: []
       }, state);
       state.customers.unshift(customer);
@@ -7979,7 +8416,7 @@ async function importCustomers(req, viewer, target = "") {
       effectiveFollowUpAt: importedFollowCounts ? (importedFollow.createdAt || now) : "",
       publicPoolAt: rowImportToPublicPool ? now : "",
       publicPoolReason: rowImportToPublicPool ? "operations_import" : "",
-      ownershipHistory: [ownershipEvent("created", null, rowImportToPublicPool ? { id: "", name: "公海" } : ownerUser, viewer, rowImportToPublicPool ? "运营导入公海机会" : "批量导入机会")],
+      ownershipHistory: [ownershipEvent("created", null, rowImportToPublicPool ? { id: "", name: "公海" } : ownerUser, viewer, rowImportToPublicPool ? "批量导入公海机会" : "批量导入机会")],
       nextFollow: importedFollow?.nextFollow || row.nextFollow || "",
       followUps: importedFollow ? [importedFollow] : []
     }, state);
@@ -8010,14 +8447,17 @@ async function importCustomers(req, viewer, target = "") {
     duplicates: skipped.length,
     duplicateCustomers: duplicateCustomers.length,
     duplicateOpportunities: duplicateOpportunities.length,
+    fileDuplicates: fileDuplicateRows.length,
     failed: failed.length,
-    channelUnrecognized: warnings.length,
+    channelUnrecognized: channelWarningRows.length,
+    cityUnrecognized: cityWarningRows.length,
     pendingLocation,
     pendingGeocode,
     reportUrl,
     skipped,
     duplicateCustomerRows: duplicateCustomers,
     duplicateOpportunityRows: duplicateOpportunities,
+    fileDuplicateRows,
     warnings,
     failures: failed,
     message: skipped.length
@@ -8291,22 +8731,22 @@ function findSignature(buffer, signature, start) {
 
 function parseSharedStrings(xml) {
   if (!xml) return [];
-  return [...xml.matchAll(/<si[\s\S]*?<\/si>/g)].map((match) => {
-    return [...match[0].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((part) => decodeXml(part[1])).join("");
+  return [...xml.matchAll(/<(?:\w+:)?si[\s\S]*?<\/(?:\w+:)?si>/g)].map((match) => {
+    return [...match[0].matchAll(/<(?:\w+:)?t[^>]*>([\s\S]*?)<\/(?:\w+:)?t>/g)].map((part) => decodeXml(part[1])).join("");
   });
 }
 
 function parseWorksheet(xml, sharedStrings) {
   const matrix = [];
-  for (const rowMatch of xml.matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)) {
+  for (const rowMatch of xml.matchAll(/<(?:\w+:)?row[^>]*>([\s\S]*?)<\/(?:\w+:)?row>/g)) {
     const cells = [];
-    for (const cellMatch of rowMatch[1].matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+    for (const cellMatch of rowMatch[1].matchAll(/<(?:\w+:)?c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:\w+:)?c>)/g)) {
       const attrs = cellMatch[1];
       const body = cellMatch[2] || "";
       const ref = (attrs.match(/\sr="([A-Z]+\d+)"/) || [])[1] || "";
       const col = columnIndex((ref.match(/[A-Z]+/) || ["A"])[0]);
       const type = (attrs.match(/\st="([^"]+)"/) || [])[1] || "";
-      const raw = (body.match(/<v[^>]*>([\s\S]*?)<\/v>/) || body.match(/<t[^>]*>([\s\S]*?)<\/t>/) || [])[1] || "";
+      const raw = (body.match(/<(?:\w+:)?v[^>]*>([\s\S]*?)<\/(?:\w+:)?v>/) || body.match(/<(?:\w+:)?t[^>]*>([\s\S]*?)<\/(?:\w+:)?t>/) || [])[1] || "";
       cells[col] = type === "s" ? sharedStrings[Number(raw)] || "" : decodeXml(raw);
     }
     matrix.push(cells.map((cell) => cell ?? ""));
@@ -8554,7 +8994,7 @@ function buildMapPoints(state, viewer, filters = {}) {
           zone: "",
           address: customer.address || location.address,
           province: location.province,
-          city: location.city || customer.city || extractCity(customer.address) || "待识别",
+          city: customerDisplayCity(customer),
           district: location.district,
           latitude: location.latitude,
           longitude: location.longitude,
@@ -8592,7 +9032,7 @@ function buildMapPoints(state, viewer, filters = {}) {
         zone: activeOpportunity.zone || customer.zone,
         address: customer.address || location.address,
         province: location.province,
-        city: location.city || customer.city || extractCity(customer.address) || "待识别",
+        city: customerDisplayCity(customer),
         district: location.district,
         latitude: location.latitude,
         longitude: location.longitude,

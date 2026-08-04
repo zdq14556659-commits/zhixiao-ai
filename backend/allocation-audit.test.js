@@ -45,7 +45,8 @@ const seed = {
     { id: 600, name: "旧数据运营资源", phone: "13800009006", channelSource: "渠道介绍", lifecycleStatus: "active", createdAt: today },
     { id: 700, name: "已标记无效资源", phone: "13800009007", channelSource: "其他", ownerId: 2, owner: "销售甲", unitId: "unit-east", unit: "测试单位", lifecycleStatus: "archived", archiveReason: "invalid", archivedAt: now, archivedBy: "销售甲", createdAt: today },
     { id: 800, name: "已购其他软件资源", phone: "13800009008", channelSource: "其他", ownerId: 2, owner: "销售甲", unitId: "unit-east", unit: "测试单位", lifecycleStatus: "active", createdAt: today },
-    { id: 900, name: "历史成交资源", phone: "13800009009", channelSource: "其他", ownerId: 3, owner: "销售乙", unitId: "unit-east", unit: "测试单位", lifecycleStatus: "active", createdAt: today }
+    { id: 900, name: "历史成交资源", phone: "13800009009", channelSource: "其他", ownerId: 3, owner: "销售乙", unitId: "unit-east", unit: "测试单位", lifecycleStatus: "active", createdAt: today },
+    { id: 1000, name: "管理员公海导入", phone: "13800009010", channelSource: "地推", lifecycleStatus: "active", createdAt: today }
   ],
   opportunities: [
     {
@@ -89,7 +90,7 @@ const seed = {
     {
       id: 601, customerId: 600, productId: "product-v1", productName: "V1", stage: "名单",
       ownerId: "", owner: "公海", unitId: "", unit: "", ownershipStatus: "public_pool",
-      publicPoolAt: now, publicPoolReason: "operations_import", createdBy: "运营甲", createdAt: today,
+      publicPoolAt: now, publicPoolReason: "operations_import", createdBy: "离职运营", createdAt: today,
       ownershipHistory: [], followUps: []
     },
     {
@@ -97,7 +98,7 @@ const seed = {
       ownerId: 2, owner: "销售甲", unitId: "unit-east", unit: "测试单位", ownershipStatus: "locked",
       createdBy: "运营甲", createdAt: today,
       ownershipHistory: [
-        ownership("created", "", "公海", 4, "运营甲", "运营导入公海机会"),
+        ownership("created", "", "公海", 5, "负责人", "批量导入公海机会"),
         ownership("assigned", 2, "销售甲", 5, "负责人", "主管分配")
       ], followUps: []
     },
@@ -118,6 +119,12 @@ const seed = {
         ownership("created", "", "公海", 4, "运营甲", "运营导入公海机会"),
         ownership("assigned", 3, "销售乙", 5, "负责人", "主管分配")
       ], followUps: []
+    },
+    {
+      id: 1001, customerId: 1000, productId: "product-v1", productName: "V1", stage: "名单",
+      ownerId: "", owner: "公海", unitId: "", unit: "", ownershipStatus: "public_pool",
+      publicPoolAt: now, publicPoolReason: "operations_import", createdBy: "管理员", createdAt: today,
+      ownershipHistory: [ownership("created", "", "公海", 1, "管理员", "批量导入公海机会")], followUps: []
     }
   ],
   visits: [], activities: [], knowledge: [], resources: [], routes: [], targets: []
@@ -191,15 +198,19 @@ async function run() {
 
   const initial = await request(`/reports/allocation-audit?start=${today}&end=${today}`, { token: ops });
   assert.equal(initial.status, 200, JSON.stringify(initial.data));
-  assert.equal(initial.data.total, 7, "all operations public-pool imports in range should be included regardless of channel");
+  assert.equal(initial.data.total, 8, "all accounts importing into the public pool should be included regardless of channel");
   assert.equal(initial.data.totals.followed, 4);
-  assert.equal(initial.data.totals.pending, 3);
+  assert.equal(initial.data.totals.pending, 4);
   assert.equal(initial.data.totals.lead, 1);
   assert.equal(initial.data.totals.opportunity, 1);
   assert.equal(initial.data.totals.deal, 1);
   assert.ok(initial.data.items.some((item) => item.customerName === "地推运营资源"));
   assert.ok(initial.data.items.some((item) => item.customerName === "公众号运营资源"));
   assert.ok(initial.data.items.some((item) => item.customerName === "旧数据运营资源"));
+  assert.ok(initial.data.items.some((item) => item.customerName === "管理员公海导入"));
+  assert.ok(initial.data.filterOptions.importers.includes("离职运营"), "departed importers must remain filterable by historical name");
+  assert.ok(initial.data.filterOptions.importers.includes("负责人"));
+  assert.ok(initial.data.filterOptions.importers.includes("管理员"));
   assert.ok(!initial.data.items.some((item) => item.customerName === "官网手工录入"));
   assert.ok(!initial.data.items.some((item) => item.customerName === "范围外运营资源"));
   const claimed = initial.data.items.find((item) => Number(item.opportunityId) === 301);
@@ -240,7 +251,7 @@ async function run() {
 
   const afterReassignment = await request(`/reports/allocation-audit?start=${today}&end=${today}`, { token: owner });
   assert.equal(afterReassignment.status, 200, JSON.stringify(afterReassignment.data));
-  assert.equal(afterReassignment.data.total, 7, "reassignment must not duplicate imported resources");
+  assert.equal(afterReassignment.data.total, 8, "reassignment must not duplicate imported resources");
   const reassigned = afterReassignment.data.items.find((item) => Number(item.opportunityId) === 101);
   assert.equal(reassigned.owner, "销售甲");
   assert.equal(reassigned.allocator, "管理员");
@@ -254,6 +265,11 @@ async function run() {
   assert.equal(legacyOperatorFilter.status, 200);
   assert.equal(legacyOperatorFilter.data.total, 1, "operatorId must remain a compatible alias");
 
+  const departedImporter = await request(`/reports/allocation-audit?start=${today}&end=${today}&importer=${encodeURIComponent("离职运营")}`, { token: owner });
+  assert.equal(departedImporter.status, 200);
+  assert.equal(departedImporter.data.total, 1);
+  assert.equal(Number(departedImporter.data.items[0].opportunityId), 601);
+
   const exportResult = await request(`/reports/allocation-audit/export?start=${today}&end=${today}`, { token: ops, raw: true });
   assert.equal(exportResult.status, 200);
   assert.match(exportResult.headers.get("content-type") || "", /spreadsheetml/);
@@ -261,6 +277,8 @@ async function run() {
   const workbook = await JSZip.loadAsync(exportResult.data);
   const sheetXml = await workbook.file("xl/worksheets/sheet1.xml").async("string");
   assert.ok(sheetXml.includes("地推运营资源"));
+  assert.ok(sheetXml.includes("导入人"));
+  assert.ok(sheetXml.includes("管理员公海导入"));
   assert.ok(sheetXml.includes("公众号运营资源"));
   assert.ok(sheetXml.includes("已电话联系客户并确认需求。"));
   assert.ok(sheetXml.includes("已跟进（已标记无效）"));

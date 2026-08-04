@@ -39,7 +39,12 @@ const seed = {
     { id: 201, customerId: 101, productId: "product-v1", productName: "V1", stage: "名单", ownerId: 2, owner: "杭州销售", unitId: "unit-east-child", unit: "杭州一部", zone: "东部战区", ownershipStatus: "locked", createdAt: today, followUps: [{ date: today, createdAt: now, author: "杭州销售", note: "新增客户", isSystem: true }] },
     { id: 202, customerId: 102, productId: "product-v1", productName: "V1", stage: "名单", ownerId: 5, owner: "西区销售", unitId: "unit-west", unit: "成都一部", zone: "西部战区", ownershipStatus: "locked", createdAt: today, followUps: [{ date: today, createdAt: now, author: "西区销售", note: "新增客户", isSystem: true }] }
   ],
-  visits: [], activities: [], knowledge: [], resources: [], routes: [], targets: []
+  visits: [{ id: 301, customerId: 101, opportunityId: 201, ownerId: 2, owner: "杭州销售", date: today, result: "已拜访" }],
+  activities: [{ id: 401, customerId: 101, opportunityId: 201, type: "跟进" }],
+  knowledge: [], resources: [],
+  routes: [{ id: 501, ownerId: 2, owner: "杭州销售", date: today, stops: [{ customerId: 101, name: "杭州工厂" }, { customerId: 102, name: "成都工厂" }] }],
+  geocodeJobs: [{ id: 601, customerId: 101, status: "pending" }],
+  targets: []
 };
 fs.writeFileSync(path.join(tempDir, "db.json"), JSON.stringify(seed, null, 2));
 fs.writeFileSync(path.join(tempDir, "seed.json"), JSON.stringify(seed, null, 2));
@@ -206,21 +211,78 @@ async function run() {
   const followBeforeDelete = await request("/opportunities/201/follow", { method: "POST", token: sales, body: { note: "删除前跟进记录", nextFollow: today } });
   assert.equal(followBeforeDelete.status, 200, JSON.stringify(followBeforeDelete.data));
   const healthBeforeDelete = await request("/health");
-  const archivedCustomer = await request("/customers/101/archive", { method: "POST", token: sales, body: { reason: "invalid" } });
+  const archivedCustomer = await request("/customers/101/archive", { method: "POST", token: sales, body: { reason: "invalid", note: "号码空号，工厂已停产" } });
   assert.equal(archivedCustomer.status, 200);
+  const forbiddenInvalidBoard = await request(`/customer-board?paginated=1&stage=${encodeURIComponent("无效")}`, { token: sales });
+  assert.equal(forbiddenInvalidBoard.status, 403);
+  const forbiddenInvalidDetail = await request("/opportunities/201/detail", { token: sales });
+  assert.equal(forbiddenInvalidDetail.status, 403);
   const invalidBoard = await request(`/customer-board?paginated=1&stage=${encodeURIComponent("无效")}`, { token: admin });
+  assert.equal(invalidBoard.status, 200);
   assert.ok(invalidBoard.data.items.some((item) => item.customerId === 101));
+  const invalidRow = invalidBoard.data.items.find((item) => item.customerId === 101);
+  assert.equal(invalidRow.archiveReason, "invalid");
+  assert.equal(invalidRow.archiveNote, "号码空号，工厂已停产");
+  assert.equal(invalidRow.archivedBy, "杭州销售");
+  const invalidDetail = await request("/opportunities/201/detail", { token: admin });
+  assert.equal(invalidDetail.status, 200);
+  assert.ok(invalidDetail.data.followUps.some((item) => item.note === "删除前跟进记录"));
 
   const forbiddenDelete = await request("/customers/101", { method: "DELETE", token: sales });
   assert.equal(forbiddenDelete.status, 403);
-  const deleteCustomer = await request("/customers/101", { method: "DELETE", token: admin });
+  const rejectedBatch = await request("/customers/bulk-delete-invalid", { method: "POST", token: admin, body: { customerIds: [101, 102], confirm: true } });
+  assert.equal(rejectedBatch.status, 409);
+  const oversizedBatch = await request("/customers/bulk-delete-invalid", {
+    method: "POST",
+    token: admin,
+    body: { customerIds: Array.from({ length: 201 }, (_, index) => index + 1000), confirm: true }
+  });
+  assert.equal(oversizedBatch.status, 400);
+  assert.equal(oversizedBatch.data.code, "BULK_DELETE_LIMIT_EXCEEDED");
+  const stillInvalid = await request(`/customer-board?paginated=1&stage=${encodeURIComponent("无效")}`, { token: admin });
+  assert.ok(stillInvalid.data.items.some((item) => item.customerId === 101));
+
+  const invalidAccount = await request("/users/3", { method: "PUT", token: admin, body: { account: "123", name: "杭州主管", roleId: "role-supervisor", unitId: "unit-east-parent", status: "启用" } });
+  assert.equal(invalidAccount.status, 400);
+  const updatedAccount = await request("/users/2", { method: "PUT", token: admin, body: { account: "13812345678", name: "杭州销售", roleId: "role-sales", unitId: "unit-east-child", status: "启用" } });
+  assert.equal(updatedAccount.status, 200, JSON.stringify(updatedAccount.data));
+  assert.equal(updatedAccount.data.user.account, "13812345678");
+  assert.equal(updatedAccount.data.user.username, "13812345678");
+  assert.equal(updatedAccount.data.user.phone, "13812345678");
+  const oldTokenRejected = await request("/state?metadata=1", { token: sales });
+  assert.equal(oldTokenRejected.status, 401);
+  const oldAccountRejected = await request("/auth/login", { method: "POST", body: { account: "sales-east", password: "123456" } });
+  assert.equal(oldAccountRejected.status, 401);
+  const newAccountLogin = await request("/auth/login", { method: "POST", body: { account: "13812345678", password: "123456" } });
+  assert.equal(newAccountLogin.status, 200, JSON.stringify(newAccountLogin.data));
+  const duplicateAccount = await request("/users/3", { method: "PUT", token: admin, body: { account: "13812345678", name: "杭州主管", roleId: "role-supervisor", unitId: "unit-east-parent", status: "启用" } });
+  assert.equal(duplicateAccount.status, 409);
+
+  const deletePreview = await request("/customers/bulk-delete-invalid", { method: "POST", token: admin, body: { customerIds: [101], confirm: false } });
+  assert.equal(deletePreview.status, 200);
+  assert.deepEqual({
+    deletedCustomers: deletePreview.data.deletedCustomers,
+    deletedOpportunities: deletePreview.data.deletedOpportunities,
+    deletedVisits: deletePreview.data.deletedVisits
+  }, { deletedCustomers: 1, deletedOpportunities: 1, deletedVisits: 1 });
+  assert.ok(deletePreview.data.deletedFollowUps >= 1);
+  const deleteCustomer = await request("/customers/bulk-delete-invalid", { method: "POST", token: admin, body: { customerIds: [101], confirm: true } });
   assert.equal(deleteCustomer.status, 200);
+  assert.equal(deleteCustomer.data.deletedCustomers, 1);
   assert.equal(deleteCustomer.data.deletedOpportunities, 1);
+  assert.equal(deleteCustomer.data.deletedVisits, 1);
   assert.ok(deleteCustomer.data.deletedFollowUps >= 1);
   const healthAfterDelete = await request("/health");
   assert.ok(healthAfterDelete.data.followUpIndex.entries < healthBeforeDelete.data.followUpIndex.entries);
   const boardAfterDelete = await request("/customer-board?full=1", { token: admin });
   assert.ok(!boardAfterDelete.data.items.some((item) => item.customerId === 101));
+  const persistedAfterDelete = JSON.parse(fs.readFileSync(path.join(tempDir, "db.json"), "utf8"));
+  assert.ok(!persistedAfterDelete.customers.some((item) => item.id === 101));
+  assert.ok(!persistedAfterDelete.opportunities.some((item) => item.customerId === 101));
+  assert.ok(!persistedAfterDelete.visits.some((item) => item.customerId === 101));
+  assert.ok(!persistedAfterDelete.activities.some((item) => item.customerId === 101));
+  assert.ok(!persistedAfterDelete.geocodeJobs.some((item) => item.customerId === 101));
+  assert.ok(persistedAfterDelete.routes.every((route) => route.stops.every((stop) => stop.customerId !== 101)));
 
   await stopServer();
   fs.rmSync(tempDir, { recursive: true, force: true });

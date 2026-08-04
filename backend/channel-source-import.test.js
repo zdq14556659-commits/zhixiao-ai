@@ -3,6 +3,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
+const JSZip = require("jszip");
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "zhixiao-channel-source-test-"));
 const uploadDir = path.join(tempDir, "uploads");
@@ -57,6 +58,12 @@ async function request(pathname, options = {}) {
     body: options.body === undefined ? undefined : isForm ? options.body : JSON.stringify(options.body)
   });
   return { status: response.status, data: await response.json() };
+}
+
+async function requestBuffer(pathname, token) {
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const response = await fetch(`${baseUrl}${pathname}`, { headers });
+  return { status: response.status, data: Buffer.from(await response.arrayBuffer()) };
 }
 
 async function waitForServer() {
@@ -188,8 +195,12 @@ async function run() {
   assert.equal(publicPool.status, 200);
   const official = publicPool.data.items.find((item) => item.name === "官网客户A");
   const unknown = publicPool.data.items.find((item) => item.name === "未知渠道客户");
-  assert.equal(official.channelSource, "官网留言");
-  assert.equal(unknown.channelSource, "其他");
+  assert.equal(official.channelSource, "");
+  assert.equal(official.channelSourceHidden, true);
+  assert.equal(unknown.channelSource, "");
+  const adminPublicPool = await request("/public-pool", { token: admin });
+  assert.equal(adminPublicPool.data.items.find((item) => item.name === "官网客户A").channelSource, "官网留言");
+  assert.equal(adminPublicPool.data.items.find((item) => item.name === "未知渠道客户").channelSource, "其他");
 
   const blocked = await request("/customers/channel-source", {
     method: "POST",
@@ -206,7 +217,7 @@ async function run() {
   assert.equal(updated.status, 200, JSON.stringify(updated.data));
   assert.equal(updated.data.updated, 1);
 
-  const publicPoolAfter = await request("/public-pool", { token: sales });
+  const publicPoolAfter = await request("/public-pool", { token: admin });
   assert.equal(publicPoolAfter.data.items.find((item) => item.name === "未知渠道客户").channelSource, "官网留言");
 
   const form = new FormData();
@@ -216,9 +227,27 @@ async function run() {
   assert.equal(xlsxImported.status, 201, JSON.stringify(xlsxImported.data));
   assert.equal(xlsxImported.data.imported, 1);
   assert.equal(xlsxImported.data.channelUnrecognized, 0);
-  const publicPoolAfterXlsx = await request("/public-pool", { token: sales });
+  const publicPoolAfterXlsx = await request("/public-pool", { token: admin });
   const sparseCustomer = publicPoolAfterXlsx.data.items.find((item) => item.name === "设计师" && item.customerId !== official.customerId);
   assert.equal(sparseCustomer.channelSource, "自主注册");
+
+  const currentTemplateForm = new FormData();
+  currentTemplateForm.append("file", new Blob([fs.readFileSync(path.join(__dirname, "templates", "customer-import-template.xlsx"))], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), "current-template.xlsx");
+  currentTemplateForm.append("target", "public_pool");
+  const currentTemplateImport = await request("/import/customers?target=public_pool", { method: "POST", token: ops, body: currentTemplateForm });
+  assert.equal(currentTemplateImport.status, 201, JSON.stringify(currentTemplateImport.data));
+  assert.equal(currentTemplateImport.data.imported, 2, JSON.stringify(currentTemplateImport.data));
+  const currentTemplatePool = await request("/public-pool", { token: admin });
+  assert.equal(currentTemplatePool.data.items.find((item) => item.name === "杭州雅居全屋定制工厂").channelSource, "企查查");
+  assert.equal(currentTemplatePool.data.items.find((item) => item.name === "佛山柜体门板厂").channelSource, "公众号");
+
+  const downloadedTemplate = await requestBuffer("/import/customers/template", admin);
+  assert.equal(downloadedTemplate.status, 200);
+  const zip = await JSZip.loadAsync(downloadedTemplate.data);
+  const sheetXml = await zip.file("xl/worksheets/sheet1.xml").async("string");
+  assert.ok(sheetXml.includes('sqref="C2:C1000"'));
+  assert.ok(sheetXml.includes('sqref="D2:D1000"'));
+  assert.ok(!sheetXml.includes('sqref="F2:F1000"'));
 }
 
 run()

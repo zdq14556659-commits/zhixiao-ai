@@ -49,7 +49,22 @@ const seed = {
     zone: T.eastZone,
     createdAt: today,
     contacts: [{ name: "\u4e3b\u8054\u7cfb\u4eba", phone: "13900000000", isPrimary: true }]
-  }],
+  }, ...Array.from({ length: 5 }, (_, index) => ({
+    id: 110 + index,
+    name: `Existing Factory ${index + 2}`,
+    phone: `1390000011${index}`,
+    phoneNormalized: `1390000011${index}`,
+    channelSource: T.official,
+    createdBy: "Admin",
+    owner: "Sales",
+    ownerId: 3,
+    followPerson: "Sales",
+    unitId: "unit-a",
+    unit: T.unit,
+    zone: T.eastZone,
+    createdAt: today,
+    contacts: [{ name: "主联系人", phone: `1390000011${index}`, isPrimary: true }]
+  }))],
   opportunities: [{
     id: 101,
     customerId: 100,
@@ -154,6 +169,7 @@ async function run() {
   assert.equal(imported.data.total, 7);
   assert.equal(imported.data.imported, 4);
   assert.equal(imported.data.duplicates, 2);
+  assert.equal(imported.data.fileDuplicates, 1);
   assert.equal(imported.data.failed, 1);
   assert.equal(imported.data.channelUnrecognized, 1);
   assert.equal(imported.data.pendingLocation, 4);
@@ -170,15 +186,34 @@ async function run() {
   const pool = await request("/public-pool", { token: sales });
   assert.equal(pool.status, 200, JSON.stringify(pool.data));
   assert.equal(pool.data.count, 4);
-  assert.equal(pool.data.items.find((item) => item.name === "Public A").channelSource, T.register);
-  assert.equal(pool.data.items.find((item) => item.name === "Public B").channelSource, T.official);
-  assert.equal(pool.data.items.find((item) => item.name === "Unknown channel").channelSource, T.other);
+  assert.ok(pool.data.items.every((item) => item.channelSource === "" && item.channelSourceHidden === true));
   const noProduct = pool.data.items.find((item) => item.name === "No Product");
   assert.ok(noProduct);
   const claimed = await request(`/opportunities/${noProduct.opportunityId}/claim`, { method: "POST", token: sales, body: {} });
   assert.equal(claimed.status, 200, JSON.stringify(claimed.data));
   assert.equal(claimed.data.ownerId, 3);
   assert.equal(claimed.data.ownershipStatus, "pending_followup");
+
+  const exactRows = [
+    ["客户", "客户电话", "状态", "城市", "客户地址", "渠道来源", "意向产品"],
+    ...Array.from({ length: 101 }, (_, index) => [`Exact ${index + 1}`, String(13710000000 + index), T.publicPool, "佛山", "", T.register, T.v1]),
+    ["Existing 1", "13900000000", T.publicPool, "佛山", "", T.official, ""],
+    ...Array.from({ length: 5 }, (_, index) => [`Existing ${index + 2}`, `1390000011${index}`, T.publicPool, "佛山", "", T.official, ""]),
+    ...Array.from({ length: 15 }, (_, index) => [`Exact duplicate ${index + 1}`, String(13710000000 + index), T.publicPool, "佛山", "", T.register, T.v1])
+  ].map((row) => row.join(",")).join("\n");
+  const exact = await request("/import/customers?target=public_pool", {
+    method: "POST",
+    token: ops,
+    body: { moneyUnit: "yuan", rows: exactRows }
+  });
+  assert.equal(exact.status, 201, JSON.stringify(exact.data));
+  assert.equal(exact.data.total, 122);
+  assert.equal(exact.data.imported, 101);
+  assert.equal(exact.data.duplicateCustomers, 6);
+  assert.equal(exact.data.duplicateOpportunities, 0);
+  assert.equal(exact.data.fileDuplicates, 15);
+  assert.equal(exact.data.duplicates, 21);
+  assert.equal(exact.data.failed, 0);
 }
 
 run()
