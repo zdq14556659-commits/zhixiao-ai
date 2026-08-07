@@ -34,7 +34,9 @@ mv -Tf "$APP_ROOT/current.next" "$APP_ROOT/current"
 
 systemctl restart zhixiao-ai
 
-for attempt in $(seq 1 30); do
+HEALTH_CHECK_TIMEOUT_SECONDS=120
+echo "Waiting up to ${HEALTH_CHECK_TIMEOUT_SECONDS}s for Zhixiao AI health..."
+for attempt in $(seq 1 "$HEALTH_CHECK_TIMEOUT_SECONDS"); do
   if curl --fail --silent http://127.0.0.1:8787/api/health >/dev/null; then
     nginx -t
     systemctl reload nginx
@@ -43,9 +45,12 @@ for attempt in $(seq 1 30); do
     echo "Zhixiao AI deployed: $RELEASE"
     exit 0
   fi
+  if [ "$attempt" -eq 1 ] || [ $((attempt % 10)) -eq 0 ]; then
+    echo "Backend is still starting... (${attempt}/${HEALTH_CHECK_TIMEOUT_SECONDS}s)"
+  fi
   sleep 1
 done
 
-echo "Zhixiao AI health check failed" >&2
+echo "Zhixiao AI health check failed after ${HEALTH_CHECK_TIMEOUT_SECONDS}s" >&2
 journalctl -u zhixiao-ai -n 80 --no-pager >&2
 exit 1
