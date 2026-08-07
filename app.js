@@ -846,11 +846,12 @@ function customerBoardQuery() {
 async function loadCustomerBoardPage(options = {}) {
   if (!session()) return;
   const requestId = ++customerBoardRequestId;
+  const query = customerBoardQuery().toString();
   customerBoardLoading = true;
   if (options.keepData !== true) customerBoardData = null;
   if (options.renderLoading !== false) renderCustomers();
   try {
-    const data = await api(`/customer-board?${customerBoardQuery().toString()}`);
+    const data = await api(`/customer-board?${query}`);
     if (requestId !== customerBoardRequestId) return;
     customerBoardData = data;
     state = {
@@ -1160,7 +1161,7 @@ function switchView(view, options = {}) {
   $("#viewCrumb").textContent = titles[view];
   render();
   if (!options.skipLoad && view === "customers" && !customerBoardLoading) {
-    loadCustomerBoardPage().catch((error) => toast(error.message));
+    loadCustomerBoardPage({ keepData: true }).catch((error) => toast(error.message));
   }
   if (!options.skipLoad && view === "dashboard") {
     scheduleDashboardLoad();
@@ -3703,7 +3704,7 @@ function wireEvents() {
     const resetAndRender = () => {
       dashboardDrilldownIds = null;
       customerPage = 1;
-      loadCustomerBoardPage().catch((error) => toast(error.message));
+      loadCustomerBoardPage({ keepData: true }).catch((error) => toast(error.message));
     };
     const debouncedResetAndRender = debounce(resetAndRender, 300);
     const node = $(`#${id}`);
@@ -3720,13 +3721,13 @@ function wireEvents() {
     customerPageSize = clampPageSize(event.currentTarget.value);
     event.currentTarget.value = String(customerPageSize);
     customerPage = 1;
-    loadCustomerBoardPage().catch((error) => toast(error.message));
+    loadCustomerBoardPage({ keepData: true }).catch((error) => toast(error.message));
   });
   $("#customerPageSize").addEventListener("blur", (event) => {
     customerPageSize = clampPageSize(event.currentTarget.value);
     event.currentTarget.value = String(customerPageSize);
     customerPage = Math.max(1, Math.min(customerPage, Math.max(Math.ceil(Number(customerBoardData?.total || currentFilteredCustomerRows.length) / customerPageSize), 1)));
-    loadCustomerBoardPage().catch((error) => toast(error.message));
+    loadCustomerBoardPage({ keepData: true }).catch((error) => toast(error.message));
   });
   $("#dashboardMonth").addEventListener("change", (event) => {
     const range = monthDates(event.currentTarget.value);
@@ -3746,19 +3747,19 @@ function wireEvents() {
   $("#customerPrevPage").addEventListener("click", () => {
     if (customerPage <= 1) return;
     customerPage -= 1;
-    loadCustomerBoardPage().catch((error) => toast(error.message));
+    loadCustomerBoardPage({ keepData: true }).catch((error) => toast(error.message));
   });
   $("#customerNextPage").addEventListener("click", () => {
     const totalPages = Math.max(Math.ceil(Number(customerBoardData?.total || currentFilteredCustomerRows.length) / customerPageSize), 1);
     if (customerPage >= totalPages) return;
     customerPage += 1;
-    loadCustomerBoardPage().catch((error) => toast(error.message));
+    loadCustomerBoardPage({ keepData: true }).catch((error) => toast(error.message));
   });
   $("#customerJumpPage").addEventListener("click", () => {
     const totalPages = Math.max(Math.ceil(Number(customerBoardData?.total || currentFilteredCustomerRows.length) / customerPageSize), 1);
     const targetPage = Math.min(Math.max(Number($("#customerPageJump").value || 1), 1), totalPages);
     customerPage = targetPage;
-    loadCustomerBoardPage().catch((error) => toast(error.message));
+    loadCustomerBoardPage({ keepData: true }).catch((error) => toast(error.message));
   });
   $("#addCustomerBtn").addEventListener("click", () => openCustomerDialog());
   $("#batchImportBtn").addEventListener("click", () => $("#batchDialog").showModal());
@@ -3985,6 +3986,6 @@ async function saveBusinessRules(event) {
   }
 }
 window.addEventListener("focus", () => {
-  if (session() && currentView === "customers") loadCustomerBoardPage({ renderLoading: false }).catch(() => {});
+  if (session() && currentView === "customers") loadCustomerBoardPage({ renderLoading: false, keepData: true }).catch(() => {});
 });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("./service-worker.js").catch(() => {});

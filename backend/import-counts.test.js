@@ -182,6 +182,13 @@ async function run() {
   assert.ok(imported.data.skipped.some((item) => item.code === "DUPLICATE_ACTIVE_OPPORTUNITY" || String(item.reason || "").includes("\u8be5\u9500\u552e\u673a\u4f1a\u5df2\u5b58\u5728")));
   assert.ok(imported.data.failures.some((item) => String(item.reason || "").includes("\u624b\u673a\u53f7")));
   assert.ok(imported.data.warnings.some((item) => String(item.reason || "").includes("\u6e20\u9053\u6765\u6e90")));
+  const importedReport = fs.readFileSync(path.join(uploadDir, path.basename(imported.data.reportUrl)), "utf8").replace(/^\ufeff/, "");
+  const importedReportLines = importedReport.split(/\r?\n/).filter(Boolean);
+  assert.equal(importedReportLines.length, imported.data.total + 1, "report must contain exactly one line per source row plus its header");
+  assert.ok(importedReportLines[0].includes("\u5bfc\u5165\u7ed3\u679c") && importedReportLines[0].includes("\u8b66\u544a"));
+  const fileDuplicateReportLine = importedReportLines.find((line) => line.startsWith("4,"));
+  assert.ok(fileDuplicateReportLine?.includes("\u6587\u4ef6\u5185\u91cd\u590d"), fileDuplicateReportLine);
+  assert.ok(fileDuplicateReportLine?.includes("CITY_UNRECOGNIZED"), fileDuplicateReportLine);
 
   const pool = await request("/public-pool", { token: sales });
   assert.equal(pool.status, 200, JSON.stringify(pool.data));
@@ -214,6 +221,11 @@ async function run() {
   assert.equal(exact.data.fileDuplicates, 15);
   assert.equal(exact.data.duplicates, 21);
   assert.equal(exact.data.failed, 0);
+  const exactReport = fs.readFileSync(path.join(uploadDir, path.basename(exact.data.reportUrl)), "utf8").replace(/^\ufeff/, "");
+  const exactReportLines = exactReport.split(/\r?\n/).filter(Boolean);
+  assert.equal(exactReportLines.length, exact.data.total + 1);
+  assert.equal(exactReportLines.filter((line) => line.includes("DUPLICATE_CUSTOMER")).length, 6);
+  assert.equal(exactReportLines.filter((line) => line.includes("FILE_DUPLICATE_OPPORTUNITY")).length, 15);
 }
 
 run()

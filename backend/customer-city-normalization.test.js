@@ -17,7 +17,8 @@ const customers = [
   { id: 6, name: "战区脏值", phone: "13810000006", city: "东部战区", address: "", location: { city: "17" } },
   { id: 7, name: "空值", phone: "13810000007", city: "", address: "", location: { city: "" } },
   { id: 8, name: "国外国家", phone: "13810000008", city: "美国", address: "美国", location: { city: "" } },
-  { id: 9, name: "有效定位", phone: "13810000009", city: "宁波市", address: "浙江省宁波市", location: { city: "杭州市" } }
+  { id: 9, name: "有效定位", phone: "13810000009", city: "宁波市", address: "浙江省宁波市", location: { city: "杭州市" } },
+  { id: 10, name: "重复城市片段", phone: "13810000010", city: "黄冈市麻城市", address: "", location: { city: "" } }
 ].map((customer) => ({ ...customer, createdAt: today, channelSource: "其他", lifecycleStatus: "active" }));
 const seed = {
   version: "backend-v9",
@@ -79,8 +80,8 @@ async function run() {
   const preview = await request("/admin/customer-cities/normalize", { method: "POST", token: admin, body: { dryRun: true } });
   assert.equal(preview.status, 200, JSON.stringify(preview.data));
   assert.equal(preview.data.dryRun, true);
-  assert.equal(preview.data.scanned, 9);
-  assert.equal(preview.data.corrected, 7);
+  assert.equal(preview.data.scanned, 10);
+  assert.equal(preview.data.corrected, 8);
   assert.equal(preview.data.pendingRecognition, 3);
   assert.equal(fs.readFileSync(path.join(tempDir, "db.json"), "utf8"), beforeDryRun, "dry run must not write data");
 
@@ -93,7 +94,7 @@ async function run() {
   assert.match(path.basename(applied.data.backupPath), /^db-before-city-normalization-/);
 
   const saved = JSON.parse(fs.readFileSync(path.join(tempDir, "db.json"), "utf8"));
-  assert.equal(saved.customers.length, 9);
+  assert.equal(saved.customers.length, 10);
   const byId = new Map(saved.customers.map((customer) => [Number(customer.id), customer]));
   assert.equal(byId.get(1).city, "佛山市");
   assert.equal(byId.get(2).city, "佛山市");
@@ -104,18 +105,26 @@ async function run() {
   assert.equal(byId.get(7).city, "待识别");
   assert.equal(byId.get(8).city, "待识别");
   assert.equal(byId.get(9).city, "杭州市");
+  assert.equal(byId.get(10).city, "黄冈市");
   assert.equal(byId.get(1).location.city, "佛山市");
   assert.equal(byId.get(6).location.city, "待识别");
   assert.equal(byId.get(1).address, "广东省广州市天河区");
   assert.equal(byId.get(1).location.latitude, 23);
 
-  const board = await request(`/customer-board?stage=${encodeURIComponent("名单")}&paginated=1&page=1&pageSize=20`, { token: admin });
+  const board = await request(`/customer-board?stage=${encodeURIComponent("名单")}&paginated=1&page=1&pageSize=1`, { token: admin });
   assert.equal(board.status, 200, JSON.stringify(board.data));
   const cities = board.data.filterOptions?.cities || [];
   assert.ok(cities.includes("佛山市"));
   assert.ok(cities.includes("兰州市"));
+  assert.ok(cities.includes("黄冈市"));
+  assert.ok(!cities.includes("黄冈市麻城市"));
   assert.ok(!cities.includes("待识别"));
   assert.ok(!cities.some((city) => /^\d+$/.test(city) || /战区/.test(city)));
+
+  const filteredBoard = await request(`/customer-board?stage=${encodeURIComponent("名单")}&paginated=1&page=1&pageSize=20&city=${encodeURIComponent("佛山市")}`, { token: admin });
+  assert.equal(filteredBoard.status, 200, JSON.stringify(filteredBoard.data));
+  assert.equal(filteredBoard.data.total, 3);
+  assert.ok(filteredBoard.data.items.every((item) => item.city === "佛山市"));
 
   const secondPreview = await request("/admin/customer-cities/normalize", { method: "POST", token: admin, body: {} });
   assert.equal(secondPreview.status, 200);

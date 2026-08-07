@@ -5007,14 +5007,14 @@ function normalizeCityName(value, options = {}) {
   if (CITY_PROVINCE_NAMES.has(original)) return "";
   const text = stripCityProvincePrefix(original);
   if (!text || CITY_PROVINCE_NAMES.has(text) || CITY_INVALID_NAMES.has(text)) return "";
-  const explicit = text.match(/^([\u4e00-\u9fa5]{2,12}(?:自治州|地区|盟|市))/);
+  const explicit = text.match(/^([\u4e00-\u9fa5]{2,12}?(?:自治州|地区|盟|市))/);
   if (explicit) {
     const city = explicit[1];
     if (CITY_PROVINCE_NAMES.has(city) || CITY_INVALID_NAMES.has(city)) return "";
     return city;
   }
   if (options.fromAddress) {
-    const addressMatch = original.match(/(?:省|自治区|特别行政区)?([\u4e00-\u9fa5]{2,12}(?:自治州|地区|盟|市))/);
+    const addressMatch = original.match(/(?:省|自治区|特别行政区)?([\u4e00-\u9fa5]{2,12}?(?:自治州|地区|盟|市))/);
     if (addressMatch && !CITY_PROVINCE_NAMES.has(addressMatch[1])) return addressMatch[1];
     const known = [...KNOWN_SUFFIXLESS_CITIES].find((name) => original.includes(name));
     return known ? `${known}市` : "";
@@ -5607,7 +5607,7 @@ function buildCustomerBoard(state, viewer, query = {}) {
       page: page.page,
       pageSize: page.pageSize,
       totalPages: page.totalPages,
-      filterOptions: lightweightCustomerBoardFilterOptions(state, items, stage)
+      filterOptions: lightweightCustomerBoardFilterOptions(state, items, stage, rawRows)
     };
   }
   const projectedRows = rawRows.map((item) => ({
@@ -5789,7 +5789,27 @@ function customerBoardFilterOptions(rows = []) {
   };
 }
 
-function lightweightCustomerBoardFilterOptions(state = {}, rows = [], stage = "") {
+function customerBoardCityFilterValues(state = {}, sources = []) {
+  const customers = state.customers || [];
+  const seenCustomerIds = new Set();
+  const values = [];
+  for (const source of sources || []) {
+    const customerId = Number(source.customerId || 0);
+    if (customerId) {
+      if (seenCustomerIds.has(customerId)) continue;
+      seenCustomerIds.add(customerId);
+      const customer = findCustomer(customers, customerId);
+      if (customer) {
+        values.push(customerDisplayCity(customer));
+        continue;
+      }
+    }
+    values.push(source.city);
+  }
+  return uniqueCityFilterValues(values);
+}
+
+function lightweightCustomerBoardFilterOptions(state = {}, rows = [], stage = "", citySources = rows) {
   const activeUsers = (state.users || []).filter((user) => {
     const account = cleanAccount(user.account || user.username || user.phone);
     const hiddenDemo = HIDDEN_DEMO_USERS.has(account) && ["林晨", "周扬"].includes(String(user.name || ""));
@@ -5813,7 +5833,7 @@ function lightweightCustomerBoardFilterOptions(state = {}, rows = [], stage = ""
         ...activeUnits.map((unit) => unit.name),
         ...rows.map((row) => row.unit)
       ]),
-    cities: uniqueCityFilterValues(rows.map((row) => row.city))
+    cities: customerBoardCityFilterValues(state, citySources)
   };
 }
 
@@ -8256,7 +8276,7 @@ async function importCustomers(req, viewer, target = "") {
       code: "IMPORT_ROWS_EMPTY",
       reason: "未识别到客户数据，请检查表头是否包含客户名称、客户电话，或粘贴格式是否为：客户名称,手机号,渠道来源,客户地址"
     };
-    const reportUrl = writeImportReport([failure]);
+    const reportUrl = writeImportReport([{ ...failure, result: "导入失败", warning: "", warningCode: "" }]);
     return {
       total: 1,
       imported: 0,
@@ -8437,7 +8457,7 @@ async function importCustomers(req, viewer, target = "") {
       })))
     });
   }
-  const reportRows = [...skipped, ...failed, ...warnings];
+  const reportRows = buildCustomerImportReportRows(rows, skipped, failed, warnings, { importToPublicPool });
   const reportUrl = reportRows.length ? writeImportReport(reportRows) : "";
   const pendingLocation = createdCustomers.filter((item) => item.location?.status !== "resolved").length;
   const pendingGeocode = 0;
@@ -8468,12 +8488,53 @@ async function importCustomers(req, viewer, target = "") {
   };
 }
 
+function buildCustomerImportReportRows(rows = [], skipped = [], failed = [], warnings = [], options = {}) {
+  const outcomesByRow = new Map();
+  skipped.forEach((item) => {
+    const result = item.code === "DUPLICATE_CUSTOMER"
+      ? "系统已有客户"
+      : item.code === "DUPLICATE_ACTIVE_OPPORTUNITY"
+        ? "系统已有机会"
+        : item.code === "FILE_DUPLICATE_OPPORTUNITY"
+          ? "文件内重复"
+          : "已跳过";
+    outcomesByRow.set(Number(item.rowNumber), { ...item, result });
+  });
+  failed.forEach((item) => outcomesByRow.set(Number(item.rowNumber), { ...item, result: "导入失败" }));
+
+  const warningsByRow = new Map();
+  warnings.forEach((item) => {
+    const rowNumber = Number(item.rowNumber);
+    if (!warningsByRow.has(rowNumber)) warningsByRow.set(rowNumber, []);
+    warningsByRow.get(rowNumber).push(item);
+  });
+
+  return rows.map((row, index) => {
+    const rowNumber = Number(row.rowNumber || index + 1);
+    const outcome = outcomesByRow.get(rowNumber);
+    const rowWarnings = warningsByRow.get(rowNumber) || [];
+    const importToPublicPool = options.importToPublicPool || row.importToPublicPool;
+    return {
+      rowNumber,
+      name: outcome?.name || row.name || "",
+      phone: outcome?.phone || row.phone || "",
+      productName: outcome?.productName || row.productName || "待确认产品",
+      status: outcome?.status || (importToPublicPool ? PUBLIC_POOL_STATUS : row.stage || "名单"),
+      result: outcome?.result || "成功导入",
+      reason: outcome?.reason || "导入成功",
+      warning: rowWarnings.map((item) => item.reason).filter(Boolean).join("；"),
+      code: outcome?.code || "IMPORTED",
+      warningCode: rowWarnings.map((item) => item.code).filter(Boolean).join(",")
+    };
+  });
+}
+
 function writeImportReport(rows) {
   if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
   const fileName = `customer-import-report-${Date.now()}-${crypto.randomBytes(3).toString("hex")}.csv`;
   const csv = [
-    ["原始行号", "客户名称", "手机号", "意向产品", "状态", "原因", "业务码"],
-    ...rows.map((item) => [item.rowNumber, item.name, item.phone, item.productName, item.status, item.reason, item.code])
+    ["原始行号", "客户名称", "手机号", "意向产品", "状态", "导入结果", "原因", "警告", "业务码", "警告码"],
+    ...rows.map((item) => [item.rowNumber, item.name, item.phone, item.productName, item.status, item.result || "导入失败", item.reason, item.warning || "", item.code, item.warningCode || ""])
   ].map((row) => row.map(csvCell).join(",")).join("\r\n");
   fs.writeFileSync(path.join(UPLOAD_DIR, fileName), `\ufeff${csv}`, "utf8");
   return `/uploads/${fileName}`;
