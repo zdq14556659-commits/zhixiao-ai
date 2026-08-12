@@ -5587,7 +5587,7 @@ function buildCustomerBoard(state, viewer, query = {}) {
   if (requestedIds.size) {
     rawRows = rawRows.filter((item) => requestedIds.has(Number(item.id)) || requestedIds.has(Number(item.customerId)));
   }
-  if (!hasCustomerBoardFilters(effectiveQuery) && !requestedIds.size) {
+  if (!hasCustomerBoardFilters(effectiveQuery) && !requestedIds.size && !needsAccurateBoardFollowData(effectiveQuery)) {
     const sortedRows = sortRawBoardRows(rawRows, effectiveQuery, stage);
     const page = paginateRows(sortedRows, effectiveQuery);
     const pageCustomerIds = new Set(page.items.map((item) => Number(item.customerId)).filter(Boolean));
@@ -5612,7 +5612,7 @@ function buildCustomerBoard(state, viewer, query = {}) {
   }
   const projectedRows = rawRows.map((item) => ({
     source: item,
-    row: opportunityBoardFilterProjection(state, item, stage, publicPoolSnapshot)
+    row: opportunityBoardFilterProjection(state, item, stage, publicPoolSnapshot, effectiveQuery)
   }));
   const filterOptions = customerBoardFilterOptions(projectedRows.map((item) => item.row));
   const filteredRows = projectedRows.filter((item) => boardProjectionMatchesQuery(item.row, effectiveQuery, stage));
@@ -5669,13 +5669,17 @@ function hasCustomerBoardFilters(query = {}) {
   return filterKeys.some((key) => String(query[key] || "").trim());
 }
 
-function opportunityBoardFilterProjection(state, opportunity = {}, stage = "", publicPoolSnapshot = null) {
+function opportunityBoardFilterProjection(state, opportunity = {}, stage = "", publicPoolSnapshot = null, query = {}) {
   const customer = findCustomer(state.customers || [], opportunity.customerId) || {};
   const primaryContact = primaryContactForCustomer(customer);
   const publicPool = stage === PUBLIC_POOL_STATUS
     ? publicPoolSnapshot?.infoById.get(Number(opportunity.id)) || opportunityPublicPoolInfo(opportunity, Date.now(), state)
     : { at: opportunity.publicPoolAt || "" };
   const isPublic = stage === PUBLIC_POOL_STATUS;
+  const accurateFollowData = needsAccurateBoardFollowData(query);
+  const manualFollows = accurateFollowData ? opportunityManualFollows(state, opportunity) : [];
+  const latestManual = manualFollows[0] || null;
+  const summaryCount = Number(opportunity.manualFollowCount || opportunity.followCount || 0);
   return {
     id: opportunity.id,
     customerId: opportunity.customerId,
@@ -5697,15 +5701,24 @@ function opportunityBoardFilterProjection(state, opportunity = {}, stage = "", p
     publicPoolAt: publicPool.at || opportunity.publicPoolAt || "",
     purchasedInfo: opportunity.purchasedInfo || {},
     archivedAt: customer.archivedAt || "",
-    nextFollow: opportunity.nextFollow || "",
+    nextFollow: latestManual?.nextFollow || opportunity.nextFollow || "",
     assignedAt: latestAssignmentAt(opportunity),
-    manualFollowCount: Number(opportunity.manualFollowCount || opportunity.followCount || 0),
-    followCount: Number(opportunity.followCount || opportunity.manualFollowCount || 0),
-    latestManualFollowAt: opportunity.latestManualFollowAt || opportunity.effectiveFollowUpAt || "",
+    manualFollowCount: accurateFollowData ? manualFollows.length : summaryCount,
+    followCount: accurateFollowData ? manualFollows.length : summaryCount,
+    latestManualFollowAt: latestManual?.createdAt || latestManual?.date || opportunity.latestManualFollowAt || opportunity.effectiveFollowUpAt || "",
     effectiveFollowUpAt: opportunity.effectiveFollowUpAt || "",
-    lastFollow: opportunity.lastFollow || "",
-    lastNote: opportunity.lastNote || ""
+    lastFollow: latestManual?.date || String(latestManual?.createdAt || "").slice(0, 10) || opportunity.lastFollow || "",
+    lastNote: latestManual?.note || opportunity.lastNote || ""
   };
+}
+
+function needsAccurateBoardFollowData(query = {}) {
+  return Boolean(
+    String(query.followStatus || "").trim()
+    || String(query.lastStart || "").trim()
+    || String(query.lastEnd || "").trim()
+    || String(query.sortBy || "") === "lastFollow"
+  );
 }
 
 function boardProjectionMatchesQuery(row = {}, query = {}, stage = "") {
@@ -6972,7 +6985,7 @@ function buildActions(state, customers, range) {
 function buildFollowLeaderboard(state, viewer, scope, customers = []) {
   const date = today();
   const scopedUsers = visibleUsers(state, viewer)
-    .filter((user) => canOwnCustomerUser(state, user))
+    .filter((user) => ["销售", "主管"].includes(findRole(state.roles, user.roleId, user.role).name))
     .filter((user) => recordMatchesScope(state, user, scope));
   const counts = new Map(scopedUsers.map((user) => [Number(user.id), 0]));
   const nameToUser = new Map(scopedUsers.map((user) => [cleanText(user.name), user]));
@@ -7035,6 +7048,7 @@ function dashboardCacheKey(viewer = {}, query = {}) {
     userId: viewer.id,
     roleId: viewer.roleId,
     authVersion: viewer.authVersion || 1,
+    stateRevision,
     query: normalizedQuery
   });
 }
@@ -7081,11 +7095,13 @@ function buildDashboard(state, viewer, query = {}) {
   const range = normalizeDashboardRange(query);
   const scopeOptions = dashboardScopeOptions(state, viewer);
   const scope = resolveDashboardScope(state, viewer, query);
-  const activeOpportunities = dashboardOpportunitySource(state, viewer, scope)
+  const allActiveOpportunities = (state.opportunities || [])
     .filter((item) => findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED)
     .filter((item) => !isOpportunityPublicPool(item, Date.now(), state) && !isPurchasedOpportunity(item))
-    .map((item) => opportunityView(state, item));
-  const dashboardState = { ...state, customers: activeOpportunities };
+    .map((item) => opportunityView(state, item, { includeExternalFollowUps: true }));
+  const sourceOpportunityIds = new Set(dashboardOpportunitySource(state, viewer, scope).map((item) => Number(item.id)));
+  const activeOpportunities = allActiveOpportunities.filter((item) => sourceOpportunityIds.has(Number(item.id)));
+  const dashboardState = { ...state, customers: allActiveOpportunities };
   const publicPoolCount = countScopedPublicPoolOpportunities(state, scope);
   const customers = activeOpportunities.filter((item) => canViewOpportunity(state, viewer, item) && recordMatchesScope(state, item, scope));
   const customerMasterIds = new Set(customers.map((item) => Number(item.customerId)));
@@ -7093,7 +7109,7 @@ function buildDashboard(state, viewer, query = {}) {
     .map((customerId) => findCustomer(state.customers || [], customerId))
     .filter((item) => item && item.lifecycleStatus !== LIFECYCLE_ARCHIVED);
   const visits = indexedVisitsForScope(state, scope).filter((item) => canViewRecord(state, viewer, item) && recordMatchesScope(state, item, scope));
-  const revenueCustomers = activeOpportunities.filter((item) => {
+  const revenueCustomers = allActiveOpportunities.filter((item) => {
     const paymentRecord = paymentRecordFor(dashboardState, item);
     return canViewRecord(dashboardState, viewer, paymentRecord) && recordMatchesScope(dashboardState, paymentRecord, scope);
   });
@@ -7156,7 +7172,7 @@ function buildDashboard(state, viewer, query = {}) {
     trend: buildTrend(customers, range, revenueCustomers),
     ranking: buildRanking(dashboardState, viewer, scope, range),
     unitRanking: buildUnitRanking(dashboardState, viewer, scope, range, customers),
-    followLeaderboard: buildFollowLeaderboard(state, viewer, scope, customers),
+    followLeaderboard: buildFollowLeaderboard(state, viewer, scope, allActiveOpportunities),
     industry,
     actions,
     drilldowns,

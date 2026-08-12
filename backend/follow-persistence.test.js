@@ -198,6 +198,11 @@ async function run() {
   assert.ok(!diskOpportunity.followUps.some((item) => item.note === note && item.nextFollow === nextFollow));
   assert.equal(diskOpportunity.lastNote, note);
   assert.equal(diskOpportunity.nextFollow, nextFollow);
+  const filteredBoard = await request(`/customer-board?paginated=1&stage=${encodeURIComponent(T.list)}&lastStart=${recentDate}&lastEnd=${recentDate}`, { token });
+  assert.equal(filteredBoard.status, 200, JSON.stringify(filteredBoard.data));
+  assert.equal(filteredBoard.data.total, 1, "latest-follow range must use the external manual follow record");
+  assert.equal(filteredBoard.data.items[0].customerId, 100);
+  assert.equal(filteredBoard.data.items[0].latestManualFollowAt.slice(0, 10), recentDate);
   const followLogDir = path.join(tempDir, "followups");
   const followLogContent = fs.readdirSync(followLogDir)
     .filter((name) => name.endsWith(".jsonl"))

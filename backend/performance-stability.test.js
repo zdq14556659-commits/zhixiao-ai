@@ -8,6 +8,7 @@ const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "zhixiao-performance-test-
 const port = 30000 + Math.floor(Math.random() * 1000);
 const baseUrl = `http://127.0.0.1:${port}/api`;
 const customerCount = 8000;
+const testToday = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 const T = {
   admin: "\u7ba1\u7406\u5458",
   sales: "\u9500\u552e",
@@ -23,7 +24,7 @@ for (let index = 1; index <= customerCount; index += 1) {
   const customerId = 100000 + index;
   const opportunityId = 200000 + index;
   const phone = `13${String(100000000 + index).slice(-9)}`;
-  const createdAt = `2026-07-${String((index % 20) + 1).padStart(2, "0")}`;
+  const createdAt = testToday;
   const isPublicPool = index % 2 === 0;
   customers.push({
     id: customerId,
@@ -48,8 +49,8 @@ for (let index = 1; index <= customerCount; index += 1) {
     id: `${opportunityId}-${followIndex}`,
     customerId,
     opportunityId,
-    date: `2026-07-${String(followIndex + 1).padStart(2, "0")}`,
-    createdAt: `2026-07-${String(followIndex + 1).padStart(2, "0")}T08:00:00.000Z`,
+    date: testToday,
+    createdAt: `${testToday}T${String(followIndex + 1).padStart(2, "0")}:00:00.000Z`,
     author: "Admin",
     note: `Historical follow ${followIndex} ${"x".repeat(120)}`,
     isSystem: false

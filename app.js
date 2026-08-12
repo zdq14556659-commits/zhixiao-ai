@@ -824,8 +824,8 @@ function customerBoardQuery() {
     followStatus: $("#followStatusFilter")?.value || "",
     createdStart: $("#createdTimeStart")?.value || "",
     createdEnd: $("#createdTimeEnd")?.value || "",
-    stageStart: $("#stageTimeStart")?.value || "",
-    stageEnd: $("#stageTimeEnd")?.value || "",
+    stageStart: currentStage === "名单" ? "" : $("#stageTimeStart")?.value || "",
+    stageEnd: currentStage === "名单" ? "" : $("#stageTimeEnd")?.value || "",
     lastStart: $("#lastFollowStart")?.value || "",
     lastEnd: $("#lastFollowEnd")?.value || "",
     nextStart: $("#nextFollowStart")?.value || "",
@@ -1442,6 +1442,7 @@ function renderCustomers() {
   $("#batchImportBtn").textContent = currentStage === PUBLIC_POOL_STAGE ? "导入公海" : "批量导入";
   $("#stageTimeHeader").textContent = stageTime.label;
   $("#stageTimeFilterLabel").textContent = stageTime.label;
+  $("#stageTimeFilter")?.classList.toggle("hidden", currentStage === "名单");
 
   if (customerBoardLoading && !serverBoard) {
     currentFilteredCustomerRows = [];
@@ -3528,8 +3529,15 @@ async function deleteUnit(id) {
 }
 
 function sanitizeCustomerFiltersForStage(stage = currentStage) {
-  if (stage !== PUBLIC_POOL_STAGE) return;
-  const hiddenFilters = ["followPersonFilter", "unitFilter", "followStatusFilter", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd"];
+  const hiddenFilters = stage === "名单" ? ["stageTimeStart", "stageTimeEnd"] : [];
+  if (stage !== PUBLIC_POOL_STAGE) {
+    hiddenFilters.forEach((id) => {
+      const node = $(`#${id}`);
+      if (node) node.value = "";
+    });
+    return;
+  }
+  hiddenFilters.push("followPersonFilter", "unitFilter", "followStatusFilter", "lastFollowStart", "lastFollowEnd", "nextFollowStart", "nextFollowEnd");
   if (!canViewPublicPoolChannelSource()) hiddenFilters.push("channelFilter");
   hiddenFilters.forEach((id) => {
     const node = $(`#${id}`);

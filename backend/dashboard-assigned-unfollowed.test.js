@@ -15,6 +15,8 @@ const TEXT = {
   admin: "\u7ba1\u7406\u5458",
   sales: "\u9500\u552e",
   supervisor: "\u4e3b\u7ba1",
+  regionManager: "\u533a\u57df\u7ecf\u7406",
+  owner: "\u603b\u8d1f\u8d23\u4eba",
   list: "\u540d\u5355",
   deal: "\u6210\u4ea4",
   unknown: "\u672a\u77e5",
@@ -84,7 +86,9 @@ const seed = {
   users: [
     { id: 1, name: "Admin", account: "admin", password: "778899", role: TEXT.admin, roleId: "role-admin", unitId: "unit-a", unit: TEXT.unit, zone: TEXT.eastZone },
     { id: 2, name: "Sales A", account: "sales-a", password: "123456", role: TEXT.sales, roleId: "role-sales", unitId: "unit-a", unit: TEXT.unit, zone: TEXT.eastZone },
-    { id: 3, name: "Supervisor", account: "supervisor", password: "123456", role: TEXT.supervisor, roleId: "role-supervisor", unitId: "unit-a", unit: TEXT.unit, zone: TEXT.eastZone }
+    { id: 3, name: "Supervisor", account: "supervisor", password: "123456", role: TEXT.supervisor, roleId: "role-supervisor", unitId: "unit-a", unit: TEXT.unit, zone: TEXT.eastZone },
+    { id: 4, name: "Region Manager", account: "region", password: "123456", role: TEXT.regionManager, roleId: "role-region", unitId: "unit-a", unit: TEXT.unit, zone: TEXT.eastZone },
+    { id: 5, name: "Owner", account: "owner", password: "123456", role: TEXT.owner, roleId: "role-owner", unitId: "unit-a", unit: TEXT.unit, zone: TEXT.eastZone }
   ],
   customers: [
     customer(1),
@@ -105,7 +109,18 @@ const seed = {
       createdAt: at(yesterday, "08:10:00"),
       ownershipHistory: [{ type: "assigned", operator: "Supervisor", createdAt: at(yesterday, "09:00:00") }]
     }),
-    opportunity(104, 4, { stage: TEXT.deal }),
+    opportunity(104, 4, {
+      stage: TEXT.deal,
+      owner: "Supervisor",
+      ownerId: 3,
+      followPerson: "Supervisor",
+      dealAt: today,
+      contractAmount: 100000,
+      paymentAmount: 60000,
+      paymentDate: today,
+      paymentOwnerId: 2,
+      paymentOwner: "Sales A"
+    }),
     opportunity(105, 5, {
       owner: "Supervisor",
       ownerId: 3,
@@ -127,8 +142,25 @@ const seed = {
 };
 
 fs.mkdirSync(uploadDir, { recursive: true });
+fs.mkdirSync(path.join(tempDir, "followups"), { recursive: true });
 fs.writeFileSync(path.join(tempDir, "db.json"), JSON.stringify(seed, null, 2));
 fs.writeFileSync(path.join(tempDir, "seed.json"), JSON.stringify(seed, null, 2));
+fs.writeFileSync(path.join(tempDir, "followups", `${today.slice(0, 7)}.jsonl`), `${JSON.stringify({
+  id: "external-follow-102",
+  customerId: 2,
+  opportunityId: 102,
+  date: today,
+  createdAt: at(today, "10:30:00"),
+  author: "Sales A",
+  ownerId: 2,
+  owner: "Sales A",
+  followPerson: "Sales A",
+  unitId: "unit-a",
+  unit: TEXT.unit,
+  zone: TEXT.eastZone,
+  note: "Second effective follow from external log",
+  isSystem: false
+})}\n`, "utf8");
 
 const child = spawn(process.execPath, [path.join(__dirname, "server.js")], {
   env: {
@@ -186,8 +218,37 @@ async function run() {
   assert.deepEqual(action.opportunityIds.sort((a, b) => a - b), [101]);
   assert.ok(action.customers.every((item) => item.assignedAt && item.followPerson));
   assert.deepEqual(action.ownerSummary.map((item) => `${item.name}:${item.count}`).sort(), ["Sales A:1"]);
-  assert.deepEqual(adminDashboard.data.followLeaderboard.red.map((item) => `${item.name}:${item.count}`), ["Sales A:1"]);
+  assert.equal(adminDashboard.data.summary.revenue, 60000);
+  assert.equal(adminDashboard.data.summary.contract, 100000);
+  assert.equal(adminDashboard.data.summary.deals, 1);
+  assert.equal(adminDashboard.data.ranking.find((item) => item.name === "Sales A")?.revenue, 60000);
+  assert.deepEqual(adminDashboard.data.followLeaderboard.red.map((item) => `${item.name}:${item.count}`), ["Sales A:2"]);
   assert.ok(adminDashboard.data.followLeaderboard.black.some((item) => item.name === "Supervisor" && item.count === 0));
+  assert.ok(!adminDashboard.data.followLeaderboard.red.some((item) => ["Region Manager", "Owner", "Admin"].includes(item.name)));
+  assert.ok(!adminDashboard.data.followLeaderboard.black.some((item) => ["Region Manager", "Owner", "Admin"].includes(item.name)));
+
+  const salesScopeDashboard = await request(`/dashboard?scopeType=user&scopeId=2&start=${today}&end=${today}`, { token: adminToken });
+  assert.equal(salesScopeDashboard.status, 200, JSON.stringify(salesScopeDashboard.data));
+  assert.equal(salesScopeDashboard.data.scope.type, "user");
+  assert.equal(String(salesScopeDashboard.data.scope.id), "2");
+  assert.equal(salesScopeDashboard.data.summary.revenue, 60000, "payment revenue must follow payment owner scope after customer transfer");
+  assert.equal(salesScopeDashboard.data.summary.contract, 0, "contract belongs to the current opportunity owner scope");
+
+  const priorDateDashboard = await request(`/dashboard?start=${yesterday}&end=${yesterday}`, { token: adminToken });
+  assert.equal(priorDateDashboard.status, 200, JSON.stringify(priorDateDashboard.data));
+  assert.equal(priorDateDashboard.data.summary.revenue, 0);
+  assert.equal(priorDateDashboard.data.summary.contract, 0);
+  assert.equal(priorDateDashboard.data.summary.deals, 0);
+
+  const followAfterDashboard = await request("/opportunities/101/follow", {
+    method: "POST",
+    token: salesToken,
+    body: { note: "Follow after cached dashboard", nextFollow: "", productId: "product-v1" }
+  });
+  assert.equal(followAfterDashboard.status, 200, JSON.stringify(followAfterDashboard.data));
+  const refreshedDashboard = await request("/dashboard", { token: adminToken });
+  assert.deepEqual(refreshedDashboard.data.followLeaderboard.red.map((item) => `${item.name}:${item.count}`), ["Sales A:3"]);
+  assert.equal(refreshedDashboard.data.cached, false, "state changes must invalidate dashboard cache immediately");
 
   const salesDashboard = await request("/dashboard", { token: salesToken });
   assert.equal(salesDashboard.status, 200, JSON.stringify(salesDashboard.data));
