@@ -162,13 +162,13 @@
         <textarea name="note" placeholder="填写本次新的沟通内容，历史记录不会被覆盖"></textarea>
       </view>
       <view class="form-item">
-        <text class="label">下次跟进</text>
+        <text class="label">下次跟进 *</text>
         <picker mode="date" value="{{nextFollow}}" bindchange="onNextFollow">
           <view class="picker-box">{{nextFollow}}</view>
         </picker>
       </view>
       <button wx:if="{{editingId}}" class="plain-btn ai-customer-btn" type="button" bindtap="openCustomerAi">让小智分析该客户</button>
-      <button wx:if="{{editingId}}" class="plain-btn archive-customer-btn" type="button" bindtap="archiveCustomer">标记为无效或倒闭</button>
+      <button wx:if="{{editingId}}" class="plain-btn archive-customer-btn" type="button" bindtap="archiveCustomer">标记为无效</button>
       <button class="primary-btn" form-type="submit">{{editingId ? '保存修改' : '保存客户'}}</button>
     </view>
   </form>

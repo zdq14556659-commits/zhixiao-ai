@@ -235,13 +235,19 @@ Page({
 
   archiveCustomer() {
     if (!this.data.editingId) return;
-    wx.showActionSheet({
-      itemList: ["标记为无效客户", "标记为工厂倒闭"],
+    wx.showModal({
+      title: "标记客户为无效",
+      content: "",
+      editable: true,
+      placeholderText: "请填写客户无效的具体原因",
       success: async (res) => {
+        if (!res.confirm) return;
+        const note = String(res.content || "").trim();
+        if (!note) return wx.showToast({ title: "请填写无效原因", icon: "none" });
         try {
-          await app.requestApi(`/customers/${this.data.editingId}/archive`, { method: "POST", data: { reason: res.tapIndex === 1 ? "closed" : "invalid" } });
+          await app.requestApi(`/customers/${this.data.editingId}/archive`, { method: "POST", data: { reason: "invalid", note } });
           await new Promise((resolve) => app.loadRemoteState(resolve));
-          wx.showToast({ title: "客户已归档", icon: "success" });
+          wx.showToast({ title: "客户已标记无效", icon: "success" });
           setTimeout(() => wx.navigateBack(), 500);
         } catch (error) {
           wx.showToast({ title: error.message || "归档失败", icon: "none" });
@@ -281,6 +287,10 @@ Page({
     }
     const lossReason = this.data.lossReasonIndex > 0 ? this.data.lossReasons[this.data.lossReasonIndex] : "";
     const ownerUser = this.data.ownerUsers[this.data.ownerIndex] || {};
+    if (!this.data.nextFollow) {
+      wx.showToast({ title: "请选择下次跟进时间", icon: "none" });
+      return;
+    }
     const customer = {
       ...previous,
       id: this.data.editingId || Date.now(),

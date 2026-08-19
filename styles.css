@@ -229,6 +229,7 @@ h1, h2 { margin: 0; }
 
 .dashboard-filter-group input,
 .dashboard-filter-group select { min-width: 142px; }
+.dashboard-filter-group .dashboard-scope-tree { min-width: 320px; }
 .dashboard-metrics { grid-template-columns: repeat(4, minmax(180px, 1fr)); }
 .metric-button { width: 100%; min-height: 132px; color: var(--text); text-align: left; }
 .metric-button:hover { border-color: var(--blue); box-shadow: 0 5px 16px rgba(64, 158, 255, 0.1); transform: translateY(-1px); }
@@ -1052,6 +1053,22 @@ dialog {
 dialog::backdrop { background: rgba(31, 45, 61, 0.38); }
 .dialog-form { padding: 24px; display: grid; gap: 12px; }
 .dialog-form.follow-mode .customer-follow-hide-field { display: none !important; }
+#customerDialog.customer-follow-dialog { width: min(1040px, calc(100vw - 32px)); }
+#customerForm.follow-mode {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+}
+#customerForm.follow-mode > h2,
+#customerForm.follow-mode > .dialog-section-title,
+#customerForm.follow-mode > .repeat-editor,
+#customerForm.follow-mode > .button-row { grid-column: 1 / -1; }
+#customerForm.follow-mode > #addContactBtn,
+#customerForm.follow-mode > #addCompetitorProfileBtn { grid-column: 1 / -1; }
+#customerForm.follow-mode > button,
+#customerForm.follow-mode > label { align-self: start; }
+#customerForm.follow-mode > label textarea[name="note"] { min-height: 132px; }
 .segmented-control { display: flex; gap: 10px; padding: 4px; border: 1px solid var(--line); border-radius: 6px; background: #f8fafc; }
 .segmented-control label { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; margin: 0; padding: 8px 10px; border-radius: 4px; cursor: pointer; }
 .segmented-control label:has(input:checked) { background: #fff; box-shadow: 0 1px 5px rgba(31, 45, 61, 0.08); }
@@ -1063,7 +1080,7 @@ dialog::backdrop { background: rgba(31, 45, 61, 0.38); }
 .assign-candidate-list { display: grid; gap: 6px; max-height: 300px; overflow-y: auto; }
 .assign-candidate-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 76px;
+  grid-template-columns: minmax(0, 1fr) 58px 76px;
   gap: 8px;
   align-items: center;
   min-height: 42px;
@@ -1071,6 +1088,8 @@ dialog::backdrop { background: rgba(31, 45, 61, 0.38); }
   border: 1px solid var(--line);
   border-radius: 6px;
 }
+.assign-order-actions { display: grid; grid-template-columns: repeat(2, 26px); gap: 4px; }
+.assign-order-actions button { min-width: 0; min-height: 30px; padding: 0; font-size: 15px; }
 .assign-candidate-row[hidden] { display: none; }
 .assign-candidate-check {
   display: grid;
@@ -1258,6 +1277,11 @@ button:disabled {
   .contact-row, .competitor-row { grid-template-columns: 1fr 1fr; }
   .competitor-details[open] { grid-template-columns: 1fr; }
   .ai-advice-grid { grid-template-columns: 1fr; }
+  #customerForm.follow-mode { grid-template-columns: 1fr; }
+  #customerForm.follow-mode > h2,
+  #customerForm.follow-mode > .dialog-section-title,
+  #customerForm.follow-mode > .repeat-editor,
+  #customerForm.follow-mode > .button-row { grid-column: auto; }
 }
 .danger-confirm-card {
   padding: 14px 16px;

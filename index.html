@@ -61,7 +61,7 @@
               <label>月份<input id="dashboardMonth" type="month" /></label>
               <label>开始日期<input id="dashboardStart" type="date" /></label>
               <label>结束日期<input id="dashboardEnd" type="date" /></label>
-              <label>管理范围<select id="dashboardScope"></select></label>
+              <label>管理范围<select id="dashboardScope" class="dashboard-scope-tree"></select></label>
             </div>
             <button id="targetSettingsBtn" type="button">设置月度目标</button>
           </section>
@@ -71,9 +71,9 @@
             <button class="metric-card metric-button" data-stage="成交"><span>成交客户</span><strong id="metricDeals">0家</strong><small id="metricDealHint">平均成交周期 0天</small></button>
             <article class="metric-card"><span>目标完成率</span><strong id="metricTargetRate">0%</strong><small id="metricTargetHint">本月未设置目标</small></article>
             <button class="metric-card metric-button" data-stage="名单"><span>新增名单</span><strong id="metricLists">0家</strong><small>按录入时间统计</small></button>
-            <button class="metric-card metric-button" data-stage="商机"><span>转化商机</span><strong id="metricOpportunities">0家</strong><small>完成有效演示</small></button>
-            <article class="metric-card"><span>商机成交率</span><strong id="metricCloseRate">0%</strong><small>滚动90天口径</small></article>
-            <button class="metric-card metric-button" data-action-key="overdue"><span>逾期商机</span><strong id="metricOverdueOpportunities">0家</strong><small>需要优先处理</small></button>
+            <button class="metric-card metric-button" data-stage="线索"><span>新增线索</span><strong id="metricLeads">0家</strong><small>按进入线索时间统计</small></button>
+            <button class="metric-card metric-button" data-stage="商机"><span>新增商机</span><strong id="metricOpportunities">0家</strong><small>按进入商机时间统计</small></button>
+            <button class="metric-card metric-button" data-stage="成交"><span>新增成交</span><strong id="metricNewDeals">0家</strong><small>按成交时间统计</small></button>
           </div>
           <div class="dashboard-grid">
             <section class="panel">
@@ -419,8 +419,8 @@
         <div class="dialog-section-title">当前使用软件与竞品</div>
         <div id="customerCompetitorsEditor" class="repeat-editor"></div>
         <button id="addCompetitorProfileBtn" type="button">添加竞品档案</button>
-        <label>跟进记录<textarea name="note" rows="4"></textarea></label>
-        <label>下次跟进<input name="nextFollow" type="date" /></label>
+        <label>跟进记录<textarea name="note" rows="5" placeholder="填写本次沟通情况、客户反馈和后续计划"></textarea></label>
+        <label><span>下次跟进 <span class="required-mark">*</span></span><input name="nextFollow" type="date" required /></label>
         <button id="customerAiBtn" type="button">让小智分析该客户</button>
         <button id="customerPurchasedBtn" class="danger-outline hidden" type="button">标记为已购</button>
         <button id="customerArchiveBtn" class="danger-outline hidden" type="button">标记为无效或倒闭</button>
@@ -589,8 +589,7 @@
         <h2>标记客户为无效</h2>
         <input type="hidden" name="customerId" />
         <p class="muted" id="archiveCustomerSummary"></p>
-        <label>无效原因 <span class="required-mark">*</span><select name="reason" required><option value="">请选择原因</option><option value="invalid">确认无效</option><option value="closed">工厂倒闭或停业</option></select></label>
-        <label>补充说明<textarea name="note" rows="3" placeholder="可填写核实情况"></textarea></label>
+        <label>无效原因 <span class="required-mark">*</span><textarea name="note" rows="3" placeholder="请填写客户无效的具体原因" required></textarea></label>
         <div class="button-row"><button type="button" data-close-dialog="archiveCustomerDialog">取消</button><button class="danger-outline" type="submit">确认进入无效池</button></div>
       </form>
     </dialog>

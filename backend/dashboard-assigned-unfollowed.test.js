@@ -88,7 +88,8 @@ const seed = {
     { id: 2, name: "Sales A", account: "sales-a", password: "123456", role: TEXT.sales, roleId: "role-sales", unitId: "unit-a", unit: TEXT.unit, zone: TEXT.eastZone },
     { id: 3, name: "Supervisor", account: "supervisor", password: "123456", role: TEXT.supervisor, roleId: "role-supervisor", unitId: "unit-a", unit: TEXT.unit, zone: TEXT.eastZone },
     { id: 4, name: "Region Manager", account: "region", password: "123456", role: TEXT.regionManager, roleId: "role-region", unitId: "unit-a", unit: TEXT.unit, zone: TEXT.eastZone },
-    { id: 5, name: "Owner", account: "owner", password: "123456", role: TEXT.owner, roleId: "role-owner", unitId: "unit-a", unit: TEXT.unit, zone: TEXT.eastZone }
+    { id: 5, name: "Owner", account: "owner", password: "123456", role: TEXT.owner, roleId: "role-owner", unitId: "unit-a", unit: TEXT.unit, zone: TEXT.eastZone },
+    { id: 6, name: "林晨", account: "linchen", password: "123456", role: TEXT.sales, roleId: "role-sales", unitId: "unit-east-custom", unit: "华东定制产业带", zone: TEXT.eastZone }
   ],
   customers: [
     customer(1),
@@ -96,11 +97,13 @@ const seed = {
     customer(3),
     customer(4),
     customer(5),
-    customer(6, { createdBy: "Sales A" })
+    customer(6, { createdBy: "Sales A" }),
+    customer(7, { ownerId: 6, owner: "林晨", followPerson: "林晨", unitId: "unit-east-custom", unit: "华东定制产业带" })
   ],
   opportunities: [
-    opportunity(101, 1),
+    opportunity(101, 1, { leadAt: today }),
     opportunity(102, 2, {
+      opportunityAt: today,
       followUps: [
         { date: today, createdAt: at(today, "09:30:00"), author: "Sales A", note: "Manual follow after assignment", isSystem: false, nextFollow: "" }
       ]
@@ -131,7 +134,8 @@ const seed = {
     opportunity(106, 6, {
       createdBy: "Sales A",
       ownershipHistory: [{ type: "created", toOwnerId: 2, toOwner: "Sales A", operator: "Sales A", createdAt: at(today, "11:00:00") }]
-    })
+    }),
+    opportunity(107, 7, { ownerId: 6, owner: "林晨", followPerson: "林晨", unitId: "unit-east-custom", unit: "华东定制产业带" })
   ],
   visits: [],
   activities: [],
@@ -221,6 +225,15 @@ async function run() {
   assert.equal(adminDashboard.data.summary.revenue, 60000);
   assert.equal(adminDashboard.data.summary.contract, 100000);
   assert.equal(adminDashboard.data.summary.deals, 1);
+  assert.equal(adminDashboard.data.summary.lists, 6, "hidden demo opportunities must not affect dashboard counts");
+  assert.equal(adminDashboard.data.summary.leads, 2);
+  assert.equal(adminDashboard.data.summary.opportunities, 2);
+  assert.ok(!adminDashboard.data.ranking.some((item) => item.name === "林晨"));
+  assert.ok(!adminDashboard.data.drilldowns.lists.some((item) => item.owner === "林晨"));
+  assert.ok(!adminDashboard.data.scopeOptions.some((item) => item.name === "林晨" || item.name === "华东定制产业带"));
+  assert.ok(adminDashboard.data.scopeOptions.some((item) => item.name === TEXT.eastZone && item.treeKind === "zone"));
+  assert.ok(adminDashboard.data.scopeOptions.some((item) => item.name === TEXT.unit && item.treeKind === "unit"));
+  assert.ok(adminDashboard.data.scopeOptions.some((item) => item.name === "Sales A" && item.treeKind === "user"));
   assert.equal(adminDashboard.data.ranking.find((item) => item.name === "Sales A")?.revenue, 60000);
   assert.deepEqual(adminDashboard.data.followLeaderboard.red.map((item) => `${item.name}:${item.count}`), ["Sales A:2"]);
   assert.ok(adminDashboard.data.followLeaderboard.black.some((item) => item.name === "Supervisor" && item.count === 0));

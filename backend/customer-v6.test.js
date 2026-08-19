@@ -100,7 +100,7 @@ async function run() {
   ["intention", "coreObjection", "recommendedScript", "communicationGoal", "nextAction", "followUpDraft", "riskReminder"].forEach((key) => assert.ok(advice.data.advice[key]));
   assert.ok(advice.data.citations.length);
 
-  const archive = await request(`/customers/${first.data.customerId}/archive`, { method: "POST", token: salesA, body: { reason: "closed" } });
+  const archive = await request(`/customers/${first.data.customerId}/archive`, { method: "POST", token: salesA, body: { reason: "closed", note: "工厂已倒闭停业" } });
   assert.equal(archive.status, 200);
   const archivedMap = await request("/map/points?pointStatus=archived", { token: salesA });
   assert.ok(archivedMap.data.points.some((item) => Number(item.customerId) === Number(first.data.customerId) && item.pointStatus === "archived"));

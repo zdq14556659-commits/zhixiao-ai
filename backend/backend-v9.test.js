@@ -211,6 +211,9 @@ async function run() {
   const followBeforeDelete = await request("/opportunities/201/follow", { method: "POST", token: sales, body: { note: "删除前跟进记录", nextFollow: today } });
   assert.equal(followBeforeDelete.status, 200, JSON.stringify(followBeforeDelete.data));
   const healthBeforeDelete = await request("/health");
+  const missingArchiveReason = await request("/customers/101/archive", { method: "POST", token: sales, body: { reason: "invalid", note: "" } });
+  assert.equal(missingArchiveReason.status, 400);
+  assert.match(missingArchiveReason.data.error, /无效原因/);
   const archivedCustomer = await request("/customers/101/archive", { method: "POST", token: sales, body: { reason: "invalid", note: "号码空号，工厂已停产" } });
   assert.equal(archivedCustomer.status, 200);
   const forbiddenInvalidBoard = await request(`/customer-board?paginated=1&stage=${encodeURIComponent("无效")}`, { token: sales });

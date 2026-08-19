@@ -1685,11 +1685,12 @@ async function routeApi(req, res, url) {
     const customer = findCustomer(state.customers || [], customerArchive[1]);
     if (!customer) return sendJson(res, 404, { error: "客户不存在" });
     if (!canViewRecord(state, viewer, customer)) return sendJson(res, 403, { error: "无权归档该客户" });
-    const reason = String(body.reason || "");
-    if (!["invalid", "closed"].includes(reason)) return sendJson(res, 400, { error: "请选择无效原因" });
+    const note = String(body.note || "").trim();
+    if (!note) return sendJson(res, 400, { error: "请填写无效原因" });
+    const reason = ["invalid", "closed"].includes(String(body.reason || "")) ? String(body.reason) : "invalid";
     customer.lifecycleStatus = LIFECYCLE_ARCHIVED;
     customer.archiveReason = reason;
-    customer.archiveNote = String(body.note || "").trim();
+    customer.archiveNote = note;
     customer.archivedAt = new Date().toISOString();
     customer.archivedBy = viewer.name;
     appendSecurityLog(state, {
@@ -1743,13 +1744,15 @@ async function routeApi(req, res, url) {
     if (!canViewOpportunity(state, viewer, opportunity)) return sendJson(res, 403, { error: "无权跟进该销售机会" });
     const note = String(body.note || "").trim();
     if (!note) return sendJson(res, 400, { error: "请填写跟进内容" });
+    const nextFollow = String(body.nextFollow || "").trim();
+    if (!nextFollow) return sendJson(res, 400, { error: "请选择下次跟进时间", field: "nextFollow" });
     const previousOpportunity = { ...opportunity };
     const productUpdate = applyProductSelectionForFollow(state, opportunity, body);
     if (productUpdate.error) {
       return sendJson(res, productUpdate.error.code === "DUPLICATE_ACTIVE_OPPORTUNITY" ? 409 : 400, productUpdate.error);
     }
     Object.assign(opportunity, productUpdate.fields);
-    const savedFollow = appendManualFollowUp(state, opportunity, { date: body.date || today(), createdAt: new Date().toISOString(), author: viewer?.name, note, nextFollow: body.nextFollow || "" }, viewer);
+    const savedFollow = appendManualFollowUp(state, opportunity, { date: body.date || today(), createdAt: new Date().toISOString(), author: viewer?.name, note, nextFollow }, viewer);
     lockOpportunityOwnership(opportunity, viewer, "提交有效跟进");
     replaceOpportunityInIndexes(state, previousOpportunity, opportunity);
     syncCustomerCompatibility(state, customer.id, opportunity);
@@ -1888,6 +1891,10 @@ async function routeApi(req, res, url) {
     if (index < 0) return sendJson(res, 404, { error: "customer not found" });
     const previous = state.customers[index];
     const viewer = getAuthUser(req, state);
+    const submittedFollowNote = String(body.lastNote || body.note || "").trim();
+    if (submittedFollowNote && !String(body.nextFollow || "").trim()) {
+      return sendJson(res, 400, { error: "请选择下次跟进时间", field: "nextFollow" });
+    }
     const requestedOpportunity = body.opportunityId ? findOpportunity(state, body.opportunityId) : null;
     const requestedOpportunityMatchesCustomer = requestedOpportunity
       && Number(requestedOpportunity.customerId) === Number(previous.id);
@@ -6118,9 +6125,22 @@ function scopeStateForUser(state, viewer = null) {
   };
 }
 
+function isHiddenDemoUserRecord(user = {}) {
+  const account = cleanAccount(user.account || user.username || user.phone);
+  const name = String(user.name || "").trim();
+  const unit = String(user.unit || user.orgPath || "").trim();
+  return (HIDDEN_DEMO_USERS.has(account) && ["林晨", "周扬"].includes(name))
+    || (["林晨", "周扬"].includes(name) && /定制产业带/.test(unit));
+}
+
+function isHiddenDemoOwnedRecord(state, record = {}) {
+  const owner = findUser(state.users || [], record.ownerId, record.owner);
+  return Boolean(owner?.id && isHiddenDemoUserRecord(owner));
+}
+
 function visibleUsers(state, viewer) {
   const role = findRole(state.roles, viewer.roleId, viewer.role);
-  const users = (state.users || []).filter((user) => user.status !== "停用");
+  const users = (state.users || []).filter((user) => user.status !== "停用" && !isHiddenDemoUserRecord(user));
   if (role.customerScope === "all") return users;
   const managedUnits = managedOrgUnitIds(state, viewer);
   return users.filter((user) => {
@@ -6290,22 +6310,73 @@ function daysBetween(start, end) {
 
 function dashboardScopeOptions(state, viewer) {
   const role = findRole(state.roles, viewer.roleId, viewer.role);
-  const options = [{ type: "user", id: String(viewer.id), name: `${viewer.name}（本人）` }];
-  if (role.customerScope === "self") return options;
-  if (role.customerScope === "unit") options.unshift({ type: "unit", id: String(viewer.unitId || ""), name: viewer.unit || "本单位" });
-  if (role.customerScope === "zone") options.unshift({ type: "zone", id: viewer.zone || "", name: viewer.zone || "本战区" });
-  if (role.customerScope === "all") options.unshift({ type: "company", id: "company", name: "全公司" });
+  const selfOption = { type: "user", id: String(viewer.id), name: `${viewer.name}（本人）`, treeDepth: 0, treeKind: "user" };
+  if (role.customerScope === "self") return [selfOption];
+
+  const options = role.customerScope === "all"
+    ? [{ type: "company", id: "company", name: "全公司", treeDepth: 0, treeKind: "company" }, selfOption]
+    : [selfOption];
   const visible = visibleUsers(state, viewer);
-  const units = (state.units || []).filter((unit) => visible.some((user) => String(user.unitId) === String(unit.id)));
-  if (["unit", "zone", "all"].includes(role.customerScope)) {
-    units.forEach((unit) => options.push({ type: "unit", id: String(unit.id), name: unit.path || unit.name }));
-  }
-  if (role.customerScope === "all") {
-    [...new Set(visible.map((user) => user.zone).filter(Boolean))].forEach((zone) => options.push({ type: "zone", id: zone, name: zone }));
-  }
-  visible
+  const salesUsers = visible
     .filter((user) => findRole(state.roles, user.roleId, user.role).name === "销售")
-    .forEach((user) => options.push({ type: "user", id: String(user.id), name: user.name }));
+    .sort((left, right) => String(left.name || "").localeCompare(String(right.name || ""), "zh-Hans-CN"));
+  const units = (state.units || []).filter((unit) => unit.active !== false);
+  const unitMap = new Map(units.map((unit) => [String(unit.id), unit]));
+  const children = new Map();
+  units.forEach((unit) => {
+    const parentId = String(unit.parentId || "");
+    if (!children.has(parentId)) children.set(parentId, []);
+    children.get(parentId).push(unit);
+  });
+  children.forEach((items) => items.sort((left, right) => Number(left.sort || 0) - Number(right.sort || 0) || String(left.name || "").localeCompare(String(right.name || ""), "zh-Hans-CN")));
+
+  const includedUnitIds = new Set();
+  salesUsers.forEach((user) => {
+    let cursor = unitMap.get(String(user.unitId || ""));
+    while (cursor?.id && !includedUnitIds.has(String(cursor.id))) {
+      includedUnitIds.add(String(cursor.id));
+      cursor = unitMap.get(String(cursor.parentId || ""));
+    }
+  });
+  const usersByUnit = new Map();
+  salesUsers.forEach((user) => {
+    const unitId = String(user.unitId || "");
+    if (!usersByUnit.has(unitId)) usersByUnit.set(unitId, []);
+    usersByUnit.get(unitId).push(user);
+  });
+  const appendUnit = (unit, depth = 0) => {
+    if (!unit || !includedUnitIds.has(String(unit.id))) return;
+    let childDepth = depth;
+    if (unit.type !== "root") {
+      const isZone = unit.type === "battle_zone";
+      options.push({
+        type: isZone ? "zone" : "unit",
+        id: String(isZone ? (unit.zone || unit.name) : unit.id),
+        name: unit.name,
+        treeDepth: depth,
+        treeKind: isZone ? "zone" : "unit"
+      });
+      childDepth = depth + 1;
+    }
+    (usersByUnit.get(String(unit.id)) || []).forEach((user) => options.push({
+      type: "user",
+      id: String(user.id),
+      name: user.name,
+      treeDepth: childDepth,
+      treeKind: "user"
+    }));
+    (children.get(String(unit.id)) || []).forEach((child) => appendUnit(child, childDepth));
+  };
+
+  let roots = [];
+  if (role.customerScope === "all") roots = units.filter((unit) => unit.type === "root" || !unit.parentId);
+  else if (role.customerScope === "zone") roots = [battleZoneUnitForUser(units, viewer)].filter(Boolean);
+  else roots = [unitMap.get(String(viewer.unitId || ""))].filter(Boolean);
+  roots.forEach((root) => appendUnit(root, 0));
+
+  if (!roots.length) {
+    salesUsers.forEach((user) => options.push({ type: "user", id: String(user.id), name: user.name, treeDepth: 0, treeKind: "user" }));
+  }
   return [...new Map(options.filter((item) => item.id).map((item) => [`${item.type}:${item.id}`, item])).values()];
 }
 
@@ -6526,7 +6597,7 @@ function buildFunnel(customers, range) {
 
 function buildRanking(state, viewer, selectedScope, range) {
   const role = findRole(state.roles, viewer.roleId, viewer.role);
-  let users = (state.users || []).filter((user) => findRole(state.roles, user.roleId, user.role).name === "销售");
+  let users = (state.users || []).filter((user) => user.status !== "停用" && !isHiddenDemoUserRecord(user) && findRole(state.roles, user.roleId, user.role).name === "销售");
   if (role.customerScope === "self") users = users.filter((user) => String(user.unitId) === String(viewer.unitId));
   else users = users.filter((user) => canViewRecord(state, viewer, { ownerId: user.id, owner: user.name, unitId: user.unitId, zone: user.zone }));
   if (role.customerScope !== "self" && selectedScope.type !== "company") {
@@ -7098,6 +7169,7 @@ function buildDashboard(state, viewer, query = {}) {
   const allActiveOpportunities = (state.opportunities || [])
     .filter((item) => findCustomer(state.customers || [], item.customerId)?.lifecycleStatus !== LIFECYCLE_ARCHIVED)
     .filter((item) => !isOpportunityPublicPool(item, Date.now(), state) && !isPurchasedOpportunity(item))
+    .filter((item) => !isHiddenDemoOwnedRecord(state, item))
     .map((item) => opportunityView(state, item, { includeExternalFollowUps: true }));
   const sourceOpportunityIds = new Set(dashboardOpportunitySource(state, viewer, scope).map((item) => Number(item.id)));
   const activeOpportunities = allActiveOpportunities.filter((item) => sourceOpportunityIds.has(Number(item.id)));
@@ -7158,6 +7230,7 @@ function buildDashboard(state, viewer, query = {}) {
     contract: deals.map((item) => actionCustomer(state, item)),
     deals: deals.map((item) => actionCustomer(state, item)),
     lists: lists.map((item) => actionCustomer(state, item)),
+    leads: leads.map((item) => actionCustomer(state, item)),
     opportunities: opportunities.map((item) => actionCustomer(state, item)),
     overdueOpportunities: overdueOpportunities.map((item) => actionCustomer(state, item))
   };

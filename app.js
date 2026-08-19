@@ -49,6 +49,7 @@ const orgTypeOptions = [
 
 let state = { users: [], customers: [], opportunities: [], products: [], visits: [], knowledge: [], stages, roles: defaultRoles, units: [], competitors: [], routes: [], channelSources: [], lossReasons: [], businessRules: defaultBusinessRules };
 const CUSTOMER_STAGE_KEY = "zhixiao-current-customer-stage";
+const ASSIGN_USER_ORDER_KEY_PREFIX = "zhixiao-assign-user-order";
 let currentStage = localStorage.getItem(CUSTOMER_STAGE_KEY) || stages[0];
 let currentView = "customers";
 let currentSettingsTab = "employees";
@@ -1232,6 +1233,17 @@ function renderDashboardShell(message = "看板数据准备中，停留 3 秒后
     </div>`;
 }
 
+function dashboardScopeOptionLabel(item = {}) {
+  const depth = Math.max(0, Number(item.treeDepth || 0));
+  const branch = depth ? "└ " : "";
+  const icon = item.treeKind === "user" ? "👤 " : item.treeKind === "zone" ? "▣ " : item.treeKind === "unit" ? "▫ " : "";
+  return `${"　".repeat(depth)}${branch}${icon}${item.name || "未命名范围"}`;
+}
+
+function dashboardScopeOptionsHtml(options = []) {
+  return options.map((item) => `<option value="${escapeHtml(`${item.type}:${item.id}`)}">${escapeHtml(dashboardScopeOptionLabel(item))}</option>`).join("");
+}
+
 function scheduleDashboardLoad(options = {}) {
   if (currentView !== "dashboard") return;
   cancelDashboardLoad();
@@ -1261,7 +1273,7 @@ async function renderDashboard() {
     dashboardLoading = false;
     const scopeSelect = $("#dashboardScope");
     const selected = `${data.scope.type}:${data.scope.id}`;
-    scopeSelect.innerHTML = data.scopeOptions.map((item) => `<option value="${escapeHtml(`${item.type}:${item.id}`)}">${escapeHtml(item.name)}</option>`).join("");
+    scopeSelect.innerHTML = dashboardScopeOptionsHtml(data.scopeOptions);
     scopeSelect.value = selected;
     $("#targetSettingsBtn").classList.toggle("hidden", !data.canManageTargets);
     renderDashboardSummary(data);
@@ -1279,9 +1291,9 @@ function renderDashboardSummary(data) {
   $("#metricDeals").textContent = `${summary.deals}家`;
   $("#metricTargetRate").textContent = `${summary.targetCompletionRate}%`;
   $("#metricLists").textContent = `${summary.lists}家`;
+  $("#metricLeads").textContent = `${summary.leads}家`;
   $("#metricOpportunities").textContent = `${summary.opportunities}家`;
-  $("#metricCloseRate").textContent = `${summary.opportunityCloseRate}%`;
-  $("#metricOverdueOpportunities").textContent = `${summary.overdueOpportunities}家`;
+  $("#metricNewDeals").textContent = `${summary.deals}家`;
   $("#metricRevenueHint").textContent = target.revenueTarget ? `目标 ${formatMoney(target.revenueTarget)}` : "按进款日期统计";
   $("#metricTargetHint").textContent = target.revenueTarget ? `${target.source === "aggregate" ? "下级目标汇总" : "当前范围目标"} ${formatMoney(target.revenueTarget)}` : "本月未设置目标";
   $("#metricDealHint").textContent = `平均周期 ${summary.averageDealCycle}天 · 客单 ${formatMoney(summary.averageContractValue)}`;
@@ -1576,7 +1588,7 @@ function customerRow(item) {
   const followHtml = shouldMaskPublicPool
     ? `<small class="pool-private-value">认领后可查看跟进历史</small>`
     : isInvalid
-      ? `<small class="pool-private-value"><b>${escapeHtml(item.archiveReason === "closed" ? "倒闭/停业" : "确认无效")}</b>${item.archiveNote ? ` · ${escapeHtml(item.archiveNote)}` : " · 未填写补充原因"}</small><button class="history-link" data-action="history" data-id="${item.id}">查看历史(${followCount})</button>`
+      ? `<small class="pool-private-value"><b>无效原因</b>：${escapeHtml(item.archiveNote || (item.archiveReason === "closed" ? "工厂倒闭或停业" : "历史数据未填写"))}</small><button class="history-link" data-action="history" data-id="${item.id}">查看历史(${followCount})</button>`
     : (followCount ? `${lastNote ? `<small>${escapeHtml(lastNote)}</small>` : ""}<button class="history-link" data-action="history" data-id="${item.id}">查看历史(${followCount})</button>${photoHtml}` : `<small class="pool-private-value">未跟进</small>${photoHtml}`);
   const pendingRollback = latestPendingRollback(item);
   const rollbackActions = pendingRollback
@@ -1698,13 +1710,51 @@ function showAssignmentFailures(error = {}) {
 function renderAssignCandidates() {
   const candidateList = $("#assignCandidateList");
   if (!candidateList) return;
-  const candidates = visibleFollowUsers();
+  const order = savedAssignUserOrder();
+  const orderIndex = new Map(order.map((id, index) => [String(id), index]));
+  const candidates = visibleFollowUsers().slice().sort((left, right) => {
+    const leftIndex = orderIndex.has(String(left.id)) ? orderIndex.get(String(left.id)) : Number.MAX_SAFE_INTEGER;
+    const rightIndex = orderIndex.has(String(right.id)) ? orderIndex.get(String(right.id)) : Number.MAX_SAFE_INTEGER;
+    return leftIndex - rightIndex;
+  });
   candidateList.innerHTML = candidates.length ? candidates.map((user) => `
-    <article class="assign-candidate-row" data-assign-search="${escapeHtml(`${user.name} ${user.unit || ""} ${user.account || ""}`.toLowerCase())}">
+    <article class="assign-candidate-row" data-assign-id="${user.id}" data-assign-search="${escapeHtml(`${user.name} ${user.unit || ""} ${user.account || ""}`.toLowerCase())}">
       <label class="assign-candidate-check"><input type="checkbox" data-assign-user="${user.id}" /><span><b>${escapeHtml(user.name)}</b><small>${escapeHtml(user.unit || "待分配")}</small></span></label>
+      <span class="assign-order-actions"><button type="button" data-assign-move="up" aria-label="${escapeHtml(user.name)}上移" title="上移">↑</button><button type="button" data-assign-move="down" aria-label="${escapeHtml(user.name)}下移" title="下移">↓</button></span>
       <input type="number" min="0" step="1" value="0" data-assign-count="${user.id}" aria-label="${escapeHtml(user.name)}分配数量" />
     </article>`).join("") : '<p class="empty">当前权限范围内没有可分配的跟进人</p>';
   filterAssignCandidates();
+  updateAssignPlanHint();
+}
+
+function assignUserOrderStorageKey() {
+  const user = currentUser();
+  return `${ASSIGN_USER_ORDER_KEY_PREFIX}:${user.id || user.account || "anonymous"}`;
+}
+
+function savedAssignUserOrder() {
+  try {
+    const value = JSON.parse(localStorage.getItem(assignUserOrderStorageKey()) || "[]");
+    return Array.isArray(value) ? value.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveAssignUserOrder() {
+  const ids = $$("#assignCandidateList .assign-candidate-row").map((row) => String(row.dataset.assignId || "")).filter(Boolean);
+  localStorage.setItem(assignUserOrderStorageKey(), JSON.stringify(ids));
+}
+
+function moveAssignCandidate(button) {
+  const row = button.closest(".assign-candidate-row");
+  if (!row) return;
+  const direction = button.dataset.assignMove;
+  const sibling = direction === "up" ? row.previousElementSibling : row.nextElementSibling;
+  if (!sibling?.classList.contains("assign-candidate-row")) return;
+  if (direction === "up") row.parentElement.insertBefore(row, sibling);
+  else row.parentElement.insertBefore(sibling, row);
+  saveAssignUserOrder();
   updateAssignPlanHint();
 }
 
@@ -1946,6 +1996,7 @@ function openCustomerDialog(customer = null) {
   form.reset();
   const editingExisting = Boolean(customer);
   form.classList.toggle("follow-mode", editingExisting);
+  $("#customerDialog").classList.toggle("customer-follow-dialog", editingExisting);
   $$(".customer-dialog-create-field").forEach((node) => node.classList.toggle("hidden", editingExisting));
   form.id.value = customer?.customerId || customer?.id || "";
   form.opportunityId.value = customer?.opportunityId || "";
@@ -2024,7 +2075,7 @@ async function openFollowHistory(customer) {
   });
   $("#followHistoryTitle").textContent = `${customer.name} · 跟进历史`;
   const archiveSummary = isInvalidCustomer(customer)
-    ? `${customer.archiveReason === "closed" ? "倒闭/停业" : "确认无效"}${customer.archiveNote ? `：${customer.archiveNote}` : "（未填写补充原因）"} · 归档时间 ${String(customer.archivedAt || "-").slice(0, 10)} · 操作人 ${customer.archivedBy || "未记录"} · `
+    ? `无效原因：${customer.archiveNote || (customer.archiveReason === "closed" ? "工厂倒闭或停业" : "历史数据未填写")} · 归档时间 ${String(customer.archivedAt || "-").slice(0, 10)} · 操作人 ${customer.archivedBy || "未记录"} · `
     : "";
   $("#followHistorySummary").textContent = `${archiveSummary}共 ${history.length} 条跟进记录${visitRows.length ? ` · ${visitRows.length} 次地推拜访` : ""}`;
   const historyHtml = history.map((item) => `
@@ -2141,6 +2192,7 @@ async function saveCustomer(event) {
   const ownerUser = userById(form.get("owner"));
   const ownerUnit = unitForId(ownerUser.unitId);
   const note = String(form.get("note") || "").trim();
+  const nextFollow = String(form.get("nextFollow") || "").trim();
   const productId = String(form.get("productId") || "");
   const contacts = readContactsEditor();
   const primaryContact = contacts.find((item) => item.isPrimary) || contacts[0] || {};
@@ -2157,6 +2209,10 @@ async function saveCustomer(event) {
   if (!productId) {
     formNode.elements.productId?.focus();
     return toast("请选择：意向产品");
+  }
+  if (!nextFollow) {
+    formNode.elements.nextFollow?.focus();
+    return toast("请选择：下次跟进时间");
   }
   const competitorProfiles = readCompetitorProfilesEditor();
   const metadataLocked = Boolean(id) && !canAdmin();
@@ -2196,7 +2252,7 @@ async function saveCustomer(event) {
     lossReasonDetail: lossReason === "功能原因" ? String(form.get("lossReasonDetail") || "").trim() : "",
     createdAt: id ? undefined : today,
     lastFollow: today,
-    nextFollow: String(form.get("nextFollow") || ""),
+    nextFollow,
     lastNote: note || (id ? undefined : "新增客户。")
   };
   if (saveAndAdvance) {
@@ -3002,21 +3058,20 @@ async function submitArchiveCustomer(event) {
   if (formNode.dataset.submitting === "1") return toast("正在提交，请稍等");
   const form = new FormData(formNode);
   const id = Number(form.get("customerId") || 0);
-  const reason = String(form.get("reason") || "");
   const note = String(form.get("note") || "").trim();
   if (!id) return toast("客户编号无效");
-  if (!["invalid", "closed"].includes(reason)) return toast("请选择：无效原因");
+  if (!note) return toast("请填写：无效原因");
   formNode.dataset.submitting = "1";
   setFormSubmitting(formNode, true, "提交中...");
   try {
-    await api(`/customers/${id}/archive`, { method: "POST", body: { reason, note } });
+    await api(`/customers/${id}/archive`, { method: "POST", body: { reason: "invalid", note } });
     $("#archiveCustomerDialog").close();
     $("#customerDialog").close();
     currentStage = INVALID_STAGE;
     localStorage.setItem(CUSTOMER_STAGE_KEY, currentStage);
     customerPage = 1;
     await refreshCustomersAfterMutation();
-    toast(reason === "closed" ? "客户已标记为倒闭并进入无效池" : "客户已标记为无效并进入无效池");
+    toast("客户已标记为无效并进入无效池");
   } finally {
     delete formNode.dataset.submitting;
     setFormSubmitting(formNode, false, "提交中...");
@@ -3577,7 +3632,7 @@ function handleDashboardClick(event) {
   if (!dashboardData) return;
   const metric = event.target.closest("[data-metric], [data-stage]");
   if (metric) {
-    const key = metric.dataset.metric || ({ 名单: "lists", 商机: "opportunities", 成交: "deals" }[metric.dataset.stage]);
+    const key = metric.dataset.metric || ({ 名单: "lists", 线索: "leads", 商机: "opportunities", 成交: "deals" }[metric.dataset.stage]);
     return openDashboardCustomers(dashboardData.drilldowns?.[key] || [], metric.dataset.stage || "成交");
   }
   const actionButton = event.target.closest("[data-action-key]");
@@ -3601,7 +3656,7 @@ async function openTargetDialog() {
   const form = $("#targetForm");
   form.reset();
   form.month.value = month;
-  $("#targetScopeSelect").innerHTML = targetManagement.options.map((item) => `<option value="${escapeHtml(`${item.type}:${item.id}`)}">${escapeHtml(item.name)}</option>`).join("");
+  $("#targetScopeSelect").innerHTML = dashboardScopeOptionsHtml(targetManagement.options);
   fillTargetForm();
   renderTargetList();
   $("#targetDialog").showModal();
@@ -3787,6 +3842,10 @@ function wireEvents() {
   $("#assignUserSearch").addEventListener("input", () => {
     filterAssignCandidates();
     updateAssignPlanHint();
+  });
+  $("#assignCandidateList").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-assign-move]");
+    if (button) moveAssignCandidate(button);
   });
   $("#selectAllCustomers").addEventListener("change", toggleAllCustomers);
   $("#customerRows").addEventListener("change", toggleCustomerSelection);

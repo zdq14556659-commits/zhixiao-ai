@@ -128,6 +128,20 @@ async function run() {
   assert.match(forbiddenMetadataEdit.data.error, /渠道来源和录入人/);
   const allowedMetadataEdit = await request("/customers/101", { method: "PUT", token: admin, body: { channelSource: "地推", createdBy: "管理员", moneyUnit: "yuan" } });
   assert.equal(allowedMetadataEdit.status, 200);
+  const missingCustomerFollowDate = await request("/customers/101", {
+    method: "PUT",
+    token: salesA,
+    body: { opportunityId: 201, lastNote: "已完成本次客户沟通", nextFollow: "", moneyUnit: "yuan" }
+  });
+  assert.equal(missingCustomerFollowDate.status, 400);
+  assert.equal(missingCustomerFollowDate.data.field, "nextFollow");
+  const validCustomerFollowDate = await request("/customers/101", {
+    method: "PUT",
+    token: salesA,
+    body: { opportunityId: 201, lastNote: "已完成本次客户沟通", nextFollow: "2026-06-19", moneyUnit: "yuan" }
+  });
+  assert.equal(validCustomerFollowDate.status, 200, JSON.stringify(validCustomerFollowDate.data));
+  assert.equal(validCustomerFollowDate.data.nextFollow, "2026-06-19");
 
   const oldClientCustomer = await request("/customers", { method: "POST", token: salesA, body: { name: "旧客户端金额工厂", phone: "13800000005", productId: "product-v1", stage: "成交", demoAt: "2026-06-10", contractAmount: 8 } });
   assert.equal(oldClientCustomer.status, 201);
