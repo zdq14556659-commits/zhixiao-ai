@@ -413,14 +413,18 @@
         <label class="customer-follow-hide-field">进款业绩归属人<select name="paymentOwnerId" id="paymentOwnerSelect"></select></label>
         <label>目前未成交原因<select name="lossReason" id="customerLossReasonSelect"></select></label>
         <label id="lossReasonDetailField" class="hidden">具体功能原因<textarea name="lossReasonDetail" rows="2" placeholder="例如：缺少设备对接、报价逻辑不适配、门板造型库不够"></textarea></label>
-        <div class="dialog-section-title">联系人</div>
-        <div id="customerContactsEditor" class="repeat-editor"></div>
-        <button id="addContactBtn" type="button">添加联系人</button>
-        <div class="dialog-section-title">当前使用软件与竞品</div>
-        <div id="customerCompetitorsEditor" class="repeat-editor"></div>
-        <button id="addCompetitorProfileBtn" type="button">添加竞品档案</button>
+        <details id="customerContactsSection" class="customer-contact-section">
+          <summary><b>多联系人</b><small>不常用，点击展开维护</small></summary>
+          <div id="customerContactsEditor" class="repeat-editor"></div>
+          <button id="addContactBtn" type="button">添加联系人</button>
+        </details>
+        <details id="customerCompetitorsSection" class="customer-optional-section">
+          <summary><b>当前使用软件与竞品</b><small>不常修改，点击展开维护</small></summary>
+          <div id="customerCompetitorsEditor" class="repeat-editor"></div>
+          <button id="addCompetitorProfileBtn" type="button">添加竞品档案</button>
+        </details>
         <label>跟进记录<textarea name="note" rows="5" placeholder="填写本次沟通情况、客户反馈和后续计划"></textarea></label>
-        <label><span>下次跟进 <span class="required-mark">*</span></span><input name="nextFollow" type="date" required /></label>
+        <label class="next-follow-field"><span>下次跟进 <span class="required-mark">*</span></span><input name="nextFollow" type="date" required aria-label="选择下次跟进日期" /></label>
         <button id="customerAiBtn" type="button">让小智分析该客户</button>
         <button id="customerPurchasedBtn" class="danger-outline hidden" type="button">标记为已购</button>
         <button id="customerArchiveBtn" class="danger-outline hidden" type="button">标记为无效或倒闭</button>

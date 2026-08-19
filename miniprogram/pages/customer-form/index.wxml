@@ -30,8 +30,8 @@
       </view>
       <view class="grid-2">
         <view class="form-item">
-          <text class="label">阶段</text>
-          <picker range="{{stages}}" value="{{stageIndex}}" bindchange="onStage">
+          <text class="label">阶段{{editingId ? '（请使用推进功能修改）' : ''}}</text>
+          <picker range="{{stages}}" value="{{stageIndex}}" bindchange="onStage" disabled="{{editingId}}">
             <view class="picker-box">{{stages[stageIndex]}}</view>
           </picker>
         </view>

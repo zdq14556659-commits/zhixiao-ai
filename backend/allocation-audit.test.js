@@ -243,11 +243,23 @@ async function run() {
     body: { ids: [101], assignments: [{ ownerId: 3, count: 1 }] }
   });
   assert.equal(firstAssignment.status, 200, JSON.stringify(firstAssignment.data));
+  assert.equal(firstAssignment.data.opportunities[0].stage, "名单", "public-pool assignment must preserve list stage");
   const secondAssignment = await request("/opportunities/assign", {
     method: "POST", token: admin,
     body: { ids: [101], assignments: [{ ownerId: 2, count: 1 }] }
   });
   assert.equal(secondAssignment.status, 200, JSON.stringify(secondAssignment.data));
+  assert.equal(secondAssignment.data.opportunities[0].stage, "名单", "reassignment must not advance the stage");
+
+  const blockedDirectAdvance = await request("/customers/100", {
+    method: "PUT", token: admin,
+    body: { opportunityId: 101, stage: "线索", lastNote: "不应通过普通编辑推进", nextFollow: today }
+  });
+  assert.equal(blockedDirectAdvance.status, 409, JSON.stringify(blockedDirectAdvance.data));
+  assert.equal(blockedDirectAdvance.data.code, "STAGE_ADVANCE_REQUIRED");
+  const afterBlockedAdvance = await request("/opportunities/101/detail", { token: admin });
+  assert.equal(afterBlockedAdvance.status, 200, JSON.stringify(afterBlockedAdvance.data));
+  assert.equal(afterBlockedAdvance.data.stage, "名单");
 
   const afterReassignment = await request(`/reports/allocation-audit?start=${today}&end=${today}`, { token: owner });
   assert.equal(afterReassignment.status, 200, JSON.stringify(afterReassignment.data));

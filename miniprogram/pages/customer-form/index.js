@@ -99,7 +99,7 @@ Page({
       contacts,
       competitorProfiles,
       competitorNames: (state.competitors || []).map((item) => item.name),
-      nextFollow: customer?.nextFollow || app.globalData.today,
+      nextFollow: "",
       demoAt: customer?.demoAt || "",
       expectedDealDate: customer?.expectedDealDate || "",
       paymentDate: customer?.paymentDate || "",

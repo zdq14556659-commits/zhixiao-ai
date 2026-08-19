@@ -2011,7 +2011,7 @@ function openCustomerDialog(customer = null) {
   }
   form.productId.value = productId;
   form.channelSource.value = normalizeChannelSource(customer?.channelSource || "其他");
-  form.stage.value = customer?.stage || (stages.includes(currentStage) ? currentStage : "名单");
+  form.stage.value = customer?.stage || "名单";
   form.owner.value = customer?.ownerId
     ? String(customer.ownerId)
     : String((visibleFollowUsers().find((user) => user.name === (customer?.followPerson || customer?.owner)) || {}).id || $("#customerOwnerSelect").value || "");
@@ -2030,7 +2030,11 @@ function openCustomerDialog(customer = null) {
   if (form.lossReasonDetail) form.lossReasonDetail.value = customer?.lossReasonDetail || "";
   toggleLossReasonDetailField(form);
   form.note.value = "";
-  form.nextFollow.value = customer?.nextFollow || today;
+  form.nextFollow.value = "";
+  const contactsSection = $("#customerContactsSection");
+  if (contactsSection) contactsSection.open = !editingExisting;
+  const competitorsSection = $("#customerCompetitorsSection");
+  if (competitorsSection) competitorsSection.open = !editingExisting;
   const identityLocked = Boolean(customer) && !canAdmin();
   form.dataset.originalChannelSource = normalizeChannelSource(customer?.channelSource || "其他");
   form.dataset.originalCreatedBy = customer?.createdBy || currentUser().name || "";
@@ -3883,6 +3887,9 @@ function wireEvents() {
     }
   });
   $("#customerForm").addEventListener("submit", saveCustomer);
+  $("#customerForm [name=nextFollow]").addEventListener("click", (event) => {
+    try { event.currentTarget.showPicker?.(); } catch {}
+  });
   $("#purchasedForm")?.addEventListener("submit", submitPurchased);
   $("#rollbackForm")?.addEventListener("submit", submitRollbackRequest);
   $("#advanceForm").addEventListener("submit", submitAdvance);

@@ -1910,6 +1910,16 @@ async function routeApi(req, res, url) {
     if (!canModifyThroughOpportunity && !canViewRecord(state, viewer, previous)) {
       return sendJson(res, 403, { error: "无权修改该客户" });
     }
+    const stageOpportunity = requestedOpportunityMatchesCustomer
+      ? requestedOpportunity
+      : primaryOpportunity(state, previous.id);
+    if (body.stage !== undefined && stageOpportunity && String(body.stage) !== String(stageOpportunity.stage)) {
+      return sendJson(res, 409, {
+        error: "客户阶段不能通过普通编辑修改，请使用推进功能并填写跟进记录",
+        code: "STAGE_ADVANCE_REQUIRED",
+        currentStage: stageOpportunity.stage
+      });
+    }
     if (!canUseAdmin(state, viewer)) {
       const changesName = body.name !== undefined && String(body.name).trim() !== String(previous.name || "").trim();
       const changesPhone = body.phone !== undefined && normalizePhone(body.phone) !== normalizePhone(previous.phone);
@@ -4128,6 +4138,7 @@ function assignOpportunity(state, previous, target, viewer) {
   const wasPublic = isOpportunityPublicPool(previous, Date.now(), state);
   return normalizeOpportunity({
     ...previous,
+    stage: previous.stage,
     owner: target.name,
     ownerId: target.id,
     followPerson: target.name,
