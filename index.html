@@ -390,7 +390,7 @@
     </div>
 
     <dialog id="customerDialog">
-      <form method="dialog" class="dialog-form" id="customerForm" novalidate>
+      <form method="dialog" class="dialog-form customer-editor-form" id="customerForm" novalidate>
         <h2 id="customerDialogTitle">新增客户</h2>
         <input type="hidden" name="id" />
         <input type="hidden" name="opportunityId" />
@@ -399,30 +399,36 @@
         <label class="customer-dialog-create-field">城市<input name="city" placeholder="可从客户地址自动识别" /></label>
         <label>意向产品 <span class="required-mark">*</span><select name="productId" id="customerProductSelect" required></select><small class="field-hint">销售跟进提交必填项</small></label>
         <label class="customer-follow-hide-field">渠道来源<select name="channelSource" id="customerChannelSelect"></select></label>
-        <label class="customer-dialog-create-field">阶段<select name="stage" id="customerStageSelect"></select></label>
+        <label class="hidden">阶段<select name="stage" id="customerStageSelect"></select></label>
         <label class="customer-dialog-create-field">跟进人<select name="owner" id="customerOwnerSelect"></select></label>
-        <label class="customer-dialog-create-field">录入人<input name="createdBy" /></label>
+        <label class="hidden">录入人<input name="createdBy" /></label>
         <label class="customer-dialog-create-field">客户地址<input name="address" /></label>
         <label>预计金额（元）<input name="amount" type="number" min="0" step="0.01" /></label>
-        <div class="dialog-section-title customer-follow-hide-field">经营信息</div>
-        <label class="customer-follow-hide-field">有效演示时间<input name="demoAt" type="date" /></label>
-        <label class="customer-follow-hide-field">预计成交日期<input name="expectedDealDate" type="date" /></label>
-        <label class="customer-follow-hide-field">合同金额（元）<input name="contractAmount" type="number" min="0" step="0.01" /></label>
-        <label class="customer-follow-hide-field">实际进款（元）<input name="paymentAmount" type="number" min="0" step="0.01" /></label>
-        <label class="customer-follow-hide-field">进款日期<input name="paymentDate" type="date" /></label>
-        <label class="customer-follow-hide-field">进款业绩归属人<select name="paymentOwnerId" id="paymentOwnerSelect"></select></label>
         <label>目前未成交原因<select name="lossReason" id="customerLossReasonSelect"></select></label>
         <label id="lossReasonDetailField" class="hidden">具体功能原因<textarea name="lossReasonDetail" rows="2" placeholder="例如：缺少设备对接、报价逻辑不适配、门板造型库不够"></textarea></label>
-        <details id="customerContactsSection" class="customer-contact-section">
-          <summary><b>多联系人</b><small>不常用，点击展开维护</small></summary>
-          <div id="customerContactsEditor" class="repeat-editor"></div>
-          <button id="addContactBtn" type="button">添加联系人</button>
-        </details>
-        <details id="customerCompetitorsSection" class="customer-optional-section">
-          <summary><b>当前使用软件与竞品</b><small>不常修改，点击展开维护</small></summary>
-          <div id="customerCompetitorsEditor" class="repeat-editor"></div>
-          <button id="addCompetitorProfileBtn" type="button">添加竞品档案</button>
-        </details>
+        <div class="customer-extra-sections">
+          <details id="customerBusinessSection" class="customer-business-section customer-follow-hide-field">
+            <summary><b>经营信息</b><small>演示、合同和进款</small></summary>
+            <div class="customer-business-grid">
+              <label>有效演示时间<input name="demoAt" type="date" /></label>
+              <label>预计成交日期<input name="expectedDealDate" type="date" /></label>
+              <label>合同金额（元）<input name="contractAmount" type="number" min="0" step="0.01" /></label>
+              <label>实际进款（元）<input name="paymentAmount" type="number" min="0" step="0.01" /></label>
+              <label>进款日期<input name="paymentDate" type="date" /></label>
+              <label>进款业绩归属人<select name="paymentOwnerId" id="paymentOwnerSelect"></select></label>
+            </div>
+          </details>
+          <details id="customerContactsSection" class="customer-contact-section">
+            <summary><b>多联系人</b><small>点击展开</small></summary>
+            <div id="customerContactsEditor" class="repeat-editor"></div>
+            <button id="addContactBtn" type="button">添加联系人</button>
+          </details>
+          <details id="customerCompetitorsSection" class="customer-optional-section">
+            <summary><b>当前软件与竞品</b><small>点击展开</small></summary>
+            <div id="customerCompetitorsEditor" class="repeat-editor"></div>
+            <button id="addCompetitorProfileBtn" type="button">添加竞品档案</button>
+          </details>
+        </div>
         <label>跟进记录<textarea name="note" rows="5" placeholder="填写本次沟通情况、客户反馈和后续计划"></textarea></label>
         <label class="next-follow-field"><span>下次跟进 <span class="required-mark">*</span></span><input name="nextFollow" type="date" required aria-label="选择下次跟进日期" /></label>
         <button id="customerAiBtn" type="button">让小智分析该客户</button>

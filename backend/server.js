@@ -1481,6 +1481,8 @@ async function routeApi(req, res, url) {
     }, state);
     state.customers.unshift(customer);
     const product = resolveProduct(state, body.productId, body.productName) || normalizeProduct({ id: stableId("product", "待确认产品"), name: "待确认产品" });
+    const initialFollowNote = String(body.lastNote || body.note || "").trim();
+    const hasInitialManualFollow = Boolean(initialFollowNote);
     const opportunityCandidate = {
       ...body,
       id: Date.now() + 1,
@@ -1494,17 +1496,17 @@ async function routeApi(req, res, url) {
       unitId: owner.unitId,
       unit: owner.unit,
       zone: owner.zone,
-      ownershipStatus: OWNERSHIP_PENDING,
-      claimUntil: addDaysToIso(now, claimProtectionDays(state, viewer, owner, body.stage || "名单")),
-      effectiveFollowUpAt: "",
+      ownershipStatus: hasInitialManualFollow ? OWNERSHIP_LOCKED : OWNERSHIP_PENDING,
+      claimUntil: hasInitialManualFollow ? "" : addDaysToIso(now, claimProtectionDays(state, viewer, owner, body.stage || "名单")),
+      effectiveFollowUpAt: hasInitialManualFollow ? now : "",
       ownershipHistory: [ownershipEvent("created", null, owner, viewer, "首次录入")],
       followUps: [{
         date: body.lastFollow || body.date || today(),
         createdAt: now,
         author: viewer.name,
-        note: body.lastNote || body.note || `新增${product.name}销售机会。`,
+        note: initialFollowNote || `新增${product.name}销售机会。`,
         nextFollow: body.nextFollow || "",
-        isSystem: true
+        isSystem: !hasInitialManualFollow
       }]
     };
     const validationError = validateOpportunityBusinessUpdate({}, opportunityCandidate);
@@ -4177,6 +4179,11 @@ function normalizeContacts(contacts = [], customer = {}) {
     if (primarySeen) item.isPrimary = false;
     primarySeen = true;
   });
+  const primary = normalized.find((item) => item.isPrimary) || normalized[0];
+  if (primary && fallbackPhone && !primary.phoneNormalized) {
+    primary.phone = String(fallbackPhone).trim();
+    primary.phoneNormalized = normalizePhone(fallbackPhone);
+  }
   return normalized;
 }
 

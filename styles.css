@@ -1053,8 +1053,8 @@ dialog {
 dialog::backdrop { background: rgba(31, 45, 61, 0.38); }
 .dialog-form { padding: 24px; display: grid; gap: 12px; }
 .dialog-form.follow-mode .customer-follow-hide-field { display: none !important; }
-#customerDialog.customer-follow-dialog { width: min(900px, calc(100vw - 32px)); }
-#customerForm.follow-mode {
+#customerDialog { width: min(900px, calc(100vw - 32px)); }
+#customerForm.customer-editor-form {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px 10px;
   padding: 18px;
@@ -1062,32 +1062,41 @@ dialog::backdrop { background: rgba(31, 45, 61, 0.38); }
   max-height: calc(100dvh - 32px);
   overflow-y: auto;
 }
-#customerForm.follow-mode > h2,
-#customerForm.follow-mode > .dialog-section-title,
-#customerForm.follow-mode > .repeat-editor,
-#customerForm.follow-mode > .customer-contact-section,
-#customerForm.follow-mode > .customer-optional-section,
-#customerForm.follow-mode > .button-row { grid-column: 1 / -1; }
-#customerForm.follow-mode > #addContactBtn,
-#customerForm.follow-mode > #addCompetitorProfileBtn { grid-column: 1 / -1; }
-#customerForm.follow-mode > button,
-#customerForm.follow-mode > label { align-self: start; }
-#customerForm.follow-mode > label textarea[name="note"] { min-height: 96px; }
+#customerForm.customer-editor-form > h2,
+#customerForm.customer-editor-form > .dialog-section-title,
+#customerForm.customer-editor-form > .repeat-editor,
+#customerForm.customer-editor-form > .customer-contact-section,
+#customerForm.customer-editor-form > .customer-optional-section,
+#customerForm.customer-editor-form > .customer-business-section,
+#customerForm.customer-editor-form > .customer-extra-sections,
+#customerForm.customer-editor-form > .button-row { grid-column: 1 / -1; }
+#customerForm.customer-editor-form > #addContactBtn,
+#customerForm.customer-editor-form > #addCompetitorProfileBtn { grid-column: 1 / -1; }
+#customerForm.customer-editor-form > button,
+#customerForm.customer-editor-form > label { align-self: start; }
+#customerForm.customer-editor-form > label textarea[name="note"] { min-height: 96px; }
 .customer-contact-section,
-.customer-optional-section {
+.customer-optional-section,
+.customer-business-section {
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #fbfcfe;
 }
 .customer-contact-section summary,
-.customer-optional-section summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; }
+.customer-optional-section summary,
+.customer-business-section summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; }
 .customer-contact-section summary small,
-.customer-optional-section summary small { color: var(--muted); font-weight: 400; }
+.customer-optional-section summary small,
+.customer-business-section summary small { color: var(--muted); font-weight: 400; }
 .customer-contact-section[open] summary,
-.customer-optional-section[open] summary { margin-bottom: 10px; }
+.customer-optional-section[open] summary,
+.customer-business-section[open] summary { margin-bottom: 10px; }
 .customer-contact-section > button,
 .customer-optional-section > button { width: 100%; margin-top: 10px; }
+.customer-business-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.customer-extra-sections { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.customer-extra-sections > details[open] { grid-column: 1 / -1; }
 .next-follow-field input[type="date"] { min-height: 48px; cursor: pointer; font-size: 15px; }
 .segmented-control { display: flex; gap: 10px; padding: 4px; border: 1px solid var(--line); border-radius: 6px; background: #f8fafc; }
 .segmented-control label { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; margin: 0; padding: 8px 10px; border-radius: 4px; cursor: pointer; }
@@ -1297,13 +1306,17 @@ button:disabled {
   .contact-row, .competitor-row { grid-template-columns: 1fr 1fr; }
   .competitor-details[open] { grid-template-columns: 1fr; }
   .ai-advice-grid { grid-template-columns: 1fr; }
-  #customerForm.follow-mode { grid-template-columns: 1fr; }
-  #customerForm.follow-mode > h2,
-  #customerForm.follow-mode > .dialog-section-title,
-  #customerForm.follow-mode > .repeat-editor,
-  #customerForm.follow-mode > .customer-contact-section,
-  #customerForm.follow-mode > .customer-optional-section,
-  #customerForm.follow-mode > .button-row { grid-column: auto; }
+  #customerForm.customer-editor-form { grid-template-columns: 1fr; }
+  #customerForm.customer-editor-form > h2,
+  #customerForm.customer-editor-form > .dialog-section-title,
+  #customerForm.customer-editor-form > .repeat-editor,
+  #customerForm.customer-editor-form > .customer-contact-section,
+  #customerForm.customer-editor-form > .customer-optional-section,
+  #customerForm.customer-editor-form > .customer-business-section,
+  #customerForm.customer-editor-form > .customer-extra-sections,
+  #customerForm.customer-editor-form > .button-row { grid-column: auto; }
+  .customer-business-grid { grid-template-columns: 1fr; }
+  .customer-extra-sections { grid-template-columns: 1fr; }
 }
 .danger-confirm-card {
   padding: 14px 16px;

@@ -1887,6 +1887,17 @@ function readContactsEditor() {
   });
 }
 
+function ensurePrimaryContactPhone(contacts = [], phone = "") {
+  const list = contacts.length ? contacts.map((item) => ({ ...item })) : [{ name: "主联系人", phone: "", isPrimary: true }];
+  let primaryIndex = list.findIndex((item) => item.isPrimary);
+  if (primaryIndex < 0) primaryIndex = 0;
+  list.forEach((item, index) => { item.isPrimary = index === primaryIndex; });
+  const primaryPhone = String(phone || list[primaryIndex].phone || "").trim();
+  if (primaryPhone) list[primaryIndex].phone = primaryPhone;
+  if (!String(list[primaryIndex].name || "").trim()) list[primaryIndex].name = "主联系人";
+  return list;
+}
+
 function defaultCompetitorDefinition() {
   return (state.competitors || []).find((item) => item.active !== false && item.name === "未知")
     || (state.competitors || []).find((item) => item.active !== false)
@@ -2032,9 +2043,11 @@ function openCustomerDialog(customer = null) {
   form.note.value = "";
   form.nextFollow.value = "";
   const contactsSection = $("#customerContactsSection");
-  if (contactsSection) contactsSection.open = !editingExisting;
+  if (contactsSection) contactsSection.open = false;
   const competitorsSection = $("#customerCompetitorsSection");
-  if (competitorsSection) competitorsSection.open = !editingExisting;
+  if (competitorsSection) competitorsSection.open = false;
+  const businessSection = $("#customerBusinessSection");
+  if (businessSection) businessSection.open = false;
   const identityLocked = Boolean(customer) && !canAdmin();
   form.dataset.originalChannelSource = normalizeChannelSource(customer?.channelSource || "其他");
   form.dataset.originalCreatedBy = customer?.createdBy || currentUser().name || "";
@@ -2198,10 +2211,11 @@ async function saveCustomer(event) {
   const note = String(form.get("note") || "").trim();
   const nextFollow = String(form.get("nextFollow") || "").trim();
   const productId = String(form.get("productId") || "");
-  const contacts = readContactsEditor();
+  const formPhone = String(form.get("phone") || "").trim();
+  const contacts = ensurePrimaryContactPhone(readContactsEditor(), formPhone);
   const primaryContact = contacts.find((item) => item.isPrimary) || contacts[0] || {};
   const customerName = String(form.get("name") || "").trim();
-  const customerPhone = String(primaryContact.phone || form.get("phone") || "").trim();
+  const customerPhone = String(formPhone || primaryContact.phone || "").trim();
   if (!customerName) {
     formNode.elements.name?.focus();
     return toast("请填写：客户名称");
@@ -3887,6 +3901,12 @@ function wireEvents() {
     }
   });
   $("#customerForm").addEventListener("submit", saveCustomer);
+  $("#customerForm [name=phone]").addEventListener("input", (event) => {
+    const primaryRow = $$("#customerContactsEditor .contact-row")
+      .find((row) => row.querySelector('[data-contact="isPrimary"]')?.value === "1");
+    const primaryPhone = primaryRow?.querySelector('[data-contact="phone"]');
+    if (primaryPhone) primaryPhone.value = event.currentTarget.value;
+  });
   $("#customerForm [name=nextFollow]").addEventListener("click", (event) => {
     try { event.currentTarget.showPicker?.(); } catch {}
   });
@@ -3904,6 +3924,13 @@ function wireEvents() {
       renderContactsEditor(contacts.map((item, itemIndex) => ({ ...item, isPrimary: itemIndex === index })));
     } else {
       renderContactsEditor(contacts.filter((_, itemIndex) => itemIndex !== index));
+    }
+  });
+  $("#customerContactsEditor").addEventListener("input", (event) => {
+    if (!event.target.matches('[data-contact="phone"]')) return;
+    const row = event.target.closest(".contact-row");
+    if (row?.querySelector('[data-contact="isPrimary"]')?.value === "1") {
+      $("#customerForm [name=phone]").value = event.target.value;
     }
   });
   $("#addCompetitorProfileBtn").addEventListener("click", () => {

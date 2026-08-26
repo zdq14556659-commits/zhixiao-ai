@@ -78,6 +78,24 @@ async function run() {
   } });
   assert.equal(second.status, 201, "次要联系人手机号允许重复");
 
+  const fallbackPrimary = await request("/customers", { method: "POST", token: salesA, body: {
+    name: "主联系人手机号回填工厂", phone: "13500004444", productId: "product-v1", stage: "名单", nextFollow: "2026-06-20",
+    lastNote: "单个添加时首次跟进",
+    contacts: [{ name: "主联系人", phone: "", isPrimary: true }]
+  } });
+  assert.equal(fallbackPrimary.status, 201, JSON.stringify(fallbackPrimary.data));
+  assert.equal(fallbackPrimary.data.phone, "13500004444");
+  assert.equal(fallbackPrimary.data.contacts.find((item) => item.isPrimary).phone, "13500004444");
+  assert.ok(fallbackPrimary.data.followUps.some((item) => item.note === "单个添加时首次跟进" && item.isSystem === false));
+  assert.equal(fallbackPrimary.data.ownershipStatus, "locked");
+  const fallbackFollow = await request(`/customers/${fallbackPrimary.data.customerId}`, { method: "PUT", token: salesA, body: {
+    opportunityId: fallbackPrimary.data.id, phone: "13500004444", productId: "product-v1", stage: "名单", nextFollow: "2026-06-21",
+    lastNote: "已完成首次电话跟进", contacts: [{ name: "主联系人", phone: "", isPrimary: true }]
+  } });
+  assert.equal(fallbackFollow.status, 200, JSON.stringify(fallbackFollow.data));
+  assert.equal(fallbackFollow.data.contacts.find((item) => item.isPrimary).phone, "13500004444");
+  assert.ok(fallbackFollow.data.followUps.some((item) => item.note === "已完成首次电话跟进"));
+
   const duplicatePrimary = await request("/customers", { method: "POST", token: salesB, body: { name: "重复主联系人", phone: "+86 139-0000-1111", address: "上海市测试路" } });
   assert.equal(duplicatePrimary.status, 409);
   assert.equal(duplicatePrimary.data.code, "DUPLICATE_CUSTOMER");
